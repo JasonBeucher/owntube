@@ -1,0 +1,154 @@
+@import "tailwindcss";
+@import "vidstack/styles/defaults.css";
+@import "vidstack/styles/community-skin/video.css";
+
+:root {
+  --background: 0 0% 98%;
+  --foreground: 0 0% 9%;
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 9%;
+  --muted: 0 0% 94%;
+  --muted-foreground: 0 0% 40%;
+  --accent: 0 0% 94%;
+  --accent-foreground: 0 0% 9%;
+  --primary: 350 90% 58%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 0 0% 94%;
+  --secondary-foreground: 0 0% 9%;
+  --border: 0 0% 88%;
+  --ring: 350 90% 58%;
+  --radius: 0.5rem;
+  --sidebar: 0 0% 96%;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --background: 0 0% 4%;
+    --foreground: 0 0% 96%;
+    --card: 0 0% 7%;
+    --card-foreground: 0 0% 96%;
+    --muted: 0 0% 12%;
+    --muted-foreground: 0 0% 64%;
+    --accent: 0 0% 12%;
+    --accent-foreground: 0 0% 96%;
+    --primary: 350 90% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 0 0% 96%;
+    --border: 0 0% 14%;
+    --ring: 350 90% 58%;
+    --sidebar: 0 0% 5%;
+  }
+}
+
+:root.dark {
+  --background: 0 0% 4%;
+  --foreground: 0 0% 96%;
+  --card: 0 0% 7%;
+  --card-foreground: 0 0% 96%;
+  --muted: 0 0% 12%;
+  --muted-foreground: 0 0% 64%;
+  --accent: 0 0% 12%;
+  --accent-foreground: 0 0% 96%;
+  --primary: 350 90% 58%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 0 0% 12%;
+  --secondary-foreground: 0 0% 96%;
+  --border: 0 0% 14%;
+  --ring: 350 90% 58%;
+  --sidebar: 0 0% 5%;
+}
+
+:root.light {
+  --background: 0 0% 98%;
+  --foreground: 0 0% 9%;
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 9%;
+  --muted: 0 0% 94%;
+  --muted-foreground: 0 0% 40%;
+  --accent: 0 0% 94%;
+  --accent-foreground: 0 0% 9%;
+  --primary: 350 90% 58%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 0 0% 94%;
+  --secondary-foreground: 0 0% 9%;
+  --border: 0 0% 88%;
+  --ring: 350 90% 58%;
+  --sidebar: 0 0% 96%;
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+}
+
+::selection {
+  background: hsl(350 90% 58%);
+  color: #fff;
+}
+
+body {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+/*
+ * QHD / large desktop: default 16px root makes dense UIs feel small.
+ * Slightly larger rem base scales typography, spacing, and controls together.
+ */
+@media (min-width: 1536px) {
+  html {
+    font-size: 106.25%;
+  }
+}
+
+@media (min-width: 1920px) {
+  html {
+    font-size: 112.5%;
+  }
+}
+
+@keyframes ot-fade-slide {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ot-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.ot-app-scroll {
+  animation: ot-fade-slide 0.3s ease;
+}
+
+.ot-page {
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 1600px;
+  padding: 28px 32px 80px;
+}
+
+@media (min-width: 1536px) {
+  .ot-page {
+    padding: 32px 40px 96px;
+  }
+}
+
+@media (max-width: 640px) {
+  .ot-page {
+    padding: 20px 16px 60px;
+  }
+}

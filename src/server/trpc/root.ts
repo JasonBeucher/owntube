@@ -1,0 +1,32 @@
+import { router } from "@/server/trpc/init";
+import { authRouter } from "@/server/trpc/routers/auth";
+import { channelRouter } from "@/server/trpc/routers/channel";
+import { feedRouter } from "@/server/trpc/routers/feed";
+import { historyRouter } from "@/server/trpc/routers/history";
+import { interactionsRouter } from "@/server/trpc/routers/interactions";
+import { playlistsRouter } from "@/server/trpc/routers/playlists";
+import { searchRouter } from "@/server/trpc/routers/search";
+import { settingsRouter } from "@/server/trpc/routers/settings";
+import { statsRouter } from "@/server/trpc/routers/stats";
+import { subscriptionsRouter } from "@/server/trpc/routers/subscriptions";
+import { takeoutRouter } from "@/server/trpc/routers/takeout";
+import { trendingRouter } from "@/server/trpc/routers/trending";
+import { videoRouter } from "@/server/trpc/routers/video";
+
+export const appRouter = router({
+  auth: authRouter,
+  channel: channelRouter,
+  feed: feedRouter,
+  history: historyRouter,
+  interactions: interactionsRouter,
+  playlists: playlistsRouter,
+  search: searchRouter,
+  settings: settingsRouter,
+  stats: statsRouter,
+  subscriptions: subscriptionsRouter,
+  takeout: takeoutRouter,
+  trending: trendingRouter,
+  video: videoRouter,
+});
+
+export type AppRouter = typeof appRouter;

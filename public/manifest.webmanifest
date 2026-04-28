@@ -1,0 +1,17 @@
+{
+  "name": "OwnTube",
+  "short_name": "OwnTube",
+  "description": "Privacy-first self-hosted video frontend",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111111",
+  "theme_color": "#d92727",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

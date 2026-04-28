@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the use case before the solution. "I want X" is harder to evaluate than "When doing Y, Z is annoying because ...".
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to see? Sketches, links to similar features in other apps, mockups, anything goes.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or other approaches you've already thought about.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      description: Per [base.md](https://github.com/spookiss/owntube/blob/main/base.md), some things are out of scope by design.
+      options:
+        - label: This does not require calling Google APIs or YouTube directly
+          required: true
+        - label: This does not introduce a new database, message broker, or external service
+          required: true
+        - label: I have read the project goals in `base.md`
+          required: true
