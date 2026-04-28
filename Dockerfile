@@ -1,7 +1,7 @@
 # Build: docker build -t owntube .
 # Run:  docker compose up
 
-FROM node:22-bookworm-slim AS base
+FROM node:25-bookworm-slim AS base
 WORKDIR /app
 
 RUN apt-get update \
