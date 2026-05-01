@@ -1,7 +1,12 @@
-const STATIC_CACHE = "owntube-static-v3";
-const PAGE_CACHE = "owntube-pages-v3";
-const IMAGE_CACHE = "owntube-images-v3";
-const STATIC_ASSETS = ["/", "/manifest.webmanifest", "/icon.svg"];
+const STATIC_CACHE = "owntube-static-v7";
+const PAGE_CACHE = "owntube-pages-v7";
+const IMAGE_CACHE = "owntube-images-v7";
+const STATIC_ASSETS = [
+  "/",
+  "/manifest.webmanifest",
+  "/logo.png?v=6",
+  "/favicon.ico?v=6",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { usePathname } from "next/navigation";
 import { BrandLogo } from "@/components/shell/brand-logo";
 import { TopbarSearch } from "@/components/shell/topbar-search";
 
@@ -15,12 +16,19 @@ export function ShellTopbar({
   onLogoClick,
   topbarRight,
 }: ShellTopbarProps) {
+  const pathname = usePathname();
+  const isWatchRoute = pathname.startsWith("/watch/");
+
   return (
     <header className="sticky top-0 z-30 flex shrink-0 items-center gap-3 border-b border-[hsl(var(--border))] bg-[hsl(var(--background)_/_0.88)] px-3 py-3 backdrop-blur-xl backdrop-saturate-150 md:gap-4 md:px-5 dark:bg-[hsl(var(--background)_/_0.78)]">
       <div className="flex shrink-0 items-center gap-2">
         <button
           type="button"
-          className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-[10px] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))] max-[900px]:inline-flex"
+          className={
+            isWatchRoute
+              ? "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]"
+              : "hidden h-10 w-10 shrink-0 items-center justify-center rounded-[10px] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))] max-[900px]:inline-flex"
+          }
           aria-label="Open menu"
           onClick={onOpenMenu}
         >
@@ -39,7 +47,11 @@ export function ShellTopbar({
             <line x1="3" y1="18" x2="21" y2="18" />
           </svg>
         </button>
-        <div className="hidden max-[900px]:block">
+        <div
+          className={
+            isWatchRoute ? "block" : "hidden max-[900px]:block"
+          }
+        >
           <BrandLogo showText={false} onNavigate={onLogoClick} />
         </div>
       </div>

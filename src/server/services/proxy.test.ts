@@ -367,6 +367,49 @@ describe("searchVideos", () => {
     sqlite.close();
   });
 
+  it("repairs malformed Invidious absolute URLs missing hostname", async () => {
+    const { db, sqlite } = createTestDb();
+    process.env.PIPED_BASE_URL = "disabled";
+    process.env.INVIDIOUS_BASE_URL = "http://192.168.1.11:3210";
+
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/api/v1/videos/dQw4w9WgXcQ")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              videoId: "dQw4w9WgXcQ",
+              title: "Malformed absolute URLs",
+              dashUrl: "http://:3210/api/manifest/dash/id/dQw4w9WgXcQ",
+              hlsUrl: "http://:3210/api/manifest/hls/playlist/dQw4w9WgXcQ",
+              adaptiveFormats: [
+                {
+                  url: "http://:3210/videoplayback?id=abc",
+                  type: "video/mp4",
+                  qualityLabel: "720p",
+                },
+              ],
+            }),
+          ),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    const detail = await fetchVideoDetail(db, { videoId: "dQw4w9WgXcQ" });
+    expect(detail.sourceUsed).toBe("invidious");
+    expect(detail.dashUrl).toBe(
+      "http://192.168.1.11:3210/api/manifest/dash/id/dQw4w9WgXcQ",
+    );
+    expect(detail.hlsUrl).toBe(
+      "http://192.168.1.11:3210/api/manifest/hls/playlist/dQw4w9WgXcQ",
+    );
+    expect(detail.videoSources[0]?.url).toBe(
+      "http://192.168.1.11:3210/videoplayback?id=abc",
+    );
+    sqlite.close();
+  });
+
   it("rejects search when Invidious shares the same loopback port as Next", async () => {
     const { db, sqlite } = createTestDb();
     process.env.PIPED_BASE_URL = "disabled";

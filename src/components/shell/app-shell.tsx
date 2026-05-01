@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { usePathname } from "next/navigation";
 import { useCallback, useState } from "react";
 import { ShellSidebar } from "@/components/shell/shell-sidebar";
 import { ShellTopbar } from "@/components/shell/shell-topbar";
@@ -12,6 +13,8 @@ type AppShellProps = {
 };
 
 export function AppShell({ children, topbarRight, isLoggedIn }: AppShellProps) {
+  const pathname = usePathname();
+  const isWatchRoute = pathname.startsWith("/watch/");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const close = useCallback(() => setSidebarOpen(false), []);
   const open = useCallback(() => setSidebarOpen(true), []);
@@ -37,7 +40,11 @@ export function AppShell({ children, topbarRight, isLoggedIn }: AppShellProps) {
         <button
           type="button"
           aria-label="Close menu"
-          className="fixed inset-0 z-40 hidden animate-[ot-fade-in_0.2s_ease] bg-black/60 backdrop-blur-sm max-[900px]:block"
+          className={
+            isWatchRoute
+              ? "fixed inset-0 z-40 block animate-[ot-fade-in_0.2s_ease] bg-black/60 backdrop-blur-sm"
+              : "fixed inset-0 z-40 hidden animate-[ot-fade-in_0.2s_ease] bg-black/60 backdrop-blur-sm max-[900px]:block"
+          }
           onClick={close}
         />
       ) : null}

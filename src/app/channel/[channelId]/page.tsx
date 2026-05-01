@@ -1,7 +1,6 @@
 import { unstable_noStore as noStore } from "next/cache";
-import Link from "next/link";
 import { ChannelSubscribeButton } from "@/components/channel/channel-subscribe-button";
-import { Button } from "@/components/ui/button";
+import { ChannelAvatarCircle } from "@/components/videos/channel-avatar-circle";
 import { VideoGrid } from "@/components/videos/video-grid";
 import { auth } from "@/server/auth";
 import { channelPageInputSchema } from "@/server/services/proxy.types";
@@ -19,71 +18,89 @@ export default async function ChannelPage({ params }: ChannelPageProps) {
   const isAuthed = Boolean(session?.user?.id);
   const caller = await createCaller();
   const page = await caller.channel.page({ channelId: input.channelId });
+  const channelName = page.name ?? page.channelId;
 
   return (
-    <main className="ot-page space-y-8">
-      <div className="flex flex-wrap items-start justify-between gap-6">
-        <div className="flex min-w-0 flex-1 gap-4">
-          {page.avatarUrl ? (
-            <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--muted))] shadow-md">
-              {/* biome-ignore lint/performance/noImgElement: external instance URL */}
-              <img
-                src={page.avatarUrl}
-                alt=""
-                className="h-full w-full object-cover"
-                width={80}
-                height={80}
-              />
+    <main className="ot-page space-y-7 pb-8">
+      <section className="relative overflow-hidden rounded-[22px] border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+        {page.bannerUrl ? (
+          <>
+            {/* biome-ignore lint/performance/noImgElement: third-party channel banner */}
+            <img
+              src={page.bannerUrl}
+              alt=""
+              className="h-[210px] w-full object-cover sm:h-[250px]"
+            />
+            <div
+              className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-black/25 to-transparent"
+              aria-hidden
+            />
+          </>
+        ) : (
+          <div className="h-[210px] w-full bg-[radial-gradient(circle_at_top_left,hsl(var(--primary)_/_0.3),transparent_50%),radial-gradient(circle_at_bottom_right,hsl(var(--accent)_/_0.3),transparent_45%),hsl(var(--muted)_/_0.35)] sm:h-[250px]" />
+        )}
+
+        <div className="absolute inset-x-0 bottom-0 p-4 sm:p-6">
+          <div className="rounded-2xl border border-white/10 bg-black/45 p-4 backdrop-blur-md sm:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="mb-2 flex items-center gap-3">
+                  <ChannelAvatarCircle
+                    imageUrl={page.avatarUrl}
+                    label={channelName}
+                    size="md"
+                  />
+                  <h1 className="truncate text-2xl font-extrabold tracking-tight text-white sm:text-3xl">
+                    {channelName}
+                  </h1>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-white/85 sm:text-sm">
+                  {page.subscriberCount != null ? (
+                    <span className="rounded-full border border-white/20 bg-black/30 px-2.5 py-1">
+                      {page.subscriberCount.toLocaleString()} subscribers
+                    </span>
+                  ) : null}
+                  <span className="rounded-full border border-white/20 bg-black/30 px-2.5 py-1 font-mono text-[11px] sm:text-xs">
+                    {page.channelId}
+                  </span>
+                </div>
+              </div>
+              <div className="shrink-0">
+                <ChannelSubscribeButton
+                  channelId={page.channelId}
+                  isAuthed={isAuthed}
+                />
+              </div>
             </div>
-          ) : null}
-          <div className="min-w-0 space-y-2">
-            <h1 className="text-3xl font-extrabold tracking-tight">
-              {page.name ?? page.channelId}
-            </h1>
-            {page.subscriberCount != null ? (
-              <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                {page.subscriberCount.toLocaleString()} subscribers
-              </p>
-            ) : null}
-            {page.description ? (
-              <p className="line-clamp-4 text-sm text-[hsl(var(--muted-foreground))]">
-                {page.description}
-              </p>
-            ) : null}
-            <p className="font-mono text-xs text-[hsl(var(--muted-foreground))]">
-              {page.channelId}
-            </p>
           </div>
         </div>
-        <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
-          <ChannelSubscribeButton
-            channelId={page.channelId}
-            isAuthed={isAuthed}
-          />
-          <Button variant="outline" size="sm" asChild>
-            <Link href="/search">Search</Link>
-          </Button>
-        </div>
-      </div>
+      </section>
 
-      {page.bannerUrl ? (
-        <div className="relative aspect-[21/9] w-full overflow-hidden rounded-[20px] border border-[hsl(var(--border))] bg-[hsl(var(--muted))] shadow-lg">
-          {/* biome-ignore lint/performance/noImgElement: third-party channel banner */}
-          <img
-            src={page.bannerUrl}
-            alt=""
-            className="h-full w-full object-cover"
-          />
-        </div>
+      {page.description ? (
+        <section className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 sm:p-5">
+          <h2 className="mb-2 text-sm font-semibold tracking-wide text-[hsl(var(--muted-foreground))] uppercase">
+            About
+          </h2>
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-[hsl(var(--foreground))]">
+            {page.description}
+          </p>
+        </section>
       ) : null}
 
       <section className="space-y-4">
-        <h2 className="text-xl font-bold tracking-tight">Videos</h2>
-        <p className="font-mono text-xs text-[hsl(var(--muted-foreground))]">
-          Source: {page.sourceUsed}
-          {page.stale ? " · stale cache" : ""}
-        </p>
-        <VideoGrid videos={page.videos} />
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-bold tracking-tight">Videos</h2>
+            <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+              {page.videos.length} result{page.videos.length === 1 ? "" : "s"}
+            </p>
+          </div>
+          <p className="rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-1.5 font-mono text-xs text-[hsl(var(--muted-foreground))]">
+            {page.sourceUsed}
+            {page.stale ? " · stale cache" : ""}
+          </p>
+        </div>
+        <VideoGrid videos={page.videos} size="large" />
       </section>
 
       {page.continuation ? (

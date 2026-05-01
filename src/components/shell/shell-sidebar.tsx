@@ -134,19 +134,31 @@ type ShellSidebarProps = {
 
 export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
   const pathname = usePathname();
+  const isWatchRoute = pathname.startsWith("/watch/");
 
   return (
     <aside
       className={cn(
-        "z-50 flex h-full w-[248px] shrink-0 flex-col overflow-y-auto border-r border-[hsl(var(--border))] bg-[hsl(var(--sidebar))] px-2.5 py-4 transition-transform max-[900px]:fixed max-[900px]:bottom-0 max-[900px]:left-0 max-[900px]:top-0 max-[900px]:shadow-[20px_0_60px_rgba(0,0,0,0.5)]",
-        open ? "max-[900px]:translate-x-0" : "max-[900px]:-translate-x-full",
+        isWatchRoute
+          ? "fixed bottom-0 left-0 top-0 z-50 flex h-full w-[248px] flex-col overflow-y-auto border-r border-[hsl(var(--border))] bg-[hsl(var(--sidebar))] px-2.5 py-4 shadow-[20px_0_60px_rgba(0,0,0,0.5)] transition-transform"
+          : "z-50 flex h-full w-[248px] shrink-0 flex-col overflow-y-auto border-r border-[hsl(var(--border))] bg-[hsl(var(--sidebar))] px-2.5 py-4 transition-transform max-[900px]:fixed max-[900px]:bottom-0 max-[900px]:left-0 max-[900px]:top-0 max-[900px]:shadow-[20px_0_60px_rgba(0,0,0,0.5)]",
+        isWatchRoute
+          ? open
+            ? "translate-x-0"
+            : "-translate-x-full"
+          : open
+            ? "max-[900px]:translate-x-0"
+            : "max-[900px]:-translate-x-full",
       )}
     >
       <div className="flex items-center justify-between px-2.5 pb-4 pt-1">
         <BrandLogo onNavigate={onClose} />
         <button
           type="button"
-          className="hidden h-8 w-8 items-center justify-center rounded-lg text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))] max-[900px]:inline-flex"
+          className={cn(
+            "h-8 w-8 items-center justify-center rounded-lg text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]",
+            isWatchRoute ? "inline-flex" : "hidden max-[900px]:inline-flex",
+          )}
           aria-label="Close menu"
           onClick={onClose}
         >

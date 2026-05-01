@@ -205,7 +205,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
               {merged.length} vidéo{merged.length === 1 ? "" : "s"}
             </span>
           </div>
-          <VideoGrid videos={gridVideos} />
+          <VideoGrid videos={gridVideos} size="large" />
         </>
       ) : first ? (
         <p className="text-sm text-[hsl(var(--muted-foreground))]">
@@ -221,7 +221,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
 
       {feed.isFetching && page > 1 ? (
         <ul
-          className="grid grid-cols-1 gap-x-[18px] gap-y-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-[repeat(auto-fill,minmax(280px,1fr))]"
+          className="grid grid-cols-1 gap-x-7 gap-y-8 lg:grid-cols-2 xl:grid-cols-[repeat(auto-fill,minmax(440px,1fr))]"
           aria-hidden
         >
           {LOAD_MORE_SKELETON_KEYS.slice(0, LOAD_MORE_SKELETON_COUNT).map(

@@ -36,6 +36,75 @@ const VIDEOS_PER_HISTORY_CHANNEL = 12;
 const MIN_UNIQUE_CANDIDATES_HISTORY_ONLY = 14;
 
 type TaggedVideo = { video: UnifiedVideo; source: string };
+type RecommendationPoolCacheEntry = {
+  expiresAt: number;
+  coldStart: boolean;
+  diversified: ScoredVideo[];
+};
+
+const RECOMMENDATION_POOL_CACHE_TTL_MS = 90_000;
+const CHANNEL_FETCH_CONCURRENCY = 6;
+const recommendationPoolCache = new Map<string, RecommendationPoolCacheEntry>();
+const recommendationPoolInFlight = new Map<
+  string,
+  Promise<RecommendationPoolCacheEntry>
+>();
+
+function deterministicUnitInterval(seed: string): number {
+  // FNV-1a 32-bit hash for stable pseudo-random ordering.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  // Convert to [0, 1).
+  return (h >>> 0) / 0x1_0000_0000;
+}
+
+function deterministicColdStartJitter(userId: number, videoId: string): number {
+  const u = deterministicUnitInterval(`${userId}:${videoId}`);
+  return (u - 0.5) * 0.08;
+}
+
+function recommendationPoolCacheKey(
+  userId: number,
+  opts: {
+    pageSize: number;
+    region?: string;
+    overrides?: ProxySourceOverrides;
+  },
+): string {
+  const region = opts.region ?? "US";
+  const piped = opts.overrides?.pipedBaseUrl?.trim() ?? "";
+  const invidious = opts.overrides?.invidiousBaseUrl?.trim() ?? "";
+  return `${userId}|${region}|${opts.pageSize}|${piped}|${invidious}`;
+}
+
+function sliceRecommendationPool(
+  entry: RecommendationPoolCacheEntry,
+  page: number,
+  pageSize: number,
+): RecommendationResult {
+  const start = (page - 1) * pageSize;
+  const pageRows = entry.diversified.slice(start, start + pageSize);
+  const hasMore = start + pageRows.length < entry.diversified.length;
+  const videos: UnifiedVideo[] = pageRows.map((row) => {
+    const {
+      rawScore: _r,
+      preMmrRawScore: _p,
+      scoreBreakdown: _b,
+      candidateSource: _c,
+      coldStartJitter: _j,
+      ...video
+    } = row;
+    return video;
+  });
+  return {
+    videos,
+    coldStart: entry.coldStart,
+    hasMore,
+  };
+}
 
 function clipTitle(title: string, max = 80): string {
   const t = title.trim();
@@ -53,6 +122,22 @@ export async function getRecommendations(
     overrides?: ProxySourceOverrides;
   },
 ): Promise<RecommendationResult> {
+  const cacheKey = recommendationPoolCacheKey(userId, opts);
+  const now = Date.now();
+  const cached = recommendationPoolCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return sliceRecommendationPool(cached, opts.page, opts.pageSize);
+  }
+
+  const inFlight = recommendationPoolInFlight.get(cacheKey);
+  if (inFlight) {
+    const pool = await inFlight;
+    if (pool.expiresAt > Date.now()) {
+      return sliceRecommendationPool(pool, opts.page, opts.pageSize);
+    }
+  }
+
+  const task = (async (): Promise<RecommendationPoolCacheEntry> => {
   const watchedRows = db
     .select({ videoId: watchHistory.videoId })
     .from(watchHistory)
@@ -73,13 +158,24 @@ export async function getRecommendations(
     signals.channelsOrderedByRecentWatch.length > 0;
 
   if (canBuildFromHistory) {
-    for (const channelId of signals.channelsOrderedByRecentWatch.slice(
+    const historyChannels = signals.channelsOrderedByRecentWatch.slice(
       0,
       MAX_HISTORY_CHANNEL_FETCHES,
-    )) {
-      try {
-        const ch = await fetchChannelPage(db, { channelId }, opts.overrides);
-        const page = ch.videos.slice(0, VIDEOS_PER_HISTORY_CHANNEL);
+    );
+    for (let i = 0; i < historyChannels.length; i += CHANNEL_FETCH_CONCURRENCY) {
+      const batch = historyChannels.slice(i, i + CHANNEL_FETCH_CONCURRENCY);
+      const settled = await Promise.allSettled(
+        batch.map(async (channelId) => {
+          const ch = await fetchChannelPage(db, { channelId }, opts.overrides);
+          return {
+            channelId,
+            page: ch.videos.slice(0, VIDEOS_PER_HISTORY_CHANNEL),
+          };
+        }),
+      );
+      for (const item of settled) {
+        if (item.status !== "fulfilled") continue;
+        const { channelId, page } = item.value;
         for (const v of page) {
           taggedCandidates.push({
             video: v,
@@ -96,8 +192,6 @@ export async function getRecommendations(
           }
           recentCoverageByChannel.set(channelId, hit / pageIds.length);
         }
-      } catch {
-        // Channel fetch failed; continue.
       }
     }
   }
@@ -150,18 +244,26 @@ export async function getRecommendations(
     });
 
     const maxChannelFetches = 24;
-    for (const s of subsWithWatchActivity.slice(0, maxChannelFetches)) {
-      try {
-        const ch = await fetchChannelPage(
-          db,
-          { channelId: s.channelId },
-          opts.overrides,
-        );
-        const page = ch.videos.slice(0, 10);
+    const channels = subsWithWatchActivity.slice(0, maxChannelFetches);
+    for (let i = 0; i < channels.length; i += CHANNEL_FETCH_CONCURRENCY) {
+      const batch = channels.slice(i, i + CHANNEL_FETCH_CONCURRENCY);
+      const settled = await Promise.allSettled(
+        batch.map(async (s) => {
+          const ch = await fetchChannelPage(
+            db,
+            { channelId: s.channelId },
+            opts.overrides,
+          );
+          return { channelId: s.channelId, page: ch.videos.slice(0, 10) };
+        }),
+      );
+      for (const item of settled) {
+        if (item.status !== "fulfilled") continue;
+        const { channelId, page } = item.value;
         for (const v of page) {
           taggedCandidates.push({
             video: v,
-            source: `subscription:${s.channelId}`,
+            source: `subscription:${channelId}`,
           });
         }
         const pageIds = page
@@ -172,10 +274,8 @@ export async function getRecommendations(
           for (const id of pageIds) {
             if (signals.watchedVideoIds.has(id)) hit += 1;
           }
-          recentCoverageByChannel.set(s.channelId, hit / pageIds.length);
+          recentCoverageByChannel.set(channelId, hit / pageIds.length);
         }
-      } catch {
-        // Channel fetch failed; continue.
       }
     }
   }
@@ -215,7 +315,7 @@ export async function getRecommendations(
   if (coldStart) {
     scored = scored
       .map((s) => {
-        const jitter = (Math.random() - 0.5) * 0.08;
+        const jitter = deterministicColdStartJitter(userId, s.videoId);
         return {
           ...s,
           rawScore: s.rawScore + jitter,
@@ -248,18 +348,6 @@ export async function getRecommendations(
   );
   const start = (opts.page - 1) * opts.pageSize;
   const pageRows = diversified.slice(start, start + opts.pageSize);
-  const hasMore = start + pageRows.length < diversified.length;
-  const videos: UnifiedVideo[] = pageRows.map((row) => {
-    const {
-      rawScore: _r,
-      preMmrRawScore: _p,
-      scoreBreakdown: _b,
-      candidateSource: _c,
-      coldStartJitter: _j,
-      ...video
-    } = row;
-    return video;
-  });
 
   if (recommendationDebugEnabled()) {
     const interest = signals.historyChannelIds;
@@ -303,8 +391,17 @@ export async function getRecommendations(
   }
 
   return {
-    videos,
+    expiresAt: Date.now() + RECOMMENDATION_POOL_CACHE_TTL_MS,
+    diversified,
     coldStart,
-    hasMore,
   };
+  })();
+  recommendationPoolInFlight.set(cacheKey, task);
+  try {
+    const pool = await task;
+    recommendationPoolCache.set(cacheKey, pool);
+    return sliceRecommendationPool(pool, opts.page, opts.pageSize);
+  } finally {
+    recommendationPoolInFlight.delete(cacheKey);
+  }
 }

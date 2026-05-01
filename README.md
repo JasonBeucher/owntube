@@ -42,6 +42,8 @@ docker compose up --build
 
 Set `PIPED_BASE_URL`, `INVIDIOUS_BASE_URL` and `AUTH_SECRET` in `.env` (or in the compose `environment:` block). The SQLite database is persisted in the named volume `owntube-data`.
 
+For Unraid deployment, use `docker-compose.unraid.yml` + `.env.unraid` and follow [docs/UNRAID-DEPLOYMENT.md](docs/UNRAID-DEPLOYMENT.md).
+
 For a fully local setup with a self-hosted Invidious, run `bash scripts/setup-invidious.sh` and follow [docs/SELF-HOSTING.md](docs/SELF-HOSTING.md).
 
 ## Routes

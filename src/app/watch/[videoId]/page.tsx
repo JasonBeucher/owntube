@@ -1,10 +1,12 @@
 import { unstable_noStore as noStore } from "next/cache";
 import { headers } from "next/headers";
 import Link from "next/link";
+import { ChannelSubscribeButton } from "@/components/channel/channel-subscribe-button";
 import { InteractionButtons } from "@/components/player/interaction-buttons";
 import { VideoPlayer } from "@/components/player/video-player";
 import { WatchTracker } from "@/components/player/watch-tracker";
-import { Button } from "@/components/ui/button";
+import { ChannelAvatarCircle } from "@/components/videos/channel-avatar-circle";
+import { WatchDescription } from "@/components/watch/watch-description";
 import { VideoCardCompact } from "@/components/videos/video-card";
 import {
   getAppOriginFromRequestHeaders,
@@ -13,19 +15,35 @@ import {
   toProxiedOrDirectVariants,
 } from "@/lib/invidious-proxy";
 import { buildWatchPlayback } from "@/lib/pick-playback";
+import { formatPublishedLabel, formatViews } from "@/lib/video-display";
+import { parseChaptersFromDescription } from "@/lib/video-chapters";
 import { auth } from "@/server/auth";
 import { getDb } from "@/server/db/client";
-import { fetchRelatedVideos, fetchVideoDetail } from "@/server/services/proxy";
+import { getRecommendations } from "@/server/recommendation/engine";
+import {
+  fetchTrendingVideos,
+  fetchVideoDetail,
+} from "@/server/services/proxy";
 import { videoDetailInputSchema } from "@/server/services/proxy.types";
-import { getUserProxyOverrides } from "@/server/settings/profile";
+import {
+  getUserProxyOverrides,
+  getUserSettings,
+  normalizeTrendingRegionStored,
+} from "@/server/settings/profile";
 
 type WatchPageProps = {
   params: Promise<{ videoId: string }>;
+  searchParams: Promise<{ t?: string | string[] }>;
 };
 
-export default async function WatchPage({ params }: WatchPageProps) {
+export default async function WatchPage({ params, searchParams }: WatchPageProps) {
   noStore();
   const { videoId } = await params;
+  const sp = await searchParams;
+  const rawT = typeof sp.t === "string" ? sp.t.trim() : "";
+  const startAtSeconds = /^\d+$/.test(rawT)
+    ? Number.parseInt(rawT, 10)
+    : undefined;
   const input = videoDetailInputSchema.parse({ videoId });
   const db = getDb();
   const session = await auth();
@@ -38,11 +56,29 @@ export default async function WatchPage({ params }: WatchPageProps) {
   const requestHost =
     h.get("x-forwarded-host")?.split(",")[0]?.trim() ?? h.get("host") ?? "";
   const appOrigin = getAppOriginFromRequestHeaders(h);
-  const [detail, related] = await Promise.all([
-    fetchVideoDetail(db, input, overrides, { bypassDetailCache: true }),
-    fetchRelatedVideos(db, input, 20, overrides),
-  ]);
   const isAuthed = Boolean(session?.user?.id);
+  const feedRegion =
+    Number.isFinite(userId) && userId > 0
+      ? normalizeTrendingRegionStored(getUserSettings(db, userId).trendingRegion)
+      : "US";
+  const [detail, feedVideosRaw] = await Promise.all([
+    fetchVideoDetail(db, input, overrides, { bypassDetailCache: true }),
+    isAuthed
+      ? getRecommendations(db, userId, {
+          page: 1,
+          pageSize: 28,
+          region: feedRegion,
+          overrides,
+        }).then((rec) => rec.videos)
+      : fetchTrendingVideos(
+          db,
+          { region: feedRegion, limit: 28 },
+          overrides,
+        ).then((r) => r.videos),
+  ]);
+  const feedVideos = feedVideosRaw
+    .filter((video) => video.videoId !== videoId)
+    .slice(0, 20);
   const rawPlayback = buildWatchPlayback(detail);
   const onlyDashOrUnsupported =
     rawPlayback.kind === "none" && rawPlayback.onlyDashOrUnsupported;
@@ -74,9 +110,16 @@ export default async function WatchPage({ params }: WatchPageProps) {
     requestHost,
     detail,
   );
+  const chapters = parseChaptersFromDescription(
+    detail.description,
+    detail.durationSeconds,
+  );
+  const publishedLabel = formatPublishedLabel(detail.publishedText);
+  const viewsLabel = formatViews(detail.viewCount);
+  const channelLabel = detail.channelName ?? "Unknown channel";
 
   return (
-    <main className="ot-page grid min-h-0 gap-8 lg:grid-cols-[2fr_1fr]">
+    <main className="ot-page grid min-h-0 gap-8 lg:grid-cols-[minmax(0,3fr)_minmax(320px,1fr)]">
       <section className="min-w-0 space-y-5">
         {videoPayload ? (
           <VideoPlayer
@@ -84,6 +127,8 @@ export default async function WatchPage({ params }: WatchPageProps) {
             payload={videoPayload}
             title={detail.title}
             poster={poster}
+            chapters={chapters}
+            startAtSeconds={startAtSeconds}
           />
         ) : (
           <div className="rounded-xl border bg-[hsl(var(--muted))] p-6 text-sm text-[hsl(var(--muted-foreground))]">
@@ -100,25 +145,57 @@ export default async function WatchPage({ params }: WatchPageProps) {
           </div>
         )}
 
-        <div className="space-y-2">
+        <div className="space-y-3">
           <h1 className="text-2xl font-extrabold tracking-tight text-[hsl(var(--foreground))] sm:text-3xl">
             {detail.title}
           </h1>
           <p className="text-sm text-[hsl(var(--muted-foreground))]">
-            {detail.channelId ? (
-              <Link
-                href={`/channel/${encodeURIComponent(detail.channelId)}`}
-                className="font-medium text-[hsl(var(--foreground))] hover:underline"
-              >
-                {detail.channelName ?? "Channel"}
-              </Link>
-            ) : (
-              (detail.channelName ?? "Unknown channel")
-            )}
-            {detail.viewCount
-              ? ` · ${detail.viewCount.toLocaleString()} views`
-              : ""}
+            {viewsLabel ?? null}
+            {viewsLabel && publishedLabel ? " · " : null}
+            {publishedLabel ?? null}
           </p>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[hsl(var(--border))] pb-4">
+            <div className="flex min-w-0 items-center gap-3">
+              {detail.channelId ? (
+                <Link href={`/channel/${encodeURIComponent(detail.channelId)}`}>
+                  <ChannelAvatarCircle
+                    imageUrl={detail.channelAvatarUrl}
+                    label={channelLabel}
+                    size="md"
+                  />
+                </Link>
+              ) : (
+                <ChannelAvatarCircle
+                  imageUrl={detail.channelAvatarUrl}
+                  label={channelLabel}
+                  size="md"
+                />
+              )}
+              <div className="min-w-0">
+                {detail.channelId ? (
+                  <Link
+                    href={`/channel/${encodeURIComponent(detail.channelId)}`}
+                    className="line-clamp-1 text-sm font-semibold text-[hsl(var(--foreground))] hover:underline"
+                  >
+                    {channelLabel}
+                  </Link>
+                ) : (
+                  <p className="line-clamp-1 text-sm font-semibold text-[hsl(var(--foreground))]">
+                    {channelLabel}
+                  </p>
+                )}
+                <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                  {publishedLabel ? `Published ${publishedLabel}` : "Channel"}
+                </p>
+              </div>
+            </div>
+            {detail.channelId ? (
+              <ChannelSubscribeButton
+                channelId={detail.channelId}
+                isAuthed={isAuthed}
+              />
+            ) : null}
+          </div>
           {detail.warning ? (
             <p className="text-sm text-amber-600">{detail.warning}</p>
           ) : null}
@@ -139,32 +216,30 @@ export default async function WatchPage({ params }: WatchPageProps) {
 
         <div className="space-y-3">
           <h2 className="text-lg font-medium">Description</h2>
-          <p className="whitespace-pre-wrap text-sm text-[hsl(var(--muted-foreground))]">
-            {detail.description ?? "No description available."}
-          </p>
+          <WatchDescription videoId={detail.videoId} description={detail.description} />
         </div>
-
-        <Button variant="outline" asChild>
-          <Link href="/search">Back to search</Link>
-        </Button>
       </section>
 
       <aside className="min-w-0 space-y-4">
-        <h2 className="text-lg font-bold tracking-tight">Related videos</h2>
-        {related.warning ? (
-          <p className="text-sm text-amber-600">{related.warning}</p>
-        ) : null}
+        <h2 className="text-lg font-bold tracking-tight">From your feed</h2>
         <ul className="space-y-3">
-          {related.videos.map((video) => (
+          {feedVideos.map((video) => (
             <li key={video.videoId}>
               <VideoCardCompact
                 href={`/watch/${encodeURIComponent(video.videoId)}`}
                 title={video.title}
                 channelName={video.channelName}
+                channelHref={
+                  video.channelId
+                    ? `/channel/${encodeURIComponent(video.channelId)}`
+                    : undefined
+                }
                 channelAvatarUrl={video.channelAvatarUrl}
                 thumbnailUrl={video.thumbnailUrl}
                 durationSeconds={video.durationSeconds}
                 publishedText={video.publishedText}
+                showChannelAvatar={false}
+                size="large"
               />
             </li>
           ))}

@@ -25,3 +25,37 @@ export function initialsFromLabel(label: string): string {
   const b = parts[1]?.[0] ?? "";
   return `${a}${b}`.toUpperCase();
 }
+
+/**
+ * Upstream instances occasionally return malformed or protocol-relative avatar URLs.
+ * Normalize to a usable browser URL when possible.
+ */
+export function resolveChannelAvatarUrl(imageUrl?: string): string | undefined {
+  if (!imageUrl) return undefined;
+  const raw = imageUrl.trim();
+  if (!raw) return undefined;
+  if (raw.startsWith("data:image/")) return raw;
+  if (raw.startsWith("//")) {
+    if (typeof window === "undefined") return `https:${raw}`;
+    return `${window.location.protocol}${raw}`;
+  }
+  if (raw.startsWith("/")) return raw;
+  if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+    return undefined;
+  }
+  try {
+    return new URL(raw).toString();
+  } catch {
+    // Repair forms like "http://:3210/path" by reusing current hostname.
+    const broken = raw.match(/^https?:\/\/:(\d+)(\/.*)?$/i);
+    if (!broken) return undefined;
+    const protocol =
+      raw.toLowerCase().startsWith("https://") || typeof window === "undefined"
+        ? "https:"
+        : window.location.protocol;
+    const port = broken[1] ?? "";
+    const path = broken[2] ?? "/";
+    const host = typeof window === "undefined" ? "127.0.0.1" : window.location.hostname;
+    return `${protocol}//${host}:${port}${path}`;
+  }
+}

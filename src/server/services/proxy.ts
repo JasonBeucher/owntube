@@ -20,6 +20,7 @@ import {
   relatedVideosResultSchema,
   type SearchVideosInput,
   type SearchVideosResult,
+  type UnifiedChannel,
   searchVideosResultSchema,
   type TrendingInput,
   type TrendingVideosResult,
@@ -67,7 +68,36 @@ function resolveInvidiousAbsoluteMediaUrl(
   if (typeof pathOrUrl !== "string") return undefined;
   const t = pathOrUrl.trim();
   if (!t) return undefined;
-  if (t.startsWith("http://") || t.startsWith("https://")) return t;
+  if (t.startsWith("http://") || t.startsWith("https://")) {
+    try {
+      // Keep valid absolute URLs as-is.
+      return new URL(t).toString();
+    } catch {
+      // Some Invidious builds emit malformed host-less absolute URLs:
+      // `http://:3210/path`. Recover by reusing base hostname/protocol.
+      const broken = t.match(/^https?:\/\/:(\d+)(\/.*)?$/i);
+      if (broken) {
+        try {
+          const base = new URL(baseUrl);
+          const u = new URL(base.toString());
+          u.port = broken[1] ?? "";
+          const rawTail = broken[2] ?? "/";
+          const qIdx = rawTail.indexOf("?");
+          if (qIdx >= 0) {
+            u.pathname = rawTail.slice(0, qIdx) || "/";
+            u.search = rawTail.slice(qIdx);
+          } else {
+            u.pathname = rawTail;
+            u.search = "";
+          }
+          return u.toString();
+        } catch {
+          return undefined;
+        }
+      }
+      return undefined;
+    }
+  }
   if (t.startsWith("//")) return `https:${t}`;
   const base = normalizeBaseUrl(baseUrl);
   if (t.startsWith("/")) return `${base}${t}`;
@@ -147,9 +177,9 @@ function detailCacheKey(input: VideoDetailInput): string {
 
 function relatedCacheKey(input: VideoDetailInput): string {
   const h = createHash("sha256")
-    .update(JSON.stringify({ v: 2, kind: "related", videoId: input.videoId }))
+    .update(JSON.stringify({ v: 3, kind: "related", videoId: input.videoId }))
     .digest("hex");
-  return `related:v2:${h}`;
+  return `related:v3:${h}`;
 }
 
 function trendingCacheKey(input: TrendingInput): string {
@@ -343,6 +373,41 @@ function mapPipedItem(raw: unknown, pipedBase = ""): UnifiedVideo | null {
   return parsed.data;
 }
 
+function mapPipedChannelItem(
+  raw: unknown,
+  pipedBase = "",
+): UnifiedChannel | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const t = typeof o.type === "string" ? o.type.toLowerCase() : "";
+  if (t !== "channel") return null;
+  const channelId =
+    typeof o.uploaderUrl === "string"
+      ? channelIdFromPath(o.uploaderUrl)
+      : typeof o.id === "string"
+        ? o.id
+        : undefined;
+  const name =
+    typeof o.name === "string"
+      ? o.name
+      : typeof o.uploaderName === "string"
+        ? o.uploaderName
+        : typeof o.uploader === "string"
+          ? o.uploader
+          : "";
+  if (!channelId || !name) return null;
+  return {
+    channelId,
+    name,
+    avatarUrl: pickPipedUploaderAvatar(o, pipedBase),
+    subscriberCount:
+      typeof o.subscriberCount === "number" && Number.isFinite(o.subscriberCount)
+        ? Math.floor(o.subscriberCount)
+        : undefined,
+    description: typeof o.description === "string" ? o.description : undefined,
+  };
+}
+
 function resolveInvidiousThumbnail(
   thumbs: unknown,
   baseUrl: string,
@@ -430,6 +495,38 @@ function mapInvidiousItem(raw: unknown, baseUrl = ""): UnifiedVideo | null {
   });
   if (!parsed.success) return null;
   return parsed.data;
+}
+
+function mapInvidiousChannelItem(
+  raw: unknown,
+  baseUrl = "",
+): UnifiedChannel | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  if (o.type !== "channel") return null;
+  const channelId =
+    typeof o.authorId === "string"
+      ? o.authorId
+      : typeof o.channelId === "string"
+        ? o.channelId
+        : "";
+  const name =
+    typeof o.author === "string"
+      ? o.author
+      : typeof o.name === "string"
+        ? o.name
+        : "";
+  if (!channelId || !name) return null;
+  return {
+    channelId,
+    name,
+    avatarUrl: resolveInvidiousThumbnail(o.authorThumbnails, baseUrl),
+    subscriberCount:
+      typeof o.subCount === "number" && Number.isFinite(o.subCount)
+        ? Math.floor(o.subCount)
+        : undefined,
+    description: typeof o.description === "string" ? o.description : undefined,
+  };
 }
 
 type FetchJsonOptions = {
@@ -612,15 +709,22 @@ function parsePipedSearch(
   data: unknown,
   limit: number,
   pipedBase: string,
-): { videos: UnifiedVideo[]; continuation: string | null } {
+): {
+  videos: UnifiedVideo[];
+  channels: UnifiedChannel[];
+  continuation: string | null;
+} {
   const items = pipedRootItems(data);
   const videos: UnifiedVideo[] = [];
+  const channels: UnifiedChannel[] = [];
   for (const item of items) {
     const v = mapPipedItem(item, pipedBase);
     if (v) videos.push(v);
+    const c = mapPipedChannelItem(item, pipedBase);
+    if (c) channels.push(c);
     if (videos.length >= limit) break;
   }
-  return { videos, continuation: pipedNextPage(data) };
+  return { videos, channels, continuation: pipedNextPage(data) };
 }
 
 function parseInvidiousSearch(
@@ -628,16 +732,23 @@ function parseInvidiousSearch(
   limit: number,
   page: number,
   baseUrl: string,
-): { videos: UnifiedVideo[]; continuation: string | null } {
-  if (!Array.isArray(data)) return { videos: [], continuation: null };
+): {
+  videos: UnifiedVideo[];
+  channels: UnifiedChannel[];
+  continuation: string | null;
+} {
+  if (!Array.isArray(data)) return { videos: [], channels: [], continuation: null };
   const videos: UnifiedVideo[] = [];
+  const channels: UnifiedChannel[] = [];
   for (const item of data) {
     const v = mapInvidiousItem(item, baseUrl);
     if (v) videos.push(v);
+    const c = mapInvidiousChannelItem(item, baseUrl);
+    if (c) channels.push(c);
     if (videos.length >= limit) break;
   }
   const continuation = videos.length >= limit ? String(page + 1) : null;
-  return { videos, continuation };
+  return { videos, channels, continuation };
 }
 
 export async function searchVideos(
@@ -665,9 +776,14 @@ export async function searchVideos(
         url: url.replace(parsedInput.q, "[q]"),
       });
       const json = await fetchJson(url);
-      const { videos, continuation } = parsePipedSearch(json, limit, pipedBase);
+      const { videos, channels, continuation } = parsePipedSearch(
+        json,
+        limit,
+        pipedBase,
+      );
       const result: SearchVideosResult = {
         videos,
+        channels,
         continuation,
         sourceUsed: "piped",
       };
@@ -703,7 +819,7 @@ export async function searchVideos(
         url: url.replace(parsedInput.q, "[q]"),
       });
       const json = await fetchJson(url);
-      const { videos, continuation } = parseInvidiousSearch(
+      const { videos, channels, continuation } = parseInvidiousSearch(
         json,
         limit,
         page,
@@ -711,6 +827,7 @@ export async function searchVideos(
       );
       const result: SearchVideosResult = {
         videos,
+        channels,
         continuation,
         sourceUsed: "invidious",
       };
@@ -1289,6 +1406,55 @@ async function relatedVideosFromSameUploader(
   }
 }
 
+function tokenizeRelatedText(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter((part) => part.length >= 3);
+}
+
+function scoreRelatedCandidate(seed: VideoDetail, candidate: UnifiedVideo): number {
+  const seedTokens = new Set(tokenizeRelatedText(seed.title));
+  const candidateTokens = new Set(tokenizeRelatedText(candidate.title));
+  let overlap = 0;
+  for (const t of candidateTokens) {
+    if (seedTokens.has(t)) overlap += 1;
+  }
+  const candidateTokenCount = candidateTokens.size || 1;
+  const overlapRatio = overlap / candidateTokenCount;
+  const sameChannel =
+    Boolean(seed.channelId) && Boolean(candidate.channelId)
+      ? seed.channelId === candidate.channelId
+      : false;
+  const viewScore = Math.log10(Math.max(1, Math.floor(candidate.viewCount ?? 0)));
+  return (
+    overlapRatio * 100 +
+    overlap * 8 +
+    (sameChannel ? -6 : 6) +
+    Math.min(6, viewScore)
+  );
+}
+
+function mergeAndRankRelatedVideos(
+  seed: VideoDetail,
+  inputVideoId: string,
+  limit: number,
+  preferred: UnifiedVideo[],
+  extras: UnifiedVideo[],
+): UnifiedVideo[] {
+  const unique = new Map<string, UnifiedVideo>();
+  for (const item of [...preferred, ...extras]) {
+    if (item.videoId === inputVideoId) continue;
+    if (unique.has(item.videoId)) continue;
+    unique.set(item.videoId, item);
+  }
+  const ranked = [...unique.values()];
+  ranked.sort((a, b) => scoreRelatedCandidate(seed, b) - scoreRelatedCandidate(seed, a));
+  return ranked.slice(0, limit);
+}
+
 export async function fetchRelatedVideos(
   db: AppDb,
   input: VideoDetailInput,
@@ -1351,19 +1517,53 @@ export async function fetchRelatedVideos(
     );
   }
 
-  if (resolved.videos.length === 0) {
-    const fallback = await relatedVideosFromSameUploader(
-      db,
-      input,
+  let warning = resolved.warning;
+  const seed = await fetchVideoDetail(db, input, overrides).catch(() => null);
+  if (seed) {
+    const current = resolved.videos.filter((v) => v.videoId !== input.videoId);
+    const crossChannelCount = current.filter(
+      (v) => v.channelId && seed.channelId && v.channelId !== seed.channelId,
+    ).length;
+    const needsBroaderPool =
+      current.length < limit || (current.length > 0 && crossChannelCount === 0);
+    let extraPool: UnifiedVideo[] = [];
+    if (needsBroaderPool) {
+      const fromSearch = await searchVideos(
+        db,
+        { q: seed.title, limit: Math.min(50, Math.max(limit * 3, 24)) },
+        overrides,
+      ).catch(() => null);
+      if (fromSearch?.videos?.length) {
+        extraPool = fromSearch.videos;
+        warning =
+          warning ??
+          "Related feed lacked diversity; mixed in title-matched videos from search.";
+      }
+    }
+    const ranked = mergeAndRankRelatedVideos(
+      seed,
+      input.videoId,
       limit,
-      overrides,
+      current,
+      extraPool,
     );
+    if (ranked.length > 0) {
+      resolved = {
+        ...resolved,
+        videos: ranked,
+        warning,
+      };
+    }
+  }
+
+  if (resolved.videos.length === 0) {
+    const fallback = await relatedVideosFromSameUploader(db, input, limit, overrides);
     if (fallback && fallback.length > 0) {
       resolved = {
         videos: fallback,
         sourceUsed: resolved.sourceUsed,
         warning:
-          "This instance returned no related list; showing recent uploads from the same channel.",
+          "No related list available; showing recent uploads from the same channel.",
       };
     }
   }

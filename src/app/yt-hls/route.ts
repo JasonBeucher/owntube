@@ -39,12 +39,28 @@ export async function GET(request: Request) {
   const forwardHeaders = headersForYoutubeUpstream({
     range: request.headers.get("range"),
     accept: request.headers.get("accept"),
+    targetHostname: target.hostname,
   });
 
-  const r = await fetch(target.toString(), {
+  let r = await fetch(target.toString(), {
     headers: forwardHeaders,
     cache: "no-store",
   });
+
+  // Some googlevideo segment URLs return 403 when Origin/Referer are forwarded.
+  // Retry once with relaxed headers before giving up.
+  if (!r.ok && r.status === 403) {
+    const relaxedHeaders = headersForYoutubeUpstream({
+      range: request.headers.get("range"),
+      accept: request.headers.get("accept"),
+      targetHostname: target.hostname,
+      relaxed: true,
+    });
+    r = await fetch(target.toString(), {
+      headers: relaxedHeaders,
+      cache: "no-store",
+    });
+  }
 
   const appOrigin = getAppOriginFromRequestHeaders({
     get: (n) => request.headers.get(n),

@@ -17,6 +17,22 @@ function mimeVideoTypeButAudioOnlyCodecs(mime: string | undefined): boolean {
 }
 
 /**
+ * `video/*` rows with codecs that contain a video codec but no audio codec:
+ * these are effectively video-only and can produce silent playback if treated
+ * as combined muxed sources.
+ */
+function mimeVideoTypeWithoutAudioCodecs(mime: string | undefined): boolean {
+  if (!mime?.trim()) return false;
+  if (!mime.toLowerCase().startsWith("video/")) return false;
+  const m = mime.match(/codecs\s*=\s*"([^"]+)"/i);
+  if (!m?.[1]) return false;
+  const c = m[1].toLowerCase().replace(/\s/g, "");
+  const hasVideo = /avc1|avc3|av01|vp8|vp9|vp09|hev1|hvc1|dvh1|theora/.test(c);
+  const hasAudio = /mp4a|opus|vorbis|flac|ac-3|ec-3/.test(c);
+  return hasVideo && !hasAudio;
+}
+
+/**
  * Rows we can offer as a &lt;video&gt; source: drop pure audio MIME, height 0,
  * and mis-tagged video/* streams whose codecs are audio-only.
  */
@@ -97,9 +113,7 @@ function formatBitrateFpsParts(meta?: {
     fps > 0 &&
     fps <= 240
   ) {
-    parts.push(
-      Number.isInteger(fps) ? `${fps} fps` : `${fps.toFixed(2)} fps`,
-    );
+    parts.push(Number.isInteger(fps) ? `${fps} fps` : `${fps.toFixed(2)} fps`);
   }
   return parts.join(" · ");
 }
@@ -143,12 +157,18 @@ function omitRankBitrate(v: PlayableWithRank): PlayableVariant {
 
 /** First label segment (e.g. 1440p60, 720p) — one menu row per distinct quality label. */
 function qualityMenuRungKey(v: PlayableVariant): string {
-  const head = v.label.split(/\s*·\s*/)[0]?.trim().toLowerCase() ?? "";
+  const head =
+    v.label
+      .split(/\s*·\s*/)[0]
+      ?.trim()
+      .toLowerCase() ?? "";
   return head || v.label.trim().toLowerCase();
 }
 
 /** One variant per rung (e.g. one 1440p60); `sorted` must prefer higher bitrate first within a rung. */
-function dedupeOneVariantPerQualityRung(sorted: PlayableWithRank[]): PlayableVariant[] {
+function dedupeOneVariantPerQualityRung(
+  sorted: PlayableWithRank[],
+): PlayableVariant[] {
   const seen = new Set<string>();
   const out: PlayableVariant[] = [];
   for (const v of sorted) {
@@ -163,7 +183,9 @@ function dedupeOneVariantPerQualityRung(sorted: PlayableWithRank[]): PlayableVar
 /**
  * Dedupes identical URLs; disambiguates duplicate labels (rare after per-rung dedupe).
  */
-function buildFullQualitySelectorList(sorted: PlayableVariant[]): PlayableVariant[] {
+function buildFullQualitySelectorList(
+  sorted: PlayableVariant[],
+): PlayableVariant[] {
   if (sorted.length === 0) return [];
   const seen = new Set<string>();
   const out: PlayableVariant[] = [];
@@ -202,10 +224,10 @@ function buildAllSplitVariants(
   const audios = (detail.audioSources ?? []).filter((a) => a.url);
   if (videoCandidates.length === 0 || audios.length === 0) return [];
 
-  const audiosScored = audios
-    .map((a, i) => ({ a, i, score: scoreQualityLabel(a.quality, i) }))
-    .sort((a, b) => b.score - a.score);
-  const audioOptions = audiosScored.map(({ a: src, i }) => {
+  // Preserve upstream order: the first audio (lowest index) is most often the
+  // original language. Sorting by quality score scrambles that signal when
+  // upstream metadata is sparse (different bitrates per language, etc.).
+  const audioOptions = audios.map((src, i) => {
     const name = languageFirstAudioMenuLabel({
       displayName: src.audioTrackDisplayName,
       language: src.language,
@@ -222,7 +244,7 @@ function buildAllSplitVariants(
       label: extra ? `${name} · ${extra}` : name,
     };
   });
-  const defaultAudio = audiosScored[0]?.a;
+  const defaultAudio = audios[0];
   if (!defaultAudio?.url) return [];
 
   videoCandidates.sort(
@@ -266,6 +288,7 @@ function collectMuxed(
       if (!keep(s)) return null;
       const mt = s.mimeType?.toLowerCase() ?? "";
       if (mt.startsWith("audio/") && !mt.includes("video")) return null;
+      if (mimeVideoTypeWithoutAudioCodecs(s.mimeType)) return null;
       return {
         s,
         i,
@@ -287,34 +310,25 @@ function scorePlayable(v: PlayableVariant): number {
   return scoreQualityLabel(v.label, 0);
 }
 
-/** Resolution rung used to hide muxed when an adaptive split exists at that rung. */
-function splitResolutionScores(splits: SplitVariant[]): Set<number> {
-  const out = new Set<number>();
-  for (const s of splits) {
-    out.add(scorePlayable(s));
-  }
-  return out;
-}
-
 /**
  * Combined MP4 (often legacy itag 18) can be audio-only / black while split at
  * the same label height works. If any split exists for that rung, drop muxed.
  */
 function dropMuxedWhenSplitMatchesResolution(
   muxed: MuxedVariant[],
-  splits: SplitVariant[],
+  _splits: SplitVariant[],
 ): MuxedVariant[] {
-  if (splits.length === 0) return muxed;
-  const splitScores = splitResolutionScores(splits);
-  return muxed.filter((m) => !splitScores.has(scorePlayable(m)));
+  // Keep muxed variants available; some instances provide split tracks that
+  // fail with 403 while muxed keeps audio reliable.
+  return muxed;
 }
 
 function sortPlayable(a: PlayableWithRank, b: PlayableWithRank): number {
   const sa = scorePlayable(a);
   const sb = scorePlayable(b);
   if (sb !== sa) return sb - sa;
-  // Same resolution: prefer split (muxed can be broken at that height).
-  if (a.t !== b.t) return a.t === "split" ? -1 : 1;
+  // Same resolution: prefer muxed first for audio reliability.
+  if (a.t !== b.t) return a.t === "muxed" ? -1 : 1;
   const bra = rankBitrateOf(a);
   const brb = rankBitrateOf(b);
   if (brb !== bra) return brb - bra;

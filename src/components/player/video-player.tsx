@@ -24,6 +24,7 @@ import {
   writePlayerVolumeOnly,
 } from "@/lib/player-media-prefs";
 import { cn } from "@/lib/utils";
+import { chapterIndexAt, type VideoChapter } from "@/lib/video-chapters";
 
 type ProxiedVariant =
   | { t: "muxed"; label: string; src: string }
@@ -43,12 +44,41 @@ type VideoPlayerProps = {
   payload: VideoPlayerPayload;
   title: string;
   poster?: string;
+  chapters?: VideoChapter[];
+  startAtSeconds?: number;
 };
+
+function shouldAutoRecoverPlaybackSource(src: string): boolean {
+  return (
+    src.includes("/yt-hls?url=") ||
+    src.includes("/invidious/api/manifest/hls") ||
+    src.includes("/invidious/api/v1/")
+  );
+}
+
+function tryOneShotPlaybackRecovery(recoveryKey: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const storageKey = `ot:playback-recover:${recoveryKey}`;
+    const now = Date.now();
+    const lastRaw = window.sessionStorage.getItem(storageKey);
+    const last = lastRaw ? Number.parseInt(lastRaw, 10) : 0;
+    // Avoid infinite refresh loops if upstream keeps failing.
+    if (Number.isFinite(last) && now - last < 2 * 60_000) return false;
+    window.sessionStorage.setItem(storageKey, String(now));
+    window.location.reload();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const;
 
 const PLAYER_FILL =
   "h-full w-full max-h-none max-w-none !rounded-none !border-0 !shadow-none !ring-0 [&_video]:h-full [&_video]:w-full [&_video]:object-contain" as const;
+
+const CHAPTER_GAP_PX = 3 as const;
 
 function formatClock(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -393,26 +423,79 @@ function useNativeAdapter(opts: {
     muted,
     playbackRate: v?.playbackRate ?? 1,
     play: () => {
+      // Start both elements in the same call stack so the user gesture also
+      // unlocks the companion <audio> on browsers that gate autoplay per element.
       void videoRef.current?.play().catch(() => {});
+      const a = audioRef.current;
+      if (a) {
+        try {
+          a.muted = muted;
+          a.volume = muted ? 0 : externalVolume;
+        } catch {}
+        void a.play().catch(() => {});
+      }
     },
-    pause: () => videoRef.current?.pause(),
+    pause: () => {
+      videoRef.current?.pause();
+      audioRef.current?.pause();
+    },
     togglePaused: () => {
       const el = videoRef.current;
       if (!el) return;
-      if (el.paused) void el.play().catch(() => {});
-      else el.pause();
+      const a = audioRef.current;
+      if (el.paused) {
+        void el.play().catch(() => {});
+        if (a) {
+          try {
+            a.muted = muted;
+            a.volume = muted ? 0 : externalVolume;
+          } catch {}
+          void a.play().catch(() => {});
+        }
+      } else {
+        el.pause();
+        a?.pause();
+      }
     },
     seek: (t) => {
-      if (videoRef.current) videoRef.current.currentTime = t;
+      const v = videoRef.current;
+      const a = audioRef.current;
+      if (v) v.currentTime = t;
+      if (a) {
+        try {
+          a.currentTime = t;
+        } catch {}
+      }
     },
     // Keep preview visual-only for native playback; final seek happens on release.
     seekPreview: () => {},
     setVolume: (n) => {
       setExternalVolume(n);
-      if (n > 0 && muted) setMuted(false);
-      if (n === 0) setMuted(true);
+      const nextMuted = n === 0 ? true : n > 0 && muted ? false : muted;
+      if (nextMuted !== muted) setMuted(nextMuted);
+      // Apply immediately so the change happens within the user gesture; the
+      // effect above also keeps things in sync as React state catches up.
+      const a = audioRef.current;
+      if (a) {
+        a.muted = nextMuted;
+        a.volume = nextMuted ? 0 : n;
+        if (!nextMuted && videoRef.current && !videoRef.current.paused) {
+          void a.play().catch(() => {});
+        }
+      }
     },
-    toggleMuted: () => setMuted((m) => !m),
+    toggleMuted: () => {
+      const next = !muted;
+      setMuted(next);
+      const a = audioRef.current;
+      if (a) {
+        a.muted = next;
+        a.volume = next ? 0 : externalVolume;
+        if (!next && videoRef.current && !videoRef.current.paused) {
+          void a.play().catch(() => {});
+        }
+      }
+    },
     setPlaybackRate: (r) => {
       const v = videoRef.current;
       const a = audioRef.current;
@@ -442,7 +525,7 @@ type QualityModel =
   | {
       kind: "progressive";
       index: number;
-      setIndex: (i: number) => void;
+      setIndex: (i: number, seekSeconds?: number) => void;
       items: { label: string }[];
     }
   | {
@@ -836,12 +919,14 @@ function ProgressBar({
   current,
   duration,
   buffered,
+  chapters,
   onScrub,
   onScrubEnd,
 }: {
   current: number;
   duration: number;
   buffered: number;
+  chapters: VideoChapter[];
   onScrub: (t: number) => void;
   onScrubEnd: (t: number) => void;
 }) {
@@ -912,6 +997,21 @@ function ProgressBar({
     };
   }, [dragging, onScrub, onScrubEnd, tFromPointer]);
 
+  const hasChapters = chapters.length > 1;
+  const hoverChapterIndex = useMemo(
+    () =>
+      hover !== null && hasChapters ? chapterIndexAt(chapters, hover) : -1,
+    [chapters, hover, hasChapters],
+  );
+  const hoverChapterTitle =
+    hoverChapterIndex >= 0
+      ? (chapters[hoverChapterIndex]?.title ?? null)
+      : null;
+  const hoverPositionRatio =
+    hover !== null && duration > 0
+      ? Math.min(1, Math.max(0, hover / duration))
+      : 0.5;
+
   return (
     <div
       ref={trackRef}
@@ -928,26 +1028,103 @@ function ProgressBar({
       aria-valuenow={Math.min(current, Math.max(duration, 1))}
       tabIndex={0}
     >
-      <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-white/25 transition-[height] group-hover/scrub:h-1.5" />
-      <div
-        className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full"
-        aria-hidden
-      >
-        <div
-          className="absolute inset-y-0 left-0 rounded-full bg-white/40"
-          style={{ width: `${pct(buffered)}%` }}
-        />
-        <div
-          className="absolute inset-y-0 left-0 rounded-full bg-[hsl(var(--primary))]"
-          style={{ width: `${pct(current)}%` }}
-        />
-      </div>
+      {hasChapters ? (
+        chapters.map((chapter, index) => {
+          const next = chapters[index + 1];
+          const chapterEnd = next?.startSeconds ?? duration;
+          const widthSeconds = Math.max(0, chapterEnd - chapter.startSeconds);
+          const left = pct(chapter.startSeconds);
+          const width = pct(widthSeconds);
+          const isLast = index === chapters.length - 1;
+          const isHovered = hoverChapterIndex === index;
+          const localBuffered =
+            widthSeconds > 0
+              ? Math.min(
+                  100,
+                  Math.max(
+                    0,
+                    ((buffered - chapter.startSeconds) / widthSeconds) * 100,
+                  ),
+                )
+              : 0;
+          const localProgress =
+            widthSeconds > 0
+              ? Math.min(
+                  100,
+                  Math.max(
+                    0,
+                    ((current - chapter.startSeconds) / widthSeconds) * 100,
+                  ),
+                )
+              : 0;
+          return (
+            <div
+              key={`chapter-${chapter.startSeconds}-${index}`}
+              className={cn(
+                "pointer-events-none absolute top-1/2 -translate-y-1/2 overflow-hidden rounded-full bg-white/25 transition-[height] duration-150",
+                isHovered ? "h-2" : "h-1 group-hover/scrub:h-1.5",
+              )}
+              style={{
+                left: `${left}%`,
+                width: isLast
+                  ? `${width}%`
+                  : `calc(${width}% - ${CHAPTER_GAP_PX}px)`,
+              }}
+              aria-hidden
+            >
+              <div
+                className="absolute inset-y-0 left-0 bg-white/40"
+                style={{ width: `${localBuffered}%` }}
+              />
+              <div
+                className="absolute inset-y-0 left-0 bg-[hsl(var(--primary))]"
+                style={{ width: `${localProgress}%` }}
+              />
+            </div>
+          );
+        })
+      ) : (
+        <>
+          <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-white/25 transition-[height] group-hover/scrub:h-1.5" />
+          <div
+            className="pointer-events-none absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full"
+            aria-hidden
+          >
+            <div
+              className="absolute inset-y-0 left-0 rounded-full bg-white/40"
+              style={{ width: `${pct(buffered)}%` }}
+            />
+            <div
+              className="absolute inset-y-0 left-0 rounded-full bg-[hsl(var(--primary))]"
+              style={{ width: `${pct(current)}%` }}
+            />
+          </div>
+        </>
+      )}
       {hover !== null ? (
         <div
-          className="pointer-events-none absolute -top-1 -translate-x-1/2 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white shadow sm:-top-7"
+          className="pointer-events-none absolute -top-2 z-10 -translate-x-1/2 sm:-top-9"
           style={{ left: `${pct(hover)}%` }}
         >
-          {formatClock(hover)}
+          <div
+            className={cn(
+              "flex flex-col items-center gap-0.5",
+              hoverPositionRatio < 0.15
+                ? "translate-x-[calc(50%-1.25rem)] items-start"
+                : hoverPositionRatio > 0.85
+                  ? "-translate-x-[calc(50%-1.25rem)] items-end"
+                  : "",
+            )}
+          >
+            {hoverChapterTitle ? (
+              <span className="max-w-[16rem] truncate rounded-md bg-black/85 px-2 py-0.5 text-[11px] font-medium text-white shadow ring-1 ring-white/10">
+                {hoverChapterTitle}
+              </span>
+            ) : null}
+            <span className="rounded bg-black/80 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-white shadow">
+              {formatClock(hover)}
+            </span>
+          </div>
         </div>
       ) : null}
       <div
@@ -965,6 +1142,7 @@ type ChromeProps = {
   adapter: PlayerAdapter;
   shellRef: React.RefObject<HTMLDivElement | null>;
   title: string;
+  chapters: VideoChapter[];
   quality: QualityModel;
   audio: AudioModel;
   centerHint?: { kind: "play" | "pause"; tick: number } | null;
@@ -974,10 +1152,12 @@ function PlayerChrome({
   adapter,
   shellRef,
   title,
+  chapters,
   quality,
   audio,
   centerHint,
 }: ChromeProps) {
+  const [hydrated, setHydrated] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { active: fsActive, toggle: toggleFs } = useFullscreenShell(shellRef);
   const { visible, ping, hide } = useIdleVisible(adapter.paused, settingsOpen);
@@ -985,6 +1165,10 @@ function PlayerChrome({
   const [showVolPanel, setShowVolPanel] = useState(false);
   /** True while long-press 2× is active: hides chrome, shows a small ×2 hint. */
   const [hold2xUi, setHold2xUi] = useState(false);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   const hold2xTimerRef = useRef<number | null>(null);
   const holding2xRef = useRef(false);
@@ -1130,8 +1314,13 @@ function PlayerChrome({
   };
 
   const level = adapter.muted ? 0 : adapter.volume;
+  const levelUi = hydrated ? level : 1;
   const seekPos = scrub ?? adapter.currentTime;
   const chromeShown = visible && !hold2xUi;
+  const currentChapterTitle =
+    chapters.length > 1
+      ? (chapters[chapterIndexAt(chapters, seekPos)]?.title ?? null)
+      : null;
 
   return (
     <>
@@ -1231,6 +1420,7 @@ function PlayerChrome({
             current={seekPos}
             duration={adapter.duration}
             buffered={adapter.bufferedEnd}
+            chapters={chapters}
             onScrub={(t) => {
               setScrub(t);
               adapter.seekPreview(t);
@@ -1268,9 +1458,9 @@ function PlayerChrome({
                 className="flex h-9 w-9 items-center justify-center rounded-full transition hover:bg-white/15"
                 aria-label={adapter.muted ? "Unmute" : "Mute"}
               >
-                {level < 0.01 ? (
+                {levelUi < 0.01 ? (
                   <MuteIcon className="h-6 w-6" />
-                ) : level < 0.5 ? (
+                ) : levelUi < 0.5 ? (
                   <VolLowIcon className="h-6 w-6" />
                 ) : (
                   <VolHighIcon className="h-6 w-6" />
@@ -1287,7 +1477,7 @@ function PlayerChrome({
                   min={0}
                   max={1}
                   step={0.01}
-                  value={level}
+                  value={levelUi}
                   onChange={(e) =>
                     adapter.setVolume(Number(e.currentTarget.value))
                   }
@@ -1297,8 +1487,23 @@ function PlayerChrome({
               </div>
             </fieldset>
 
-            <span className="ml-1 font-mono text-xs tabular-nums text-white/90">
-              {formatClock(seekPos)} / {formatClock(adapter.duration)}
+            <span className="ml-1 flex min-w-0 items-center gap-2 text-xs text-white/90">
+              <span className="font-mono tabular-nums">
+                {formatClock(seekPos)} / {formatClock(adapter.duration)}
+              </span>
+              {currentChapterTitle ? (
+                <>
+                  <span aria-hidden className="text-white/40">
+                    ·
+                  </span>
+                  <span
+                    className="line-clamp-1 max-w-[14rem] truncate text-white/90 sm:max-w-[22rem]"
+                    title={currentChapterTitle}
+                  >
+                    {currentChapterTitle}
+                  </span>
+                </>
+              ) : null}
             </span>
 
             <span className="ml-auto" />
@@ -1383,6 +1588,9 @@ function VidstackBlock({
   qualityIndex,
   setQualityIndex,
   progressive,
+  chapters,
+  startAtSeconds,
+  onPlaybackError,
 }: {
   src: string;
   title: string;
@@ -1390,18 +1598,44 @@ function VidstackBlock({
   reactKey: string;
   payload: VideoPlayerPayload;
   qualityIndex: number;
-  setQualityIndex: (i: number) => void;
+  setQualityIndex: (i: number, seekSeconds?: number) => void;
   progressive: ProxiedVariant[] | null;
+  chapters: VideoChapter[];
+  startAtSeconds?: number;
+  onPlaybackError?: () => void;
 }) {
   const playerRef = useRef<MediaPlayerElement | null>(null);
   const shellRef = useRef<HTMLDivElement>(null);
   const adapter = useVidstackAdapter(playerRef);
+  const remote = useMediaRemote(
+    playerRef as React.RefObject<EventTarget | null>,
+  );
   const persistStore = useMediaStore(
     playerRef as React.RefObject<EventTarget | null>,
   );
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hlsQuality = useHlsQualityModel(playerRef);
   const hlsAudio = useHlsAudioModel(playerRef);
+  const initialSeekAppliedRef = useRef(false);
+  const initialMediaPrefsAppliedRef = useRef(false);
+
+  useEffect(() => {
+    initialSeekAppliedRef.current = false;
+  }, [reactKey, startAtSeconds]);
+
+  useEffect(() => {
+    if (initialSeekAppliedRef.current) return;
+    if (!adapter.canPlay) return;
+    if (
+      typeof startAtSeconds !== "number" ||
+      !Number.isFinite(startAtSeconds) ||
+      startAtSeconds < 0
+    ) {
+      return;
+    }
+    adapter.seek(startAtSeconds);
+    initialSeekAppliedRef.current = true;
+  }, [adapter, startAtSeconds]);
 
   useEffect(() => {
     if (!persistStore.canPlay) return;
@@ -1418,14 +1652,32 @@ function VidstackBlock({
     };
   }, [persistStore.volume, persistStore.muted, persistStore.canPlay]);
 
-  const mediaPrefs = readPlayerMediaPrefs();
+  // Keep SSR/client first render deterministic; hydrate prefs after mount.
+  const [mediaPrefs, setMediaPrefs] = useState({ volume: 1, muted: false });
+  useEffect(() => {
+    setMediaPrefs(readPlayerMediaPrefs());
+  }, []);
+
+  useEffect(() => {
+    if (initialMediaPrefsAppliedRef.current) return;
+    if (!persistStore.canPlay) return;
+    const vol =
+      typeof mediaPrefs.volume === "number" &&
+      Number.isFinite(mediaPrefs.volume)
+        ? Math.min(1, Math.max(0, mediaPrefs.volume))
+        : 1;
+    remote.changeVolume(vol);
+    if (mediaPrefs.muted || vol <= 0.001) remote.mute();
+    else remote.unmute();
+    initialMediaPrefsAppliedRef.current = true;
+  }, [mediaPrefs, persistStore.canPlay, remote]);
 
   const quality: QualityModel =
     payload.mode === "progressive" && progressive && progressive.length > 0
       ? {
           kind: "progressive",
           index: qualityIndex,
-          setIndex: setQualityIndex,
+          setIndex: (i) => setQualityIndex(i, adapter.currentTime),
           items: progressive.map((p) => ({ label: p.label })),
         }
       : hlsQuality;
@@ -1442,12 +1694,11 @@ function VidstackBlock({
         title={title}
         src={sourceFromUrl(src)}
         poster={poster}
-        volume={mediaPrefs.volume}
-        muted={mediaPrefs.muted}
         controls={false}
         load="eager"
         preferNativeHLS={false}
         playsInline
+        onError={onPlaybackError}
         className={cn("absolute inset-0", PLAYER_FILL)}
       >
         <MediaOutlet />
@@ -1456,6 +1707,7 @@ function VidstackBlock({
         adapter={adapter}
         shellRef={shellRef}
         title={title}
+        chapters={chapters}
         quality={quality}
         audio={hlsAudio}
       />
@@ -1476,6 +1728,9 @@ function SplitBlock({
   progressive,
   qualityIndex,
   setQualityIndex,
+  chapters,
+  startAtSeconds,
+  onPlaybackError,
 }: {
   video: string;
   audioTracks: { label: string; src: string }[];
@@ -1486,16 +1741,24 @@ function SplitBlock({
   payload: VideoPlayerPayload;
   progressive: ProxiedVariant[] | null;
   qualityIndex: number;
-  setQualityIndex: (i: number) => void;
+  setQualityIndex: (i: number, seekSeconds?: number) => void;
+  chapters: VideoChapter[];
+  startAtSeconds?: number;
+  onPlaybackError?: () => void;
 }) {
   const shellRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [splitAudioIdx, setSplitAudioIdx] = useState(0);
+  const initialSeekAppliedRef = useRef(false);
 
   useEffect(() => {
     setSplitAudioIdx(0);
   }, [video, audioTracks]);
+
+  useEffect(() => {
+    initialSeekAppliedRef.current = false;
+  }, [video, startAtSeconds]);
 
   const activeAudioSrc =
     audioTracks[splitAudioIdx]?.src ?? audioTracks[0]?.src ?? "";
@@ -1505,49 +1768,95 @@ function SplitBlock({
     const a = audioRef.current;
     if (!v || !a) return;
 
-    /** Keep decode position aligned; do not start audio until video can actually play (see `playing`). */
+    const SYNC_TOLERANCE = 0.35;
+    const HARD_DRIFT = 1.0;
+    const align = (force = false) => {
+      const drift = Math.abs(a.currentTime - v.currentTime);
+      if (force || drift > SYNC_TOLERANCE) {
+        a.currentTime = v.currentTime;
+      }
+    };
+
+    // Resume audio when video resumes after a real pause; only re-align time
+    // if drift is large to avoid resetting (and "pop"-ing) on every event.
+    let waitingPauseTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearWaitingPauseTimer = () => {
+      if (!waitingPauseTimer) return;
+      clearTimeout(waitingPauseTimer);
+      waitingPauseTimer = null;
+    };
     const onPlay = () => {
-      a.currentTime = v.currentTime;
+      clearWaitingPauseTimer();
+      align(false);
+      if (a.paused) void a.play().catch(() => {});
     };
-    const pauseAudio = () => a.pause();
-    const alignAudio = () => {
-      a.currentTime = v.currentTime;
-    };
-    /** Audio was starting on `play` while video still buffered → audio ran ahead; only start with real playback. */
     const onPlaying = () => {
-      a.currentTime = v.currentTime;
-      void a.play().catch(() => {});
+      clearWaitingPauseTimer();
+      align(false);
+      if (a.paused) void a.play().catch(() => {});
+    };
+    // Pause audio only when the user pauses or the video ends.
+    const pauseAudio = () => {
+      clearWaitingPauseTimer();
+      a.pause();
     };
     const onWaiting = () => {
-      a.pause();
+      clearWaitingPauseTimer();
+      waitingPauseTimer = setTimeout(() => {
+        if (!v.paused) a.pause();
+      }, 220);
+    };
+    const alignSeek = () => {
+      clearWaitingPauseTimer();
+      align(true);
     };
     const onRate = () => {
       a.playbackRate = v.playbackRate;
     };
     const onTime = () => {
-      if (Math.abs(a.currentTime - v.currentTime) > 0.35) {
+      // Hard correct only on big drift to keep audio smooth otherwise.
+      if (Math.abs(a.currentTime - v.currentTime) > HARD_DRIFT) {
         a.currentTime = v.currentTime;
+      }
+    };
+    const onAudioCanPlay = () => {
+      if (!v.paused && a.paused) {
+        align(false);
+        void a.play().catch(() => {});
       }
     };
     v.addEventListener("play", onPlay);
     v.addEventListener("playing", onPlaying);
-    v.addEventListener("waiting", onWaiting);
     v.addEventListener("pause", pauseAudio);
-    v.addEventListener("seeking", alignAudio);
-    v.addEventListener("seeked", alignAudio);
+    v.addEventListener("waiting", onWaiting);
+    v.addEventListener("seeking", alignSeek);
+    v.addEventListener("seeked", alignSeek);
     v.addEventListener("ratechange", onRate);
     v.addEventListener("timeupdate", onTime);
     v.addEventListener("ended", pauseAudio);
+    a.addEventListener("canplay", onAudioCanPlay);
+    a.addEventListener("loadedmetadata", onAudioCanPlay);
+
+    // Track switch: the new `<audio>` element is paused; resume it inline so
+    // the user does not have to toggle play/pause to hear the new track.
+    a.playbackRate = v.playbackRate;
+    if (!v.paused) {
+      align(true);
+      void a.play().catch(() => {});
+    }
     return () => {
       v.removeEventListener("play", onPlay);
       v.removeEventListener("playing", onPlaying);
-      v.removeEventListener("waiting", onWaiting);
       v.removeEventListener("pause", pauseAudio);
-      v.removeEventListener("seeking", alignAudio);
-      v.removeEventListener("seeked", alignAudio);
+      v.removeEventListener("waiting", onWaiting);
+      v.removeEventListener("seeking", alignSeek);
+      v.removeEventListener("seeked", alignSeek);
       v.removeEventListener("ratechange", onRate);
       v.removeEventListener("timeupdate", onTime);
       v.removeEventListener("ended", pauseAudio);
+      a.removeEventListener("canplay", onAudioCanPlay);
+      a.removeEventListener("loadedmetadata", onAudioCanPlay);
+      clearWaitingPauseTimer();
     };
     // Re-bind when companion audio element is remounted (track change).
   }, [activeAudioSrc, video]);
@@ -1559,12 +1868,43 @@ function SplitBlock({
     setExternalVolume: setVolume,
   });
 
+  useEffect(() => {
+    if (initialSeekAppliedRef.current) return;
+    if (!adapter.canPlay) return;
+    if (
+      typeof startAtSeconds !== "number" ||
+      !Number.isFinite(startAtSeconds) ||
+      startAtSeconds < 0
+    ) {
+      return;
+    }
+    adapter.seek(startAtSeconds);
+    initialSeekAppliedRef.current = true;
+  }, [adapter, startAtSeconds]);
+
+  useEffect(() => {
+    const a = audioRef.current;
+    if (a) a.volume = adapter.muted ? 0 : volume;
+  }, [activeAudioSrc, adapter.muted, volume]);
+
+  // Resume companion audio when the audio source is swapped mid-playback (track
+  // change). The main play/pause sync is handled by the listeners above; we
+  // only need to prime the new <audio> here so users don't lose sound.
+  useEffect(() => {
+    const v = videoRef.current;
+    const a = audioRef.current;
+    if (!v || !a) return;
+    if (v.paused) return;
+    a.currentTime = v.currentTime;
+    void a.play().catch(() => {});
+  }, [activeAudioSrc]);
+
   const quality: QualityModel =
     payload.mode === "progressive" && progressive && progressive.length > 0
       ? {
           kind: "progressive",
           index: qualityIndex,
-          setIndex: setQualityIndex,
+          setIndex: (i) => setQualityIndex(i, adapter.currentTime),
           items: progressive.map((p) => ({ label: p.label })),
         }
       : { kind: "none" };
@@ -1591,6 +1931,7 @@ function SplitBlock({
         playsInline
         muted
         preload="metadata"
+        onError={onPlaybackError}
         className="absolute inset-0 h-full w-full object-contain"
       />
       {/* biome-ignore lint/a11y/useMediaCaption: companion audio, no VTT */}
@@ -1599,12 +1940,14 @@ function SplitBlock({
         key={activeAudioSrc}
         src={activeAudioSrc}
         preload="auto"
+        onError={onPlaybackError}
         className="hidden"
       />
       <PlayerChrome
         adapter={adapter}
         shellRef={shellRef}
         title={title}
+        chapters={chapters}
         quality={quality}
         audio={audioModel}
       />
@@ -1614,15 +1957,37 @@ function SplitBlock({
 
 /* ------------------------------- Top level ------------------------------- */
 
-export function VideoPlayer({ payload, title, poster }: VideoPlayerProps) {
+export function VideoPlayer({
+  payload,
+  title,
+  poster,
+  chapters = [],
+  startAtSeconds,
+}: VideoPlayerProps) {
   const progressive = payload.mode === "progressive" ? payload.variants : null;
   const [qualityIndex, setQualityIndex] = useState(0);
+  const [resumeSeekSeconds, setResumeSeekSeconds] = useState<
+    number | undefined
+  >(undefined);
   const [splitVolume, setSplitVolume] = useState(
     () => readPlayerMediaPrefs().volume,
   );
 
+  const setQualityWithResume = useCallback(
+    (i: number, seekSeconds?: number) => {
+      const nextSeek =
+        typeof seekSeconds === "number" && Number.isFinite(seekSeconds)
+          ? Math.max(0, seekSeconds)
+          : undefined;
+      setResumeSeekSeconds(nextSeek);
+      setQualityIndex(i);
+    },
+    [],
+  );
+
   useEffect(() => {
     setQualityIndex(0);
+    setResumeSeekSeconds(undefined);
   }, [payload]);
 
   useEffect(() => {
@@ -1637,6 +2002,27 @@ export function VideoPlayer({ payload, title, poster }: VideoPlayerProps) {
     if (v) return { kind: "variant" as const, v };
     return { kind: "empty" as const };
   }, [payload, progressive, qualityIndex]);
+
+  const effectiveStartAt =
+    typeof resumeSeekSeconds === "number" ? resumeSeekSeconds : startAtSeconds;
+
+  const handleHlsPlaybackError = useCallback(() => {
+    const candidates: string[] = [];
+    if (active.kind === "hls" && active.src) {
+      candidates.push(active.src);
+    } else if (active.kind === "variant") {
+      if (active.v.t === "muxed") {
+        candidates.push(active.v.src);
+      } else {
+        candidates.push(active.v.video, active.v.audio);
+      }
+    }
+    for (const src of candidates) {
+      if (!src || !shouldAutoRecoverPlaybackSource(src)) continue;
+      const recoveryKey = src.split("?")[0] ?? src;
+      if (tryOneShotPlaybackRecovery(recoveryKey)) return;
+    }
+  }, [active]);
 
   if (active.kind === "empty") return null;
   if (active.kind === "hls" && !active.src) return null;
@@ -1653,7 +2039,10 @@ export function VideoPlayer({ payload, title, poster }: VideoPlayerProps) {
           payload={payload}
           progressive={progressive}
           qualityIndex={qualityIndex}
-          setQualityIndex={setQualityIndex}
+          setQualityIndex={setQualityWithResume}
+          chapters={chapters}
+          startAtSeconds={effectiveStartAt}
+          onPlaybackError={handleHlsPlaybackError}
         />
       ) : null}
       {active.kind === "variant" && active.v.t === "muxed" ? (
@@ -1665,7 +2054,9 @@ export function VideoPlayer({ payload, title, poster }: VideoPlayerProps) {
           payload={payload}
           progressive={progressive}
           qualityIndex={qualityIndex}
-          setQualityIndex={setQualityIndex}
+          setQualityIndex={setQualityWithResume}
+          chapters={chapters}
+          startAtSeconds={effectiveStartAt}
         />
       ) : null}
       {active.kind === "variant" && active.v.t === "split" ? (
@@ -1680,7 +2071,10 @@ export function VideoPlayer({ payload, title, poster }: VideoPlayerProps) {
           payload={payload}
           progressive={progressive}
           qualityIndex={qualityIndex}
-          setQualityIndex={setQualityIndex}
+          setQualityIndex={setQualityWithResume}
+          chapters={chapters}
+          startAtSeconds={effectiveStartAt}
+          onPlaybackError={handleHlsPlaybackError}
         />
       ) : null}
     </div>

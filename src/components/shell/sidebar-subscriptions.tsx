@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { gradientForChannelId, initialsFromLabel } from "@/lib/channel-avatar";
+import { ChannelAvatarCircle } from "@/components/videos/channel-avatar-circle";
 import { trpc } from "@/trpc/react";
 
 type Props = {
@@ -44,24 +44,11 @@ export function SidebarSubscriptions({ enabled }: Props) {
               href={`/channel/${encodeURIComponent(s.channelId)}`}
               className="group relative flex w-full items-center gap-3.5 rounded-[10px] px-3 py-2.5 text-left text-sm font-medium text-[hsl(var(--foreground))] transition hover:bg-[hsl(var(--accent))]"
             >
-              {s.avatarUrl ? (
-                <span className="relative h-[26px] w-[26px] shrink-0 overflow-hidden rounded-full bg-[hsl(var(--muted))]">
-                  {/* biome-ignore lint/performance/noImgElement: remote channel avatar */}
-                  <img
-                    src={s.avatarUrl}
-                    alt=""
-                    className="h-full w-full object-cover"
-                    loading="lazy"
-                  />
-                </span>
-              ) : (
-                <span
-                  className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
-                  style={{ background: gradientForChannelId(s.channelId) }}
-                >
-                  {initialsFromLabel(label)}
-                </span>
-              )}
+              <ChannelAvatarCircle
+                imageUrl={s.avatarUrl ?? undefined}
+                label={label}
+                size="sm"
+              />
               <span className="min-w-0 flex-1 truncate">{label}</span>
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full bg-[hsl(var(--primary))] opacity-0 shadow-[0_0_6px_hsl(var(--primary)_/_0.6)] group-hover:opacity-100"

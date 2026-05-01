@@ -94,21 +94,7 @@ body {
   color: hsl(var(--foreground));
 }
 
-/*
- * QHD / large desktop: default 16px root makes dense UIs feel small.
- * Slightly larger rem base scales typography, spacing, and controls together.
- */
-@media (min-width: 1536px) {
-  html {
-    font-size: 106.25%;
-  }
-}
-
-@media (min-width: 1920px) {
-  html {
-    font-size: 112.5%;
-  }
-}
+/* UI scaling is handled dynamically by UiScale component */
 
 @keyframes ot-fade-slide {
   from {
@@ -137,7 +123,7 @@ body {
 .ot-page {
   margin-left: auto;
   margin-right: auto;
-  max-width: 1600px;
+  max-width: 2200px;
   padding: 28px 32px 80px;
 }
 

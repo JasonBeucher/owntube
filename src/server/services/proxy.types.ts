@@ -25,8 +25,19 @@ export const unifiedVideoSchema = z.object({
 
 export type UnifiedVideo = z.infer<typeof unifiedVideoSchema>;
 
+export const unifiedChannelSchema = z.object({
+  channelId: z.string(),
+  name: z.string(),
+  avatarUrl: z.string().optional(),
+  subscriberCount: z.number().optional(),
+  description: z.string().optional(),
+});
+
+export type UnifiedChannel = z.infer<typeof unifiedChannelSchema>;
+
 export const searchVideosResultSchema = z.object({
   videos: z.array(unifiedVideoSchema),
+  channels: z.array(unifiedChannelSchema).optional(),
   continuation: z.string().nullable().optional(),
   sourceUsed: z.enum(["piped", "invidious", "cache"]),
   warning: z.string().optional(),
@@ -35,6 +46,7 @@ export const searchVideosResultSchema = z.object({
 
 export const cachedSearchPayloadSchema = z.object({
   videos: z.array(unifiedVideoSchema),
+  channels: z.array(unifiedChannelSchema).optional(),
   continuation: z.string().nullable().optional(),
   sourceUsed: z.enum(["piped", "invidious"]),
 });

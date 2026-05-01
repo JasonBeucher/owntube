@@ -225,7 +225,7 @@ describe("buildWatchPlayback", () => {
     }
   });
 
-  it("drops muxed when a split exists for the same resolution (e.g. 360p black mux)", () => {
+  it("prefers muxed at the same resolution as a split (audio reliability)", () => {
     const w = buildWatchPlayback(
       base({
         videoSources: [
@@ -264,10 +264,12 @@ describe("buildWatchPlayback", () => {
     );
     expect(w.kind).toBe("progressive");
     if (w.kind === "progressive") {
-      expect(w.variants.every((v) => v.t === "split")).toBe(true);
+      // Muxed is kept and ranks first at the same resolution rung.
       expect(w.variants).toHaveLength(1);
-      if (w.variants[0]?.t === "split") {
-        expect(w.variants[0].videoUrl).toBe("https://g.example/360v-hi.mp4");
+      if (w.variants[0]?.t === "muxed") {
+        expect(w.variants[0].url).toBe("https://g.example/360mux.mp4");
+      } else {
+        throw new Error("Expected muxed variant to be selected over split");
       }
     }
   });
