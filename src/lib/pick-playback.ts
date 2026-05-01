@@ -310,17 +310,32 @@ function scorePlayable(v: PlayableVariant): number {
   return scoreQualityLabel(v.label, 0);
 }
 
+function parseRungHeight(label: string): number | null {
+  const m = label.match(/(\d{2,4})\s*p/i);
+  if (!m?.[1]) return null;
+  const n = Number.parseInt(m[1], 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
  * Combined MP4 (often legacy itag 18) can be audio-only / black while split at
  * the same label height works. If any split exists for that rung, drop muxed.
  */
 function dropMuxedWhenSplitMatchesResolution(
   muxed: MuxedVariant[],
-  _splits: SplitVariant[],
+  splits: SplitVariant[],
 ): MuxedVariant[] {
-  // Keep muxed variants available; some instances provide split tracks that
-  // fail with 403 while muxed keeps audio reliable.
-  return muxed;
+  if (muxed.length === 0 || splits.length === 0) return muxed;
+  const splitRungs = new Set<string>();
+  for (const s of splits) splitRungs.add(qualityMenuRungKey(s));
+  // Prefer split for low rungs where muxed often maps to legacy/broken assets.
+  return muxed.filter((m) => {
+    const rung = qualityMenuRungKey(m);
+    if (!splitRungs.has(rung)) return true;
+    const h = parseRungHeight(rung);
+    if (h === null) return true;
+    return h > 480;
+  });
 }
 
 function sortPlayable(a: PlayableWithRank, b: PlayableWithRank): number {
