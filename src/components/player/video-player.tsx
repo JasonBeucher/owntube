@@ -1825,6 +1825,16 @@ function SplitBlock({
         void a.play().catch(() => {});
       }
     };
+    const onTabResume = () => {
+      // Some browsers suspend the hidden tab's <audio> element and it may not
+      // resume automatically when returning. Re-prime split audio on resume.
+      if (document.visibilityState === "hidden") return;
+      if (v.paused) return;
+      clearWaitingPauseTimer();
+      a.playbackRate = v.playbackRate;
+      align(true);
+      void a.play().catch(() => {});
+    };
     v.addEventListener("play", onPlay);
     v.addEventListener("playing", onPlaying);
     v.addEventListener("pause", pauseAudio);
@@ -1836,6 +1846,9 @@ function SplitBlock({
     v.addEventListener("ended", pauseAudio);
     a.addEventListener("canplay", onAudioCanPlay);
     a.addEventListener("loadedmetadata", onAudioCanPlay);
+    document.addEventListener("visibilitychange", onTabResume);
+    window.addEventListener("focus", onTabResume);
+    window.addEventListener("pageshow", onTabResume);
 
     // Track switch: the new `<audio>` element is paused; resume it inline so
     // the user does not have to toggle play/pause to hear the new track.
@@ -1856,6 +1869,9 @@ function SplitBlock({
       v.removeEventListener("ended", pauseAudio);
       a.removeEventListener("canplay", onAudioCanPlay);
       a.removeEventListener("loadedmetadata", onAudioCanPlay);
+      document.removeEventListener("visibilitychange", onTabResume);
+      window.removeEventListener("focus", onTabResume);
+      window.removeEventListener("pageshow", onTabResume);
       clearWaitingPauseTimer();
     };
     // Re-bind when companion audio element is remounted (track change).

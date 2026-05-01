@@ -79,6 +79,17 @@ export const subscriptions = sqliteTable(
   ],
 );
 
+export const channelMeta = sqliteTable(
+  "channel_meta",
+  {
+    channelId: text("channel_id").primaryKey(),
+    channelName: text("channel_name").notNull(),
+    avatarUrl: text("avatar_url"),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [index("channel_meta_updated_idx").on(t.updatedAt)],
+);
+
 export const playlists = sqliteTable(
   "playlists",
   {

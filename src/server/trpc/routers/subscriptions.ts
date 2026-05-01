@@ -7,7 +7,7 @@ import {
 } from "@/lib/published-sort-key";
 import { normalizeYoutubeChannelId } from "@/lib/youtube-channel-id";
 import type { AppDb } from "@/server/db/client";
-import { subscriptions } from "@/server/db/schema";
+import { channelMeta, subscriptions } from "@/server/db/schema";
 import { RateLimitExceededError } from "@/server/errors/rate-limit-exceeded";
 import { UpstreamUnavailableError } from "@/server/errors/upstream-unavailable";
 import {
@@ -49,14 +49,30 @@ async function fetchSubscriptionChannelDetail(
   subscribedAt: number,
   overrides: ProxySourceOverrides | undefined,
 ): Promise<SubscriptionChannelDetail> {
+  const cachedMeta = readChannelMetaRow(db, channelId);
+  const fallback = {
+    channelId,
+    subscribedAt,
+    channelName: cachedMeta?.channelName ?? channelId,
+    avatarUrl: cachedMeta?.avatarUrl ?? null,
+  };
+
   for (let attempt = 0; attempt < LIST_DETAILED_RETRIES; attempt++) {
     try {
       const page = await fetchChannelPage(db, { channelId }, overrides);
+      const resolvedName =
+        page.name?.trim() || cachedMeta?.channelName || channelId;
+      const resolvedAvatar = page.avatarUrl ?? cachedMeta?.avatarUrl ?? null;
+      upsertChannelMetaRow(db, {
+        channelId,
+        channelName: resolvedName,
+        avatarUrl: resolvedAvatar,
+      });
       return {
         channelId,
         subscribedAt,
-        channelName: page.name ?? channelId,
-        avatarUrl: page.avatarUrl ?? null,
+        channelName: resolvedName,
+        avatarUrl: resolvedAvatar,
       };
     } catch (e) {
       if (
@@ -70,22 +86,12 @@ async function fetchSubscriptionChannelDetail(
         e instanceof UpstreamUnavailableError ||
         e instanceof RateLimitExceededError
       ) {
-        return {
-          channelId,
-          subscribedAt,
-          channelName: channelId,
-          avatarUrl: null,
-        };
+        return fallback;
       }
       throw e;
     }
   }
-  return {
-    channelId,
-    subscribedAt,
-    channelName: channelId,
-    avatarUrl: null,
-  };
+  return fallback;
 }
 
 async function listDetailedChannelRows(
@@ -114,6 +120,74 @@ async function listDetailedChannelRows(
 
 function nowUnix(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+function isMissingChannelMetaTableError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return msg.toLowerCase().includes("no such table: channel_meta");
+}
+
+function readChannelMetaRow(
+  db: AppDb,
+  channelId: string,
+): {
+  channelName: string;
+  avatarUrl: string | null;
+} | null {
+  let row:
+    | {
+        channelName: string;
+        avatarUrl: string | null;
+      }
+    | undefined;
+  try {
+    row = db
+      .select({
+        channelName: channelMeta.channelName,
+        avatarUrl: channelMeta.avatarUrl,
+      })
+      .from(channelMeta)
+      .where(eq(channelMeta.channelId, channelId))
+      .limit(1)
+      .all()[0];
+  } catch (error) {
+    if (isMissingChannelMetaTableError(error)) return null;
+    throw error;
+  }
+  if (!row?.channelName) return null;
+  return {
+    channelName: row.channelName,
+    avatarUrl: row.avatarUrl ?? null,
+  };
+}
+
+function upsertChannelMetaRow(
+  db: AppDb,
+  input: { channelId: string; channelName: string; avatarUrl: string | null },
+): void {
+  const channelName = input.channelName.trim();
+  if (!channelName) return;
+  try {
+    db.insert(channelMeta)
+      .values({
+        channelId: input.channelId,
+        channelName,
+        avatarUrl: input.avatarUrl,
+        updatedAt: nowUnix(),
+      })
+      .onConflictDoUpdate({
+        target: channelMeta.channelId,
+        set: {
+          channelName,
+          avatarUrl: input.avatarUrl,
+          updatedAt: nowUnix(),
+        },
+      })
+      .run();
+  } catch (error) {
+    if (isMissingChannelMetaTableError(error)) return;
+    throw error;
+  }
 }
 
 async function fetchChannelVideosUpToPages(

@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { logger } from "@/lib/logger";
 import type { AppDb } from "@/server/db/client";
-import { subscriptions, watchHistory } from "@/server/db/schema";
+import { channelMeta, subscriptions, watchHistory } from "@/server/db/schema";
 import { useColdStartBlend } from "@/server/recommendation/coldstart";
 import {
   appendRecommendationDebugLog,
@@ -112,6 +112,63 @@ function clipTitle(title: string, max = 80): string {
   return `${t.slice(0, max - 1)}…`;
 }
 
+function isMissingChannelMetaTableError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return msg.toLowerCase().includes("no such table: channel_meta");
+}
+
+function withChannelAvatarFallback(
+  video: UnifiedVideo,
+  channelAvatarUrl: string | undefined,
+): UnifiedVideo {
+  if (video.channelAvatarUrl || !channelAvatarUrl) return video;
+  return { ...video, channelAvatarUrl };
+}
+
+function enrichVideosWithStoredChannelAvatars(
+  db: AppDb,
+  videos: UnifiedVideo[],
+): UnifiedVideo[] {
+  const channelIds = Array.from(
+    new Set(
+      videos
+        .map((v) => v.channelId)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  );
+  if (channelIds.length === 0) return videos;
+
+  let rows: { channelId: string; avatarUrl: string | null }[];
+  try {
+    rows = db
+      .select({
+        channelId: channelMeta.channelId,
+        avatarUrl: channelMeta.avatarUrl,
+      })
+      .from(channelMeta)
+      .all();
+  } catch (error) {
+    if (isMissingChannelMetaTableError(error)) return videos;
+    throw error;
+  }
+  if (rows.length === 0) return videos;
+
+  const byChannelId = new Map<string, string>();
+  for (const row of rows) {
+    if (!row.channelId || !row.avatarUrl) continue;
+    byChannelId.set(row.channelId, row.avatarUrl);
+  }
+  if (byChannelId.size === 0) return videos;
+
+  return videos.map((v) => {
+    if (v.channelAvatarUrl) return v;
+    if (!v.channelId) return v;
+    const avatar = byChannelId.get(v.channelId);
+    if (!avatar) return v;
+    return { ...v, channelAvatarUrl: avatar };
+  });
+}
+
 export function clearRecommendationCachesForUser(userId?: number): void {
   if (typeof userId !== "number" || !Number.isFinite(userId) || userId <= 0) {
     recommendationPoolCache.clear();
@@ -153,263 +210,286 @@ export async function getRecommendations(
   }
 
   const task = (async (): Promise<RecommendationPoolCacheEntry> => {
-  const watchedRows = db
-    .select({ videoId: watchHistory.videoId })
-    .from(watchHistory)
-    .where(and(eq(watchHistory.userId, userId), eq(watchHistory.isDeleted, 0)))
-    .limit(10_000)
-    .all();
-  const watchedEver = new Set(watchedRows.map((r) => r.videoId));
-
-  const signals = collectUserSignals(db, userId);
-  const region = opts.region ?? "US";
-  const coldStart = useColdStartBlend(signals.totalWatches);
-
-  const taggedCandidates: TaggedVideo[] = [];
-  const recentCoverageByChannel = new Map<string, number>();
-
-  const canBuildFromHistory =
-    signals.totalWatches >= MIN_WATCH_ROWS_FOR_HISTORY_POOL &&
-    signals.channelsOrderedByRecentWatch.length > 0;
-
-  if (canBuildFromHistory) {
-    const historyChannels = signals.channelsOrderedByRecentWatch.slice(
-      0,
-      MAX_HISTORY_CHANNEL_FETCHES,
-    );
-    for (let i = 0; i < historyChannels.length; i += CHANNEL_FETCH_CONCURRENCY) {
-      const batch = historyChannels.slice(i, i + CHANNEL_FETCH_CONCURRENCY);
-      const settled = await Promise.allSettled(
-        batch.map(async (channelId) => {
-          const ch = await fetchChannelPage(db, { channelId }, opts.overrides);
-          return {
-            channelId,
-            page: ch.videos.slice(0, VIDEOS_PER_HISTORY_CHANNEL),
-          };
-        }),
-      );
-      for (const item of settled) {
-        if (item.status !== "fulfilled") continue;
-        const { channelId, page } = item.value;
-        for (const v of page) {
-          taggedCandidates.push({
-            video: v,
-            source: `history_channel:${channelId}`,
-          });
-        }
-        const pageIds = page
-          .map((v) => v.videoId)
-          .filter((id) => id.length > 0);
-        if (pageIds.length > 0) {
-          let hit = 0;
-          for (const id of pageIds) {
-            if (signals.watchedVideoIds.has(id)) hit += 1;
-          }
-          recentCoverageByChannel.set(channelId, hit / pageIds.length);
-        }
-      }
-    }
-  }
-
-  const dedupePreview = new Map<string, UnifiedVideo>();
-  for (const { video: v } of taggedCandidates) {
-    if (!dedupePreview.has(v.videoId)) dedupePreview.set(v.videoId, v);
-  }
-  const historyOnlyUnique = dedupePreview.size;
-
-  const needTrendingBlend =
-    coldStart ||
-    !canBuildFromHistory ||
-    historyOnlyUnique < MIN_UNIQUE_CANDIDATES_HISTORY_ONLY;
-
-  if (needTrendingBlend) {
-    const trending = await fetchTrendingVideos(
-      db,
-      { region, limit: 45 },
-      opts.overrides,
-    );
-    for (const v of trending.videos) {
-      taggedCandidates.push({ video: v, source: "trending" });
-    }
-  }
-
-  if (coldStart || !canBuildFromHistory) {
-    const subs = db
-      .select({
-        channelId: subscriptions.channelId,
-        subscribedAt: subscriptions.subscribedAt,
-      })
-      .from(subscriptions)
-      .where(eq(subscriptions.userId, userId))
-      .orderBy(desc(subscriptions.subscribedAt))
-      .limit(80)
+    const watchedRows = db
+      .select({ videoId: watchHistory.videoId })
+      .from(watchHistory)
+      .where(
+        and(eq(watchHistory.userId, userId), eq(watchHistory.isDeleted, 0)),
+      )
+      .limit(10_000)
       .all();
+    const watchedEver = new Set(watchedRows.map((r) => r.videoId));
 
-    const sortedSubs = [...subs].sort((a, b) => {
-      const wa = signals.channelWeights.get(a.channelId) ?? 0;
-      const wb = signals.channelWeights.get(b.channelId) ?? 0;
-      if (wb !== wa) return wb - wa;
-      return b.subscribedAt - a.subscribedAt;
-    });
+    const signals = collectUserSignals(db, userId);
+    const region = opts.region ?? "US";
+    const coldStart = useColdStartBlend(signals.totalWatches);
 
-    const subsWithWatchActivity = sortedSubs.filter((s) => {
-      const w = signals.channelWeights.get(s.channelId) ?? 0;
-      const d = signals.distinctWatchesByChannel.get(s.channelId) ?? 0;
-      return w > 0 || d > 0;
-    });
+    const taggedCandidates: TaggedVideo[] = [];
+    const recentCoverageByChannel = new Map<string, number>();
 
-    const maxChannelFetches = 24;
-    const channels = subsWithWatchActivity.slice(0, maxChannelFetches);
-    for (let i = 0; i < channels.length; i += CHANNEL_FETCH_CONCURRENCY) {
-      const batch = channels.slice(i, i + CHANNEL_FETCH_CONCURRENCY);
-      const settled = await Promise.allSettled(
-        batch.map(async (s) => {
-          const ch = await fetchChannelPage(
-            db,
-            { channelId: s.channelId },
-            opts.overrides,
-          );
-          return { channelId: s.channelId, page: ch.videos.slice(0, 10) };
-        }),
+    const canBuildFromHistory =
+      signals.totalWatches >= MIN_WATCH_ROWS_FOR_HISTORY_POOL &&
+      signals.channelsOrderedByRecentWatch.length > 0;
+
+    if (canBuildFromHistory) {
+      const historyChannels = signals.channelsOrderedByRecentWatch.slice(
+        0,
+        MAX_HISTORY_CHANNEL_FETCHES,
       );
-      for (const item of settled) {
-        if (item.status !== "fulfilled") continue;
-        const { channelId, page } = item.value;
-        for (const v of page) {
-          taggedCandidates.push({
-            video: v,
-            source: `subscription:${channelId}`,
-          });
-        }
-        const pageIds = page
-          .map((v) => v.videoId)
-          .filter((id) => id.length > 0);
-        if (pageIds.length > 0) {
-          let hit = 0;
-          for (const id of pageIds) {
-            if (signals.watchedVideoIds.has(id)) hit += 1;
+      for (
+        let i = 0;
+        i < historyChannels.length;
+        i += CHANNEL_FETCH_CONCURRENCY
+      ) {
+        const batch = historyChannels.slice(i, i + CHANNEL_FETCH_CONCURRENCY);
+        const settled = await Promise.allSettled(
+          batch.map(async (channelId) => {
+            const ch = await fetchChannelPage(
+              db,
+              { channelId },
+              opts.overrides,
+            );
+            return {
+              channelId,
+              channelAvatarUrl: ch.avatarUrl ?? undefined,
+              page: ch.videos.slice(0, VIDEOS_PER_HISTORY_CHANNEL),
+            };
+          }),
+        );
+        for (const item of settled) {
+          if (item.status !== "fulfilled") continue;
+          const { channelId, channelAvatarUrl, page } = item.value;
+          for (const v of page) {
+            taggedCandidates.push({
+              video: withChannelAvatarFallback(v, channelAvatarUrl),
+              source: `history_channel:${channelId}`,
+            });
           }
-          recentCoverageByChannel.set(channelId, hit / pageIds.length);
+          const pageIds = page
+            .map((v) => v.videoId)
+            .filter((id) => id.length > 0);
+          if (pageIds.length > 0) {
+            let hit = 0;
+            for (const id of pageIds) {
+              if (signals.watchedVideoIds.has(id)) hit += 1;
+            }
+            recentCoverageByChannel.set(channelId, hit / pageIds.length);
+          }
         }
       }
     }
-  }
 
-  const scoreContext: RecommendationScoreContext = {
-    recentCoverageByChannel,
-  };
-
-  const byId = new Map<string, UnifiedVideo>();
-  const sourceByVideoId = new Map<string, string>();
-  for (const { video: v, source } of taggedCandidates) {
-    if (!byId.has(v.videoId)) {
-      byId.set(v.videoId, v);
-      sourceByVideoId.set(v.videoId, source);
+    const dedupePreview = new Map<string, UnifiedVideo>();
+    for (const { video: v } of taggedCandidates) {
+      if (!dedupePreview.has(v.videoId)) dedupePreview.set(v.videoId, v);
     }
-  }
-  const unique = [...byId.values()].filter((v) => !watchedEver.has(v.videoId));
-  const corpusTitles = unique.map((v) => v.title).slice(0, 200);
-  const maxCh = Math.max(1, ...signals.channelWeights.values());
+    const historyOnlyUnique = dedupePreview.size;
 
-  let scored: ScoredVideo[] = unique.map((v) => {
-    const detail = scoreCandidateDetail(
-      v,
-      signals,
-      corpusTitles,
-      maxCh,
-      scoreContext,
-    );
-    return {
-      ...v,
-      rawScore: detail.score,
-      scoreBreakdown: detail.breakdown,
-      candidateSource: sourceByVideoId.get(v.videoId),
+    const needTrendingBlend =
+      coldStart ||
+      !canBuildFromHistory ||
+      historyOnlyUnique < MIN_UNIQUE_CANDIDATES_HISTORY_ONLY;
+
+    if (needTrendingBlend) {
+      const trending = await fetchTrendingVideos(
+        db,
+        { region, limit: 45 },
+        opts.overrides,
+      );
+      for (const v of trending.videos) {
+        taggedCandidates.push({ video: v, source: "trending" });
+      }
+    }
+
+    if (coldStart || !canBuildFromHistory) {
+      const subs = db
+        .select({
+          channelId: subscriptions.channelId,
+          subscribedAt: subscriptions.subscribedAt,
+        })
+        .from(subscriptions)
+        .where(eq(subscriptions.userId, userId))
+        .orderBy(desc(subscriptions.subscribedAt))
+        .limit(80)
+        .all();
+
+      const sortedSubs = [...subs].sort((a, b) => {
+        const wa = signals.channelWeights.get(a.channelId) ?? 0;
+        const wb = signals.channelWeights.get(b.channelId) ?? 0;
+        if (wb !== wa) return wb - wa;
+        return b.subscribedAt - a.subscribedAt;
+      });
+
+      const subsWithWatchActivity = sortedSubs.filter((s) => {
+        const w = signals.channelWeights.get(s.channelId) ?? 0;
+        const d = signals.distinctWatchesByChannel.get(s.channelId) ?? 0;
+        return w > 0 || d > 0;
+      });
+
+      const maxChannelFetches = 24;
+      const channels = subsWithWatchActivity.slice(0, maxChannelFetches);
+      for (let i = 0; i < channels.length; i += CHANNEL_FETCH_CONCURRENCY) {
+        const batch = channels.slice(i, i + CHANNEL_FETCH_CONCURRENCY);
+        const settled = await Promise.allSettled(
+          batch.map(async (s) => {
+            const ch = await fetchChannelPage(
+              db,
+              { channelId: s.channelId },
+              opts.overrides,
+            );
+            return {
+              channelId: s.channelId,
+              channelAvatarUrl: ch.avatarUrl ?? undefined,
+              page: ch.videos.slice(0, 10),
+            };
+          }),
+        );
+        for (const item of settled) {
+          if (item.status !== "fulfilled") continue;
+          const { channelId, channelAvatarUrl, page } = item.value;
+          for (const v of page) {
+            taggedCandidates.push({
+              video: withChannelAvatarFallback(v, channelAvatarUrl),
+              source: `subscription:${channelId}`,
+            });
+          }
+          const pageIds = page
+            .map((v) => v.videoId)
+            .filter((id) => id.length > 0);
+          if (pageIds.length > 0) {
+            let hit = 0;
+            for (const id of pageIds) {
+              if (signals.watchedVideoIds.has(id)) hit += 1;
+            }
+            recentCoverageByChannel.set(channelId, hit / pageIds.length);
+          }
+        }
+      }
+    }
+
+    const scoreContext: RecommendationScoreContext = {
+      recentCoverageByChannel,
     };
-  });
 
-  if (coldStart) {
-    scored = scored
-      .map((s) => {
-        const jitter = deterministicColdStartJitter(userId, s.videoId);
-        return {
-          ...s,
-          rawScore: s.rawScore + jitter,
-          coldStartJitter: jitter,
-        };
-      })
-      .sort((a, b) => b.rawScore - a.rawScore);
-  } else {
-    scored.sort((a, b) => b.rawScore - a.rawScore);
-  }
+    const byId = new Map<string, UnifiedVideo>();
+    const sourceByVideoId = new Map<string, string>();
+    for (const { video: v, source } of taggedCandidates) {
+      if (!byId.has(v.videoId)) {
+        byId.set(v.videoId, v);
+        sourceByVideoId.set(v.videoId, source);
+      }
+    }
+    const uniqueRaw = [...byId.values()].filter(
+      (v) => !watchedEver.has(v.videoId),
+    );
+    const unique = enrichVideosWithStoredChannelAvatars(db, uniqueRaw);
+    const corpusTitles = unique.map((v) => v.title).slice(0, 200);
+    const maxCh = Math.max(1, ...signals.channelWeights.values());
 
-  if (!coldStart) {
-    const filtered = scored.filter((row) =>
-      keepCandidateForPersonalizedFeed(
-        row,
+    let scored: ScoredVideo[] = unique.map((v) => {
+      const detail = scoreCandidateDetail(
+        v,
         signals,
         corpusTitles,
-        signals.historyChannelIds,
-      ),
-    );
-    if (filtered.length >= Math.max(opts.pageSize * 2, 16)) {
-      scored = filtered;
-    }
-  }
-
-  const poolSize = Math.min(240, scored.length);
-  const diversified = maximalMarginalRelevance(
-    scored.slice(0, poolSize),
-    poolSize,
-  );
-  const start = (opts.page - 1) * opts.pageSize;
-  const pageRows = diversified.slice(start, start + opts.pageSize);
-
-  if (recommendationDebugEnabled()) {
-    const interest = signals.historyChannelIds;
-    const items = pageRows.map((row, i) => {
-      const passedTopicGate =
-        coldStart ||
-        keepCandidateForPersonalizedFeed(row, signals, corpusTitles, interest);
+        maxCh,
+        scoreContext,
+      );
       return {
-        feedRank: start + i,
-        mmrPoolIndex: diversified.indexOf(row),
-        videoId: row.videoId,
-        title: clipTitle(row.title),
-        channelId: row.channelId ?? null,
-        candidateSource: row.candidateSource ?? null,
-        rankScore: row.preMmrRawScore ?? row.rawScore,
-        mmrNormalizedRelevance: row.rawScore,
-        coldStartJitter: row.coldStartJitter ?? 0,
-        passedTopicGate,
-        score: row.scoreBreakdown?.components ?? null,
-        inputs: row.scoreBreakdown?.inputs ?? null,
+        ...v,
+        rawScore: detail.score,
+        scoreBreakdown: detail.breakdown,
+        candidateSource: sourceByVideoId.get(v.videoId),
       };
     });
-    const payload = {
-      msg: "recommendation.debug_page",
-      userId,
-      page: opts.page,
-      pageSize: opts.pageSize,
-      region,
-      coldStart,
-      needTrendingBlend,
-      canBuildFromHistory,
-      historyOnlyUnique,
-      poolSize,
-      totalCandidatesUnique: unique.length,
-      totalWatches: signals.totalWatches,
-      logFile: recommendationDebugLogFilePath(),
-      items,
-    };
-    logger.info("recommendation.debug_page", payload);
-    await appendRecommendationDebugLog(payload);
-  }
 
-  return {
-    expiresAt: Date.now() + RECOMMENDATION_POOL_CACHE_TTL_MS,
-    diversified,
-    coldStart,
-  };
+    if (coldStart) {
+      scored = scored
+        .map((s) => {
+          const jitter = deterministicColdStartJitter(userId, s.videoId);
+          return {
+            ...s,
+            rawScore: s.rawScore + jitter,
+            coldStartJitter: jitter,
+          };
+        })
+        .sort((a, b) => b.rawScore - a.rawScore);
+    } else {
+      scored.sort((a, b) => b.rawScore - a.rawScore);
+    }
+
+    if (!coldStart) {
+      const filtered = scored.filter((row) =>
+        keepCandidateForPersonalizedFeed(
+          row,
+          signals,
+          corpusTitles,
+          signals.historyChannelIds,
+        ),
+      );
+      if (filtered.length >= Math.max(opts.pageSize * 2, 16)) {
+        scored = filtered;
+      }
+    }
+
+    const poolSize = Math.min(240, scored.length);
+    const diversified = maximalMarginalRelevance(
+      scored.slice(0, poolSize),
+      poolSize,
+    );
+    const start = (opts.page - 1) * opts.pageSize;
+    const pageRows = diversified.slice(start, start + opts.pageSize);
+
+    if (recommendationDebugEnabled()) {
+      const interest = signals.historyChannelIds;
+      const items = pageRows.map((row, i) => {
+        const passedTopicGate =
+          coldStart ||
+          keepCandidateForPersonalizedFeed(
+            row,
+            signals,
+            corpusTitles,
+            interest,
+          );
+        return {
+          feedRank: start + i,
+          mmrPoolIndex: diversified.indexOf(row),
+          videoId: row.videoId,
+          title: clipTitle(row.title),
+          channelId: row.channelId ?? null,
+          candidateSource: row.candidateSource ?? null,
+          rankScore: row.preMmrRawScore ?? row.rawScore,
+          mmrNormalizedRelevance: row.rawScore,
+          coldStartJitter: row.coldStartJitter ?? 0,
+          passedTopicGate,
+          score: row.scoreBreakdown?.components ?? null,
+          inputs: row.scoreBreakdown?.inputs ?? null,
+        };
+      });
+      const payload = {
+        msg: "recommendation.debug_page",
+        userId,
+        page: opts.page,
+        pageSize: opts.pageSize,
+        region,
+        coldStart,
+        needTrendingBlend,
+        canBuildFromHistory,
+        historyOnlyUnique,
+        poolSize,
+        totalCandidatesUnique: unique.length,
+        totalWatches: signals.totalWatches,
+        logFile: recommendationDebugLogFilePath(),
+        items,
+      };
+      logger.info("recommendation.debug_page", payload);
+      await appendRecommendationDebugLog(payload);
+    }
+
+    return {
+      expiresAt: Date.now() + RECOMMENDATION_POOL_CACHE_TTL_MS,
+      diversified,
+      coldStart,
+    };
   })();
   recommendationPoolInFlight.set(cacheKey, task);
   try {
