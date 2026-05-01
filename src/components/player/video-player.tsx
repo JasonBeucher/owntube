@@ -1981,6 +1981,18 @@ export function VideoPlayer({
   startAtSeconds,
 }: VideoPlayerProps) {
   const progressive = payload.mode === "progressive" ? payload.variants : null;
+  const isMobileUserAgent = useMemo(() => {
+    if (typeof navigator === "undefined") return false;
+    return /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent);
+  }, []);
+  const progressiveMobileSafe = useMemo(() => {
+    if (!progressive) return null;
+    if (!isMobileUserAgent) return progressive;
+    const muxedOnly = progressive.filter((v) => v.t === "muxed");
+    // Mobile browsers are much stricter with split <video>+<audio>; prefer
+    // single-file muxed variants when available for reliable audio playback.
+    return muxedOnly.length > 0 ? muxedOnly : progressive;
+  }, [progressive, isMobileUserAgent]);
   const [qualityIndex, setQualityIndex] = useState(0);
   const [resumeSeekSeconds, setResumeSeekSeconds] = useState<
     number | undefined
@@ -2007,6 +2019,12 @@ export function VideoPlayer({
   }, [payload]);
 
   useEffect(() => {
+    if (!progressiveMobileSafe || progressiveMobileSafe.length === 0) return;
+    if (qualityIndex < progressiveMobileSafe.length) return;
+    setQualityIndex(0);
+  }, [progressiveMobileSafe, qualityIndex]);
+
+  useEffect(() => {
     const t = window.setTimeout(() => writePlayerVolumeOnly(splitVolume), 200);
     return () => window.clearTimeout(t);
   }, [splitVolume]);
@@ -2014,10 +2032,10 @@ export function VideoPlayer({
   const active = useMemo(() => {
     if (payload.mode === "hls")
       return { kind: "hls" as const, src: payload.src };
-    const v = progressive?.[qualityIndex];
+    const v = progressiveMobileSafe?.[qualityIndex];
     if (v) return { kind: "variant" as const, v };
     return { kind: "empty" as const };
-  }, [payload, progressive, qualityIndex]);
+  }, [payload, progressiveMobileSafe, qualityIndex]);
 
   const effectiveStartAt =
     typeof resumeSeekSeconds === "number" ? resumeSeekSeconds : startAtSeconds;
@@ -2053,7 +2071,7 @@ export function VideoPlayer({
           title={title}
           poster={poster}
           payload={payload}
-          progressive={progressive}
+          progressive={progressiveMobileSafe}
           qualityIndex={qualityIndex}
           setQualityIndex={setQualityWithResume}
           chapters={chapters}
@@ -2068,7 +2086,7 @@ export function VideoPlayer({
           title={title}
           poster={poster}
           payload={payload}
-          progressive={progressive}
+          progressive={progressiveMobileSafe}
           qualityIndex={qualityIndex}
           setQualityIndex={setQualityWithResume}
           chapters={chapters}
@@ -2085,7 +2103,7 @@ export function VideoPlayer({
           volume={splitVolume}
           setVolume={setSplitVolume}
           payload={payload}
-          progressive={progressive}
+          progressive={progressiveMobileSafe}
           qualityIndex={qualityIndex}
           setQualityIndex={setQualityWithResume}
           chapters={chapters}
