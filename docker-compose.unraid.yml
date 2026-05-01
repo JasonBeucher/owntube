@@ -10,6 +10,8 @@ services:
       PIPED_BASE_URL: ${PIPED_BASE_URL:-https://pipedapi.kavin.rocks}
       INVIDIOUS_BASE_URL: ${INVIDIOUS_BASE_URL:-}
       AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env.unraid}
+      AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
+      AUTH_URL: "${AUTH_URL:?set AUTH_URL in .env.unraid (example: http://192.168.1.11:3000)}"
       LOG_LEVEL: ${LOG_LEVEL:-info}
       NEXT_TELEMETRY_DISABLED: "1"
       TZ: ${TZ:-Europe/Paris}

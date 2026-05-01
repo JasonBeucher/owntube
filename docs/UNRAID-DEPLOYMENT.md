@@ -21,6 +21,8 @@ cp env.unraid.example .env.unraid
 Edit `.env.unraid` and set at least:
 
 - `AUTH_SECRET` (required, strong random value)
+- `AUTH_URL` (required, public URL used by browsers, e.g. `http://192.168.1.11:3000`)
+- `AUTH_TRUST_HOST=true`
 - `PIPED_BASE_URL` and/or `INVIDIOUS_BASE_URL`
 
 Generate a strong secret:
