@@ -101,7 +101,7 @@ export function TakeoutImportPanel() {
         Import YouTube Takeout subscriptions
       </h2>
       <p className="text-sm text-[hsl(var(--muted-foreground))]">
-        Load the <code>abonnements.csv</code> file from your Takeout export.
+        Load the <code>subscriptions.csv</code> file from your Takeout export.
       </p>
       <label
         className="block text-sm font-medium"
@@ -122,7 +122,7 @@ export function TakeoutImportPanel() {
         value={payloadSubscriptionsCsv}
         onChange={(e) => setPayloadSubscriptionsCsv(e.currentTarget.value)}
         className="min-h-32 w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-3 text-sm"
-        placeholder="ID des chaînes,URL des chaînes,Titres des chaînes"
+        placeholder="Channel ID,Channel URL,Channel title"
       />
       <Button
         type="button"

@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { HomeHero } from "@/components/home/home-hero";
-import { HomeRegionPicker } from "@/components/home/home-region-picker";
 import { VideoGrid } from "@/components/videos/video-grid";
 import type { UnifiedVideo } from "@/server/services/proxy.types";
 import { trpc } from "@/trpc/react";
@@ -109,7 +108,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
     return () => obs.disconnect();
   }, [onIntersect, merged.length]);
 
-  /** Quand une page vient de finir de charger, enchaîne si le sentinel est encore visible. */
+  /** When a page just finished loading, continue if the sentinel is still visible. */
   useEffect(() => {
     const prev = prevFetchingRef.current;
     const cur = feed.isFetching;
@@ -126,7 +125,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
     }
   }, [feed.isFetching, feed.isSuccess, feed.data?.hasMore, bumpPage]);
 
-  /** Fallback scroll: certains navigateurs ne retrigger pas l'observer si la cible reste visible. */
+  /** Fallback scroll: some browsers do not retrigger the observer while the target stays visible. */
   useEffect(() => {
     const el = loadMoreRef.current;
     const root = el ? findVerticalScrollParent(el) : null;
@@ -158,15 +157,15 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
     if (!feed.data) return "";
     if (feed.data.kind === "personalized") {
       return feed.data.coldStart
-        ? "Flux personnalisé — on apprend encore ce que tu aimes."
-        : "D’après les chaînes que tu regardes récemment (le trending ne remplit qu’une petite part).";
+        ? "Personalized feed — we are still learning what you like."
+        : "Based on the channels you watched recently (trending only fills a small share).";
     }
     const cat = feed.data.category;
-    const catLabel = cat ?? "général";
-    return `Tendances ${feed.data.region} · ${catLabel}. ${
+    const catLabel = cat ?? "general";
+    return `Trending ${feed.data.region} · ${catLabel}. ${
       isAuthed
-        ? "Onglet « Pour vous » = recommandations."
-        : "Connecte-toi pour un fil personnalisé."
+        ? 'The "For You" tab contains recommendations.'
+        : "Sign in for a personalized feed."
     }`;
   }, [feed.data, isAuthed]);
 
@@ -174,22 +173,42 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
 
   return (
     <section className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
+      <div className="flex flex-col gap-3">
         <p className="text-sm text-[hsl(var(--muted-foreground))]">
-          {subtitle || "Chargement…"}
+          {subtitle || "Preparing your feed..."}
         </p>
-        <HomeRegionPicker effectiveRegion={region} isAuthed={isAuthed} />
       </div>
 
       {feed.isPending && merged.length === 0 ? (
-        <p className="text-sm text-[hsl(var(--muted-foreground))]">
-          Chargement…
-        </p>
+        <div className="space-y-6" aria-hidden>
+          <div className="relative mb-2 aspect-[21/8] max-h-[min(52vw,420px)] min-h-[200px] w-full overflow-hidden rounded-[20px] border border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] max-sm:aspect-[4/3] max-sm:max-h-none">
+            <div className="absolute inset-0 animate-pulse bg-[hsl(var(--muted)_/_0.5)]" />
+            <div className="absolute inset-x-0 bottom-0 space-y-3 p-6 sm:px-9 sm:pb-8">
+              <div className="h-4 w-36 animate-pulse rounded-full bg-white/20" />
+              <div className="h-7 w-4/5 animate-pulse rounded bg-white/20" />
+              <div className="h-7 w-2/3 animate-pulse rounded bg-white/15" />
+            </div>
+          </div>
+          <ul className="grid grid-cols-1 gap-x-7 gap-y-8 lg:grid-cols-2 xl:grid-cols-[repeat(auto-fill,minmax(440px,1fr))]">
+            {LOAD_MORE_SKELETON_KEYS.slice(0, 6).map((k) => (
+              <li key={`initial-skeleton-${k}`} className="space-y-3">
+                <div className="aspect-video w-full animate-pulse rounded-[14px] bg-[hsl(var(--muted)_/_0.45)]" />
+                <div className="flex gap-3">
+                  <div className="h-9 w-9 shrink-0 animate-pulse rounded-full bg-[hsl(var(--muted)_/_0.45)]" />
+                  <div className="min-w-0 flex-1 space-y-2 pt-1">
+                    <div className="h-3.5 w-11/12 animate-pulse rounded bg-[hsl(var(--muted)_/_0.45)]" />
+                    <div className="h-3.5 w-4/6 animate-pulse rounded bg-[hsl(var(--muted)_/_0.45)]" />
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
 
       {feed.isError ? (
         <p className="text-sm text-red-600">
-          {feed.error.message ?? "Impossible de charger le fil."}
+          {feed.error.message ?? "Could not load the feed."}
         </p>
       ) : null}
 
@@ -199,21 +218,21 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
         <>
           <div className="flex flex-wrap items-baseline justify-between gap-4">
             <h2 className="text-xl font-bold tracking-tight">
-              {feed.data?.kind === "personalized" ? "Pour toi" : "Tendances"}
+              {feed.data?.kind === "personalized" ? "For You" : "Trending"}
             </h2>
             <span className="font-mono text-xs text-[hsl(var(--muted-foreground))]">
-              {merged.length} vidéo{merged.length === 1 ? "" : "s"}
+              {merged.length} video{merged.length === 1 ? "" : "s"}
             </span>
           </div>
           <VideoGrid videos={gridVideos} size="large" />
         </>
       ) : first ? (
         <p className="text-sm text-[hsl(var(--muted-foreground))]">
-          Fais défiler pour charger plus de rangées.
+          Scroll to load more rows.
         </p>
       ) : !feed.isPending ? (
         <p className="rounded-[14px] border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-14 text-center text-sm text-[hsl(var(--muted-foreground))]">
-          Aucune vidéo pour l’instant.
+          No videos for now.
         </p>
       ) : null}
 
@@ -243,7 +262,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
 
       {feed.isFetching && page > 1 ? (
         <p className="text-center text-xs text-[hsl(var(--muted-foreground))]">
-          Chargement de la suite…
+          Loading more...
         </p>
       ) : null}
     </section>

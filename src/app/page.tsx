@@ -1,20 +1,26 @@
 import { HomeFeedClient } from "@/components/home/home-feed-client";
-import { normalizeTrendingRegionParam } from "@/lib/trending-regions";
 import { auth } from "@/server/auth";
+import { getDb } from "@/server/db/client";
+import {
+  getUserSettings,
+  normalizeTrendingRegionStored,
+} from "@/server/settings/profile";
 
-type HomePageProps = {
-  searchParams: Promise<{ region?: string | string[] }>;
-};
-
-export default async function HomePage({ searchParams }: HomePageProps) {
+export default async function HomePage() {
   const session = await auth();
-  const sp = await searchParams;
-  const regionQuery = normalizeTrendingRegionParam(sp.region) ?? "US";
-  const isAuthed = Boolean(session?.user?.id);
+  const rawUserId = session?.user?.id;
+  const userId =
+    typeof rawUserId === "string" ? Number.parseInt(rawUserId, 10) : Number.NaN;
+  const isAuthed = Number.isFinite(userId) && userId > 0;
+  const region = isAuthed
+    ? normalizeTrendingRegionStored(
+        getUserSettings(getDb(), userId).trendingRegion,
+      )
+    : "US";
 
   return (
     <main className="ot-page">
-      <HomeFeedClient region={regionQuery} isAuthed={isAuthed} />
+      <HomeFeedClient region={region} isAuthed={isAuthed} />
     </main>
   );
 }

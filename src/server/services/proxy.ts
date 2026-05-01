@@ -41,6 +41,13 @@ const FETCH_TIMEOUT_MS = 20_000;
 const inFlightTrending = new Map<string, Promise<TrendingVideosResult>>();
 const inFlightChannel = new Map<string, Promise<ChannelPageResult>>();
 
+export function clearProxyCaches(db: AppDb): { clearedRows: number } {
+  inFlightTrending.clear();
+  inFlightChannel.clear();
+  const res = db.delete(videoCache).run();
+  return { clearedRows: Number(res.changes ?? 0) };
+}
+
 export type ProxySourceOverrides = {
   pipedBaseUrl?: string | null;
   invidiousBaseUrl?: string | null;

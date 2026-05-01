@@ -20,7 +20,7 @@ export function HomeHero({ video }: HomeHeroProps) {
         <img
           src={video.thumbnailUrl}
           alt=""
-          className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-[1.02]"
+          className="absolute inset-0 h-full w-full object-cover object-top transition duration-500 group-hover:scale-[1.02]"
         />
       ) : (
         <div className="absolute inset-0 bg-[hsl(var(--muted))]" />

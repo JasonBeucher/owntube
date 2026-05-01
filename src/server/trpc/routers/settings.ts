@@ -11,6 +11,8 @@ import {
   getUserSettings,
   upsertUserSettings,
 } from "@/server/settings/profile";
+import { clearRecommendationCachesForUser } from "@/server/recommendation/engine";
+import { clearProxyCaches } from "@/server/services/proxy";
 import { protectedProcedure, router } from "@/server/trpc/init";
 
 const settingsPatchSchema = z.object({
@@ -99,6 +101,15 @@ export const settingsRouter = router({
         invidiousOk,
       };
     }),
+
+  clearCaches: protectedProcedure.mutation(({ ctx }) => {
+    const proxy = clearProxyCaches(ctx.db);
+    clearRecommendationCachesForUser();
+    return {
+      ok: true,
+      clearedRows: proxy.clearedRows,
+    };
+  }),
 
   exportData: protectedProcedure.query(({ ctx }) => {
     const settings = getUserSettings(ctx.db, ctx.userId);

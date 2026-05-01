@@ -29,6 +29,11 @@ describe("settingsRouter", () => {
     const fetched = await caller.settings.get();
     expect(fetched.theme).toBe("dark");
     expect(fetched.invidiousBaseUrl).toBe("https://inv.example");
+
+    const cleared = await caller.settings.clearCaches();
+    expect(cleared.ok).toBe(true);
+    expect(typeof cleared.clearedRows).toBe("number");
+
     sqlite.close();
   });
 });

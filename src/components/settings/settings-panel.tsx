@@ -60,9 +60,27 @@ export function SettingsPanel({ initial }: SettingsPanelProps) {
     },
   });
 
+  const clearCachesMutation = trpc.settings.clearCaches.useMutation({
+    onSuccess: async (res) => {
+      await Promise.all([
+        utils.feed.home.invalidate(),
+        utils.trending.list.invalidate(),
+        utils.search.videos.invalidate(),
+        utils.video.detail.invalidate(),
+        utils.video.related.invalidate(),
+        utils.channel.page.invalidate(),
+      ]);
+      setMessage(`Cache cleared (${res.clearedRows} cached rows removed).`);
+    },
+    onError: (e) => {
+      setMessage(`Cache clear failed: ${e.message}`);
+    },
+  });
+
   const exporting = exportQuery.isFetching;
   const saving = updateMutation.isPending;
   const importing = importMutation.isPending;
+  const clearingCaches = clearCachesMutation.isPending;
   const healthQuery = trpc.settings.checkInstances.useQuery(undefined, {
     enabled: false,
   });
@@ -209,6 +227,24 @@ export function SettingsPanel({ initial }: SettingsPanelProps) {
             </p>
           ) : null}
         </div>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold">Cache maintenance</h2>
+        <p className="text-sm text-[hsl(var(--muted-foreground))]">
+          Force-clear server-side caches after major imports or upstream issues.
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => {
+            setMessage(null);
+            clearCachesMutation.mutate();
+          }}
+          disabled={clearingCaches}
+        >
+          {clearingCaches ? "Clearing cache..." : "Clear cache"}
+        </Button>
       </section>
 
       <section className="space-y-3">

@@ -6,6 +6,7 @@ import {
 } from "@/lib/youtube-channel-id";
 import type { AppDb } from "@/server/db/client";
 import { subscriptions, watchHistory } from "@/server/db/schema";
+import { clearRecommendationCachesForUser } from "@/server/recommendation/engine";
 import { protectedProcedure, router } from "@/server/trpc/init";
 
 const takeoutInputSchema = z.object({
@@ -339,6 +340,7 @@ export const takeoutRouter = router({
           tx.insert(watchHistory).values(r).run();
         }
       });
+      clearRecommendationCachesForUser(ctx.userId);
 
       return { imported: rows.length };
     }),
@@ -366,6 +368,7 @@ export const takeoutRouter = router({
             .run();
         }
       });
+      clearRecommendationCachesForUser(ctx.userId);
       return { imported: channelIds.length };
     }),
 });

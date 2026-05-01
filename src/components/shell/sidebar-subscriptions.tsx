@@ -62,7 +62,7 @@ export function SidebarSubscriptions({ enabled }: Props) {
         href="/subscriptions/channels"
         className="mx-3 mb-1 rounded-lg px-3 py-2 text-xs font-medium text-[hsl(var(--muted-foreground))] transition hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]"
       >
-        Voir toutes les chaînes
+        View all channels
       </Link>
     </div>
   );

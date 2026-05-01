@@ -112,6 +112,21 @@ function clipTitle(title: string, max = 80): string {
   return `${t.slice(0, max - 1)}…`;
 }
 
+export function clearRecommendationCachesForUser(userId?: number): void {
+  if (typeof userId !== "number" || !Number.isFinite(userId) || userId <= 0) {
+    recommendationPoolCache.clear();
+    recommendationPoolInFlight.clear();
+    return;
+  }
+  const prefix = `${userId}|`;
+  for (const key of recommendationPoolCache.keys()) {
+    if (key.startsWith(prefix)) recommendationPoolCache.delete(key);
+  }
+  for (const key of recommendationPoolInFlight.keys()) {
+    if (key.startsWith(prefix)) recommendationPoolInFlight.delete(key);
+  }
+}
+
 export async function getRecommendations(
   db: AppDb,
   userId: number,
