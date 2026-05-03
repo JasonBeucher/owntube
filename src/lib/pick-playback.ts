@@ -1,4 +1,8 @@
-import { languageFirstAudioMenuLabel } from "@/lib/audio-track-label";
+import {
+  audioTrackLanguageInfo,
+  languageFirstAudioMenuLabel,
+  streamLooksLikeOriginalAudio,
+} from "@/lib/audio-track-label";
 import type { VideoDetail } from "@/server/services/proxy.types";
 
 type VideoStreamSource = VideoDetail["videoSources"][number];
@@ -90,34 +94,6 @@ function labelForStream(
   return `Format ${index + 1}`;
 }
 
-/** Suffix like `2.8 Mbps · 30 fps` for menu rows (empty if unknown). */
-function formatBitrateFpsParts(meta?: {
-  bitrate?: number;
-  fps?: number;
-}): string {
-  if (!meta) return "";
-  const parts: string[] = [];
-  const br = meta.bitrate;
-  if (typeof br === "number" && Number.isFinite(br) && br > 0) {
-    if (br >= 1_000_000) {
-      const mbps = br / 1_000_000;
-      parts.push(`${mbps >= 10 ? mbps.toFixed(0) : mbps.toFixed(1)} Mbps`);
-    } else {
-      parts.push(`${Math.max(1, Math.round(br / 1000))} kbps`);
-    }
-  }
-  const fps = meta.fps;
-  if (
-    typeof fps === "number" &&
-    Number.isFinite(fps) &&
-    fps > 0 &&
-    fps <= 240
-  ) {
-    parts.push(Number.isInteger(fps) ? `${fps} fps` : `${fps.toFixed(2)} fps`);
-  }
-  return parts.join(" · ");
-}
-
 function scoreMuxed(quality: string | undefined, index: number) {
   return scoreQualityLabel(quality, index);
 }
@@ -135,6 +111,8 @@ export type SplitVariant = {
   audioUrl: string;
   label: string;
   audioOptions: { url: string; label: string }[];
+  /** Index into `audioOptions` for the default track (original when known). */
+  defaultAudioIndex?: number;
   rankBitrate?: number;
 };
 export type PlayableVariant = MuxedVariant | SplitVariant;
@@ -206,6 +184,99 @@ function buildFullQualitySelectorList(
   return out;
 }
 
+/**
+ * Group audio variants by detected language, keeping the highest-bitrate URL
+ * per language, so the player's "Language" picker lists each language once
+ * (Invidious-style) instead of one row per audio bitrate.
+ *
+ * Variants whose language can't be detected get their own per-index bucket so
+ * we don't accidentally collapse genuinely distinct unknown tracks together.
+ */
+function dedupeAudioOptionsByLanguage(
+  audios: ReadonlyArray<VideoStreamSource>,
+): {
+  audioOptions: { url: string; label: string }[];
+  defaultAudioUrl: string;
+  defaultAudioIndex: number;
+} {
+  type Enriched = {
+    src: VideoStreamSource;
+    idx: number;
+    key: string;
+    label: string;
+    bitrate: number;
+    isOriginal: boolean;
+  };
+
+  const enriched: Enriched[] = audios.map((src, idx) => {
+    const info = audioTrackLanguageInfo({
+      displayName: src.audioTrackDisplayName,
+      language: src.language,
+      streamUrl: src.url,
+    });
+    const fallbackLabel = languageFirstAudioMenuLabel({
+      displayName: src.audioTrackDisplayName,
+      language: src.language,
+      qualityFallback: labelForStream(src.quality, src.mimeType, idx),
+      streamUrl: src.url,
+      index: idx,
+    });
+    const isOriginal = streamLooksLikeOriginalAudio({
+      displayName: src.audioTrackDisplayName,
+      streamUrl: src.url,
+    });
+    let label = info.name ?? fallbackLabel;
+    if (
+      isOriginal &&
+      !/\(\s*original\s*\)/i.test(label) &&
+      !/\boriginal\b/i.test(label)
+    ) {
+      label = `${label} (Original)`;
+    }
+    return {
+      src,
+      idx,
+      // One shared bucket for missing language metadata so multiple adaptive
+      // bitrates of the same stream do not look like a multilingual picker.
+      key: info.key ?? "__unknown",
+      label,
+      bitrate: typeof src.bitrate === "number" ? src.bitrate : 0,
+      isOriginal,
+    };
+  });
+
+  const bestByKey = new Map<string, Enriched>();
+  for (const e of enriched) {
+    const prev = bestByKey.get(e.key);
+    if (!prev || e.bitrate > prev.bitrate) bestByKey.set(e.key, e);
+  }
+
+  const ordered = Array.from(bestByKey.values()).sort((a, b) => a.idx - b.idx);
+
+  const audioOptions = ordered.map((e) => ({
+    url: e.src.url!,
+    label: e.label,
+  }));
+
+  const originals = ordered.filter((e) => e.isOriginal);
+  let defaultPick: Enriched | undefined;
+  if (originals.length > 0) {
+    defaultPick = originals.reduce((a, b) => (b.bitrate > a.bitrate ? b : a));
+  } else {
+    const firstKey = enriched[0]?.key;
+    defaultPick =
+      (firstKey ? bestByKey.get(firstKey) : undefined) ?? ordered[0];
+  }
+
+  const defaultAudioUrl = defaultPick?.src.url ?? audios[0]?.url ?? "";
+  const defaultAudioIndex = Math.max(
+    0,
+    audioOptions.findIndex((o) => o.url === defaultAudioUrl),
+  );
+
+  return { audioOptions, defaultAudioUrl, defaultAudioIndex };
+}
+
 /** One split row per video-only stream (same audio menu on each). */
 function buildAllSplitVariants(
   detail: VideoDetail,
@@ -224,28 +295,9 @@ function buildAllSplitVariants(
   const audios = (detail.audioSources ?? []).filter((a) => a.url);
   if (videoCandidates.length === 0 || audios.length === 0) return [];
 
-  // Preserve upstream order: the first audio (lowest index) is most often the
-  // original language. Sorting by quality score scrambles that signal when
-  // upstream metadata is sparse (different bitrates per language, etc.).
-  const audioOptions = audios.map((src, i) => {
-    const name = languageFirstAudioMenuLabel({
-      displayName: src.audioTrackDisplayName,
-      language: src.language,
-      qualityFallback: labelForStream(src.quality, src.mimeType, i),
-      streamUrl: src.url,
-      index: i,
-    });
-    const extra = formatBitrateFpsParts({
-      bitrate: src.bitrate,
-      fps: src.fps,
-    });
-    return {
-      url: src.url!,
-      label: extra ? `${name} · ${extra}` : name,
-    };
-  });
-  const defaultAudio = audios[0];
-  if (!defaultAudio?.url) return [];
+  const { audioOptions, defaultAudioUrl, defaultAudioIndex } =
+    dedupeAudioOptionsByLanguage(audios);
+  if (!defaultAudioUrl) return [];
 
   videoCandidates.sort(
     (a, b) =>
@@ -255,9 +307,10 @@ function buildAllSplitVariants(
   return videoCandidates.map(({ s, i }) => ({
     t: "split" as const,
     videoUrl: s.url!,
-    audioUrl: defaultAudio.url,
+    audioUrl: defaultAudioUrl,
     label: labelForStream(s.quality, s.mimeType, i),
     audioOptions,
+    defaultAudioIndex,
     rankBitrate: s.bitrate,
   }));
 }
@@ -350,11 +403,39 @@ function sortPlayable(a: PlayableWithRank, b: PlayableWithRank): number {
   return 0;
 }
 
-export function buildWatchPlayback(detail: VideoDetail): WatchPlayback {
-  if (detail.hlsUrl) {
-    return { kind: "hls", url: detail.hlsUrl, onlyDashOrUnsupported: false };
+/**
+ * Count distinct primary language subtags exposed by `detail.audioSources`.
+ * Multi-language YouTube uploads (translated dubs) are typically only labelled
+ * properly on Invidious's `adaptiveFormats[].audioTrack` data; the HLS manifest
+ * we'd otherwise prefer often flattens or strips that metadata, so we use this
+ * count to decide whether progressive split is worth preferring over HLS.
+ */
+function countDistinctAudioLanguages(detail: VideoDetail): number {
+  const audios = detail.audioSources ?? [];
+  if (audios.length < 2) return audios.length;
+  const keys = new Set<string>();
+  for (const src of audios) {
+    if (!src.url) continue;
+    const info = audioTrackLanguageInfo({
+      displayName: src.audioTrackDisplayName,
+      language: src.language,
+      streamUrl: src.url,
+    });
+    if (info.key) keys.add(info.key);
   }
+  return keys.size;
+}
 
+function hasUsableProgressiveVideoPane(detail: VideoDetail): boolean {
+  return detail.videoSources.some((s) => {
+    const u = s.url;
+    if (!u) return false;
+    if (isDashPath(u) || isHlsPath(u)) return false;
+    return sourceLooksLikeVideoPane(s);
+  });
+}
+
+export function buildWatchPlayback(detail: VideoDetail): WatchPlayback {
   const buildMerged = (keep: (s: VideoStreamSource) => boolean) => {
     let muxed = collectMuxed(detail, keep);
     const splits = buildAllSplitVariants(detail, keep);
@@ -363,6 +444,19 @@ export function buildWatchPlayback(detail: VideoDetail): WatchPlayback {
     ranked.sort(sortPlayable);
     return dedupeOneVariantPerQualityRung(ranked);
   };
+
+  // Prefer progressive (split) over HLS when Invidious exposes ≥2 audio
+  // languages: HLS manifests routinely lose `LANGUAGE="..."` on EXT-X-MEDIA
+  // entries, which strands the in-player language picker. Only do this when
+  // we actually have a video-only progressive pane to pair with the audio
+  // tracks, otherwise the player has nothing useful to render.
+  const preferSplitForLanguages =
+    countDistinctAudioLanguages(detail) >= 2 &&
+    hasUsableProgressiveVideoPane(detail);
+
+  if (detail.hlsUrl && !preferSplitForLanguages) {
+    return { kind: "hls", url: detail.hlsUrl, onlyDashOrUnsupported: false };
+  }
 
   // Drop sources that are clearly audio-only / no video plane; if that
   // removes everything, fall back to the unfiltered list (rare bad metadata).
@@ -377,6 +471,12 @@ export function buildWatchPlayback(detail: VideoDetail): WatchPlayback {
       variants: buildFullQualitySelectorList(merged),
       onlyDashOrUnsupported: false,
     };
+  }
+
+  // No usable progressive variants but HLS available — fall back to HLS so
+  // playback still works even though the language picker may not render.
+  if (detail.hlsUrl) {
+    return { kind: "hls", url: detail.hlsUrl, onlyDashOrUnsupported: false };
   }
 
   for (const s of detail.videoSources) {

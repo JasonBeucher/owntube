@@ -104,7 +104,7 @@ export const settingsRouter = router({
 
   clearCaches: protectedProcedure.mutation(({ ctx }) => {
     const proxy = clearProxyCaches(ctx.db);
-    clearRecommendationCachesForUser();
+    clearRecommendationCachesForUser(ctx.userId);
     return {
       ok: true,
       clearedRows: proxy.clearedRows,

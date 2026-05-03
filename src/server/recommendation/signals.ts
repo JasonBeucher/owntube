@@ -1,6 +1,6 @@
 import { and, desc, eq, gt } from "drizzle-orm";
 import type { AppDb } from "@/server/db/client";
-import { watchHistory } from "@/server/db/schema";
+import { interactions, watchHistory } from "@/server/db/schema";
 
 export type UserSignals = {
   channelWeights: Map<string, number>;
@@ -18,11 +18,27 @@ export type UserSignals = {
   channelsOrderedByRecentWatch: string[];
   /** All channel ids that appear in the watch window (for filters / bypass). */
   historyChannelIds: Set<string>;
+  /** Videos the user liked (excluding those also disliked). */
+  likedVideoIds: Set<string>;
+  /** Videos the user disliked — excluded from recommendations. */
+  dislikedVideoIds: Set<string>;
+  /** Saved videos (excluding disliked), for taste corpus / affinity. */
+  savedVideoIds: Set<string>;
+  /**
+   * Channels from like/save interactions (with `channel_id` set), for topic gate
+   * and channel affinity (also folded into `channelWeights`).
+   */
+  interactionInterestChannelIds: Set<string>;
 };
 
 const WINDOW_SEC = 90 * 24 * 3600;
 /** Recent plays weigh more: `exp(-age / tau)` is near 1 right after a watch, then decays. */
 const CHANNEL_RECENCY_TAU_SEC = 6 * 24 * 3600;
+
+/** Likes/saves boost channel affinity with a slower decay than single watches. */
+const INTERACTION_CHANNEL_TAU_SEC = 45 * 24 * 3600;
+const LIKE_CHANNEL_WEIGHT = 0.52;
+const SAVE_CHANNEL_WEIGHT = 0.34;
 
 export function collectUserSignals(db: AppDb, userId: number): UserSignals {
   const nowSec = Math.floor(Date.now() / 1000);
@@ -75,11 +91,58 @@ export function collectUserSignals(db: AppDb, userId: number): UserSignals {
     distinctWatchesByChannel.set(ch, ids.size);
   }
 
+  const historyChannelIds = new Set(channelLastWatchedAt.keys());
+
+  const likedVideoIds = new Set<string>();
+  const dislikedVideoIds = new Set<string>();
+  const savedVideoIds = new Set<string>();
+  const interactionInterestChannelIds = new Set<string>();
+
+  const interactionRows = db
+    .select({
+      videoId: interactions.videoId,
+      channelId: interactions.channelId,
+      type: interactions.type,
+      createdAt: interactions.createdAt,
+    })
+    .from(interactions)
+    .where(eq(interactions.userId, userId))
+    .orderBy(desc(interactions.createdAt))
+    .limit(4000)
+    .all();
+
+  for (const r of interactionRows) {
+    if (r.type === "dislike") {
+      dislikedVideoIds.add(r.videoId);
+    }
+  }
+
+  for (const r of interactionRows) {
+    if (r.type === "like") {
+      if (!dislikedVideoIds.has(r.videoId)) likedVideoIds.add(r.videoId);
+    } else if (r.type === "save") {
+      if (!dislikedVideoIds.has(r.videoId)) savedVideoIds.add(r.videoId);
+    }
+  }
+
+  for (const r of interactionRows) {
+    if (r.type !== "like" && r.type !== "save") continue;
+    if (!r.channelId || dislikedVideoIds.has(r.videoId)) continue;
+    interactionInterestChannelIds.add(r.channelId);
+    const ageSec = Math.max(0, nowSec - r.createdAt);
+    const base = r.type === "like" ? LIKE_CHANNEL_WEIGHT : SAVE_CHANNEL_WEIGHT;
+    const contrib = base * Math.exp(-ageSec / INTERACTION_CHANNEL_TAU_SEC);
+    channelWeights.set(
+      r.channelId,
+      (channelWeights.get(r.channelId) ?? 0) + contrib,
+    );
+    const prevLw = channelLastWatchedAt.get(r.channelId) ?? 0;
+    channelLastWatchedAt.set(r.channelId, Math.max(prevLw, r.createdAt));
+  }
+
   const channelsOrderedByRecentWatch = [...channelLastWatchedAt.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([id]) => id);
-
-  const historyChannelIds = new Set(channelLastWatchedAt.keys());
 
   return {
     channelWeights,
@@ -91,5 +154,9 @@ export function collectUserSignals(db: AppDb, userId: number): UserSignals {
     channelLastWatchedAt,
     channelsOrderedByRecentWatch,
     historyChannelIds,
+    likedVideoIds,
+    dislikedVideoIds,
+    savedVideoIds,
+    interactionInterestChannelIds,
   };
 }

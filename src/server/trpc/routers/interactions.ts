@@ -1,5 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
+import { clearRecommendationCachesForUser } from "@/server/recommendation/engine";
 import { interactions } from "@/server/db/schema";
 import { protectedProcedure, router } from "@/server/trpc/init";
 
@@ -56,6 +57,7 @@ export const interactionsRouter = router({
           .run();
       }
 
+      clearRecommendationCachesForUser(ctx.userId);
       return { ok: true };
     }),
   state: protectedProcedure

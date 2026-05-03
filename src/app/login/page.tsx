@@ -12,15 +12,17 @@ export default function LoginPage() {
           </p>
         </header>
         <LoginForm />
-        <p className="text-sm text-[hsl(var(--muted-foreground))]">
-          No account yet?{" "}
-          <Link
-            className="font-medium text-[hsl(var(--primary))] underline-offset-4 hover:underline"
-            href="/register"
-          >
-            Create one
-          </Link>
-        </p>
+        <div className="space-y-1 text-sm text-[hsl(var(--muted-foreground))]">
+          <p>
+            No account yet?{" "}
+            <Link
+              className="font-medium text-[hsl(var(--primary))] underline-offset-4 hover:underline"
+              href="/register"
+            >
+              Create one
+            </Link>
+          </p>
+        </div>
       </div>
     </main>
   );

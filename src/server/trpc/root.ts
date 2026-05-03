@@ -10,6 +10,7 @@ import { settingsRouter } from "@/server/trpc/routers/settings";
 import { statsRouter } from "@/server/trpc/routers/stats";
 import { subscriptionsRouter } from "@/server/trpc/routers/subscriptions";
 import { takeoutRouter } from "@/server/trpc/routers/takeout";
+import { tasteRouter } from "@/server/trpc/routers/taste";
 import { trendingRouter } from "@/server/trpc/routers/trending";
 import { videoRouter } from "@/server/trpc/routers/video";
 
@@ -25,6 +26,7 @@ export const appRouter = router({
   stats: statsRouter,
   subscriptions: subscriptionsRouter,
   takeout: takeoutRouter,
+  taste: tasteRouter,
   trending: trendingRouter,
   video: videoRouter,
 });

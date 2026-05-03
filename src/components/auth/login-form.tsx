@@ -23,11 +23,11 @@ export function LoginForm() {
           email,
           password,
           redirect: false,
-          callbackUrl: "/search",
+          callbackUrl: "/",
         });
         setLoading(false);
         if (result?.ok) {
-          window.location.href = result.url ?? "/search";
+          window.location.href = result.url ?? "/";
           return;
         }
         setError("Invalid credentials.");

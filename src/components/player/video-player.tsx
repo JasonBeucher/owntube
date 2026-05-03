@@ -16,7 +16,10 @@ import {
   useState,
 } from "react";
 import type { MediaPlayerElement } from "vidstack";
-import { languageFirstAudioMenuLabel } from "@/lib/audio-track-label";
+import {
+  audioTrackLanguageInfo,
+  languageFirstAudioMenuLabel,
+} from "@/lib/audio-track-label";
 import { sourceFromUrl } from "@/lib/media-source-from-url";
 import {
   readPlayerMediaPrefs,
@@ -34,6 +37,7 @@ type ProxiedVariant =
       video: string;
       audio: string;
       audioTracks: { label: string; src: string }[];
+      defaultAudioIndex?: number;
     };
 
 export type VideoPlayerPayload =
@@ -56,17 +60,48 @@ function shouldAutoRecoverPlaybackSource(src: string): boolean {
   );
 }
 
+const RECOVERY_ATTEMPT_WINDOW_MS = 5 * 60_000;
+const MAX_RECOVERY_ATTEMPTS = 3;
+
+function playbackResumeStorageKey(): string {
+  if (typeof window === "undefined") return "ot:playback-resume:";
+  return `ot:playback-resume:${window.location.pathname}`;
+}
+
 function tryOneShotPlaybackRecovery(recoveryKey: string): boolean {
   if (typeof window === "undefined") return false;
   try {
     const storageKey = `ot:playback-recover:${recoveryKey}`;
     const now = Date.now();
-    const lastRaw = window.sessionStorage.getItem(storageKey);
-    const last = lastRaw ? Number.parseInt(lastRaw, 10) : 0;
-    // Avoid infinite refresh loops if upstream keeps failing.
-    if (Number.isFinite(last) && now - last < 2 * 60_000) return false;
-    window.sessionStorage.setItem(storageKey, String(now));
-    window.location.reload();
+    const stateRaw = window.sessionStorage.getItem(storageKey);
+    const [lastStr, countStr] = stateRaw ? stateRaw.split(":") : [];
+    const last = lastStr ? Number.parseInt(lastStr, 10) : 0;
+    const prevCount = countStr ? Number.parseInt(countStr, 10) : 0;
+    const withinWindow =
+      Number.isFinite(last) && now - last < RECOVERY_ATTEMPT_WINDOW_MS;
+    const nextCount = withinWindow ? prevCount + 1 : 1;
+
+    // Avoid infinite loops if upstream keeps failing continuously.
+    if (nextCount > MAX_RECOVERY_ATTEMPTS) return false;
+    window.sessionStorage.setItem(storageKey, `${now}:${nextCount}`);
+
+    const media = document.querySelector("video");
+    const currentTime =
+      media && Number.isFinite(media.currentTime) ? media.currentTime : 0;
+    if (currentTime > 0.5) {
+      window.sessionStorage.setItem(
+        playbackResumeStorageKey(),
+        String(Math.floor(currentTime)),
+      );
+    }
+
+    const nextUrl = new URL(window.location.href);
+    if (currentTime > 0.5) {
+      nextUrl.searchParams.set("t", String(Math.floor(currentTime)));
+    }
+    // Cache-bust app route + upstream URL generation path.
+    nextUrl.searchParams.set("_pr", String(now));
+    window.location.assign(nextUrl.toString());
     return true;
   } catch {
     return false;
@@ -227,18 +262,68 @@ function useFullscreenShell(shellRef: React.RefObject<HTMLElement | null>) {
   const [active, setActive] = useState(false);
   useEffect(() => {
     const onChange = () => {
-      setActive(document.fullscreenElement === shellRef.current);
+      const video = shellRef.current?.querySelector("video") as
+        | (HTMLVideoElement & {
+            webkitDisplayingFullscreen?: boolean;
+          })
+        | null;
+      const standardActive = document.fullscreenElement === shellRef.current;
+      const webkitActive = Boolean(video?.webkitDisplayingFullscreen);
+      setActive(standardActive || webkitActive);
     };
     document.addEventListener("fullscreenchange", onChange);
+    const video = shellRef.current?.querySelector("video");
+    video?.addEventListener("webkitbeginfullscreen", onChange as EventListener);
+    video?.addEventListener("webkitendfullscreen", onChange as EventListener);
     onChange();
-    return () => document.removeEventListener("fullscreenchange", onChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onChange);
+      video?.removeEventListener(
+        "webkitbeginfullscreen",
+        onChange as EventListener,
+      );
+      video?.removeEventListener(
+        "webkitendfullscreen",
+        onChange as EventListener,
+      );
+    };
   }, [shellRef]);
   const toggle = useCallback(async () => {
     const el = shellRef.current;
     if (!el) return;
+    const video = el.querySelector("video") as
+      | (HTMLVideoElement & {
+          webkitEnterFullscreen?: () => void;
+          webkitExitFullscreen?: () => void;
+          webkitDisplayingFullscreen?: boolean;
+        })
+      | null;
+    const doc = document as Document & {
+      webkitExitFullscreen?: () => void;
+    };
     try {
-      if (document.fullscreenElement) await document.exitFullscreen();
-      else await el.requestFullscreen();
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        return;
+      }
+      if (video?.webkitDisplayingFullscreen) {
+        if (typeof video.webkitExitFullscreen === "function") {
+          video.webkitExitFullscreen();
+          return;
+        }
+        if (typeof doc.webkitExitFullscreen === "function") {
+          doc.webkitExitFullscreen();
+          return;
+        }
+      }
+      if (typeof el.requestFullscreen === "function") {
+        await el.requestFullscreen();
+        return;
+      }
+      if (video && typeof video.webkitEnterFullscreen === "function") {
+        // iOS Safari fallback: native video fullscreen API.
+        video.webkitEnterFullscreen();
+      }
     } catch {
       // Ignore unsupported/denied fullscreen.
     }
@@ -323,9 +408,21 @@ function useVidstackAdapter(
     volume: state.volume,
     muted: state.muted,
     playbackRate: state.playbackRate,
-    play: () => remote.play(),
+    play: () => {
+      // On mobile, user-triggered play should also clear accidental muted state
+      // (sticky after autoplay-policy transitions/tab restores).
+      if (state.muted && state.volume > 0.001) remote.unmute();
+      remote.play();
+    },
     pause: () => remote.pause(),
-    togglePaused: () => (state.paused ? remote.play() : remote.pause()),
+    togglePaused: () => {
+      if (!state.paused) {
+        remote.pause();
+        return;
+      }
+      if (state.muted && state.volume > 0.001) remote.unmute();
+      remote.play();
+    },
     seek: (t) => remote.seek(t),
     seekPreview: (t) => remote.seeking(t),
     setVolume: (v) => {
@@ -551,6 +648,36 @@ type AudioModel =
     }
   | { kind: "none" };
 
+/** Normalize URL so the same stream behind different query ordering still dedupes. */
+function normalizeAudioStreamUrlForCompare(src: string): string {
+  const t = src.trim();
+  if (!t) return "";
+  try {
+    const u = new URL(t);
+    u.hash = "";
+    const entries = [...u.searchParams.entries()].sort(([a], [b]) =>
+      a.localeCompare(b),
+    );
+    u.search = "";
+    for (const [k, v] of entries) u.searchParams.append(k, v);
+    return u.href;
+  } catch {
+    return t;
+  }
+}
+
+/** Language picker only when ≥2 distinct stream URLs (after normalization). */
+function hasMultipleDistinctAudioStreams(
+  tracks: readonly { src: string }[],
+): boolean {
+  const urls = new Set<string>();
+  for (const t of tracks) {
+    const id = normalizeAudioStreamUrlForCompare(t.src ?? "");
+    if (id) urls.add(id);
+  }
+  return urls.size >= 2;
+}
+
 const HLS_LADDER = [2160, 1080, 720, 480, 360] as const;
 
 function snapHlsHeightToRung(h: number): (typeof HLS_LADDER)[number] | null {
@@ -627,6 +754,23 @@ function useHlsQualityModel(
   };
 }
 
+/**
+ * hls.js often exposes synthetic labels (`audio_0`, `track2`, `und`) that
+ * survive `languageFirstAudioMenuLabel` because they look "non-empty" enough
+ * to short-circuit the language inference. Treat these as junk so the picker
+ * can fall back to a more useful string instead of showing them verbatim.
+ */
+function looksLikeGenericHlsAudioLabel(
+  label: string | undefined | null,
+): boolean {
+  const t = label?.trim().toLowerCase() ?? "";
+  if (!t) return true;
+  if (t === "audio" || t === "track" || t === "und" || t === "default") {
+    return true;
+  }
+  return /^(audio|track|stream|media)[\s_-]*\d+$/i.test(t);
+}
+
 function useHlsAudioModel(
   playerRef: React.RefObject<MediaPlayerElement | null>,
 ): AudioModel {
@@ -635,21 +779,65 @@ function useHlsAudioModel(
     playerRef as React.RefObject<EventTarget | null>,
   );
   if (state.audioTracks.length < 2) return { kind: "none" };
+
+  type Row = { label: string; selected: boolean; idx: number; key: string };
+  const rows: Row[] = state.audioTracks.map((t, idx) => {
+    const info = audioTrackLanguageInfo({
+      displayName: t.label || undefined,
+      language: t.language || undefined,
+      trackId: t.id,
+    });
+    // When language inference fails, prefer the upstream label if it looks
+    // like a real human string (`English Dub`, `Commentary`, `Original`)
+    // rather than the synthetic `audio_0` strings hls.js often emits — those
+    // we drop to give `languageFirstAudioMenuLabel` a chance to surface the
+    // track kind, then fall through to a `Track N` numbered entry.
+    const rawLabel = t.label?.trim();
+    const labelIsUseful =
+      Boolean(rawLabel) && !looksLikeGenericHlsAudioLabel(rawLabel);
+    const label = labelIsUseful
+      ? (info.name ?? rawLabel ?? `Track ${idx + 1}`)
+      : languageFirstAudioMenuLabel({
+          displayName: undefined,
+          language: t.language || undefined,
+          qualityFallback: null,
+          trackId: t.id,
+          kind: t.kind,
+          index: idx,
+        });
+    return {
+      idx,
+      selected: t.selected,
+      // Unknown-language rows must keep distinct keys so two synthetic dubs
+      // with the same generic label are not collapsed into a single row.
+      key: info.key ?? `__hls-unknown:${idx}`,
+      label,
+    };
+  });
+
+  // Collapse same-language HLS tracks into a single language picker row;
+  // prefer whichever variant the player currently has selected so the menu
+  // checkmark doesn't desync from playback.
+  const byKey = new Map<string, Row>();
+  for (const r of rows) {
+    const prev = byKey.get(r.key);
+    if (!prev) byKey.set(r.key, r);
+    else if (r.selected && !prev.selected) byKey.set(r.key, r);
+  }
+  const itemsWithKey = Array.from(byKey.values()).sort((a, b) => a.idx - b.idx);
+  if (itemsWithKey.length < 2) return { kind: "none" };
+  // hls.js often exposes two renditions with no LANGUAGE metadata — both get
+  // synthetic `__hls-unknown:*` keys. That is still a single logical stream for
+  // the user; hide the fake "language" menu.
+  const allSyntheticUnknown = itemsWithKey.every((r) =>
+    r.key.startsWith("__hls-unknown:"),
+  );
+  if (allSyntheticUnknown) return { kind: "none" };
+
   return {
     kind: "hls-managed",
     remote,
-    items: state.audioTracks.map((t, idx) => ({
-      label: languageFirstAudioMenuLabel({
-        displayName: t.label || undefined,
-        language: t.language || undefined,
-        qualityFallback: null,
-        trackId: t.id,
-        kind: t.kind,
-        index: idx,
-      }),
-      selected: t.selected,
-      idx,
-    })),
+    items: itemsWithKey.map(({ key: _key, ...rest }) => rest),
   };
 }
 
@@ -671,6 +859,9 @@ function SettingsMenu({
   onClose: () => void;
 }) {
   const [view, setView] = useState<SettingsView>("root");
+  useEffect(() => {
+    if (audio.kind === "none" && view === "audio") setView("root");
+  }, [audio.kind, view]);
   return (
     <div
       className="absolute bottom-14 right-3 z-40 w-56 overflow-hidden rounded-lg border border-white/10 bg-zinc-950/95 text-sm shadow-xl backdrop-blur-md"
@@ -1618,6 +1809,12 @@ function VidstackBlock({
   const hlsAudio = useHlsAudioModel(playerRef);
   const initialSeekAppliedRef = useRef(false);
   const initialMediaPrefsAppliedRef = useRef(false);
+  const emitPlaybackError = useCallback(() => {
+    if (!onPlaybackError) return;
+    // Vidstack can surface an error synchronously while mounting; defer recovery
+    // to avoid triggering React updates during another component render.
+    window.setTimeout(() => onPlaybackError(), 0);
+  }, [onPlaybackError]);
 
   useEffect(() => {
     initialSeekAppliedRef.current = false;
@@ -1698,7 +1895,7 @@ function VidstackBlock({
         load="eager"
         preferNativeHLS={false}
         playsInline
-        onError={onPlaybackError}
+        onError={emitPlaybackError}
         className={cn("absolute inset-0", PLAYER_FILL)}
       >
         <MediaOutlet />
@@ -1720,6 +1917,7 @@ function VidstackBlock({
 function SplitBlock({
   video,
   audioTracks,
+  defaultAudioIndex = 0,
   poster,
   title,
   volume,
@@ -1734,6 +1932,8 @@ function SplitBlock({
 }: {
   video: string;
   audioTracks: { label: string; src: string }[];
+  /** Initial / reset index for the language picker (original when known). */
+  defaultAudioIndex?: number;
   poster?: string;
   title: string;
   volume: number;
@@ -1749,12 +1949,23 @@ function SplitBlock({
   const shellRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
-  const [splitAudioIdx, setSplitAudioIdx] = useState(0);
+  const safeDefaultIdx = Math.min(
+    Math.max(0, defaultAudioIndex),
+    Math.max(0, audioTracks.length - 1),
+  );
+  const [splitAudioIdx, setSplitAudioIdx] = useState(safeDefaultIdx);
+  const awaitingCompanionAudioRef = useRef(false);
+  /** Skips one `pause` side-effect when we pause video ourselves to wait for audio. */
+  const ignoreNextVideoPauseRef = useRef(false);
   const initialSeekAppliedRef = useRef(false);
+  const emitPlaybackError = useCallback(() => {
+    if (!onPlaybackError) return;
+    window.setTimeout(() => onPlaybackError(), 0);
+  }, [onPlaybackError]);
 
   useEffect(() => {
-    setSplitAudioIdx(0);
-  }, [video, audioTracks]);
+    setSplitAudioIdx(safeDefaultIdx);
+  }, [video, audioTracks, safeDefaultIdx]);
 
   useEffect(() => {
     initialSeekAppliedRef.current = false;
@@ -1768,8 +1979,10 @@ function SplitBlock({
     const a = audioRef.current;
     if (!v || !a) return;
 
-    const SYNC_TOLERANCE = 0.35;
-    const HARD_DRIFT = 1.0;
+    const SYNC_TOLERANCE = 0.2;
+    /** Rare hard snap — avoid tight timers that hammer `currentTime` (breaks decode). */
+    const DRIFT_HARD = 0.85;
+
     const align = (force = false) => {
       const drift = Math.abs(a.currentTime - v.currentTime);
       if (force || drift > SYNC_TOLERANCE) {
@@ -1787,6 +2000,32 @@ function SplitBlock({
     };
     const onPlay = () => {
       clearWaitingPauseTimer();
+      // Only gate when the audio element has no media yet (HAVE_NOTHING). Waiting
+      // for HAVE_CURRENT_DATA breaks playback on some browsers / slow networks
+      // because `currentTime` seeks never become safe while stalled.
+      if (a.readyState === HTMLMediaElement.HAVE_NOTHING) {
+        awaitingCompanionAudioRef.current = true;
+        ignoreNextVideoPauseRef.current = true;
+        v.pause();
+        a.pause();
+        let resumed = false;
+        const resume = () => {
+          if (resumed || !awaitingCompanionAudioRef.current) return;
+          resumed = true;
+          awaitingCompanionAudioRef.current = false;
+          a.removeEventListener("loadedmetadata", resume);
+          a.removeEventListener("canplay", resume);
+          a.removeEventListener("canplaythrough", resume);
+          align(true);
+          void a.play().catch(() => {});
+          void v.play().catch(() => {});
+        };
+        a.addEventListener("loadedmetadata", resume, { once: true });
+        a.addEventListener("canplay", resume, { once: true });
+        a.addEventListener("canplaythrough", resume, { once: true });
+        return;
+      }
+      awaitingCompanionAudioRef.current = false;
       align(false);
       if (a.paused) void a.play().catch(() => {});
     };
@@ -1798,6 +2037,11 @@ function SplitBlock({
     // Pause audio only when the user pauses or the video ends.
     const pauseAudio = () => {
       clearWaitingPauseTimer();
+      if (ignoreNextVideoPauseRef.current) {
+        ignoreNextVideoPauseRef.current = false;
+        return;
+      }
+      awaitingCompanionAudioRef.current = false;
       a.pause();
     };
     const onWaiting = () => {
@@ -1812,12 +2056,12 @@ function SplitBlock({
     };
     const onRate = () => {
       a.playbackRate = v.playbackRate;
+      align(true);
     };
     const onTime = () => {
-      // Hard correct only on big drift to keep audio smooth otherwise.
-      if (Math.abs(a.currentTime - v.currentTime) > HARD_DRIFT) {
-        a.currentTime = v.currentTime;
-      }
+      if (v.paused) return;
+      const drift = Math.abs(a.currentTime - v.currentTime);
+      if (drift > DRIFT_HARD) a.currentTime = v.currentTime;
     };
     const onAudioCanPlay = () => {
       if (!v.paused && a.paused) {
@@ -1924,15 +2168,27 @@ function SplitBlock({
           items: progressive.map((p) => ({ label: p.label })),
         }
       : { kind: "none" };
-  const audioModel: AudioModel =
-    audioTracks.length > 1
-      ? {
-          kind: "split-native",
-          index: splitAudioIdx,
-          setIndex: setSplitAudioIdx,
-          items: audioTracks.map((t) => ({ label: t.label })),
-        }
-      : { kind: "none" };
+  // `pick-playback` already collapses same-language audio variants into a
+  // single language row (one URL per language, highest bitrate), so the
+  // entries here can be rendered as-is — no quality re-formatting needed.
+  const audioModel: AudioModel = hasMultipleDistinctAudioStreams(audioTracks)
+    ? {
+        kind: "split-native",
+        index: splitAudioIdx,
+        setIndex: setSplitAudioIdx,
+        items: audioTracks.map((t, idx) => ({
+          label:
+            t.label?.trim() ||
+            languageFirstAudioMenuLabel({
+              displayName: null,
+              language: null,
+              qualityFallback: null,
+              streamUrl: t.src,
+              index: idx,
+            }),
+        })),
+      }
+    : { kind: "none" };
 
   return (
     <div
@@ -1947,7 +2203,7 @@ function SplitBlock({
         playsInline
         muted
         preload="metadata"
-        onError={onPlaybackError}
+        onError={emitPlaybackError}
         className="absolute inset-0 h-full w-full object-contain"
       />
       {/* biome-ignore lint/a11y/useMediaCaption: companion audio, no VTT */}
@@ -1956,7 +2212,7 @@ function SplitBlock({
         key={activeAudioSrc}
         src={activeAudioSrc}
         preload="auto"
-        onError={onPlaybackError}
+        onError={emitPlaybackError}
         className="hidden"
       />
       <PlayerChrome
@@ -1981,18 +2237,7 @@ export function VideoPlayer({
   startAtSeconds,
 }: VideoPlayerProps) {
   const progressive = payload.mode === "progressive" ? payload.variants : null;
-  const isMobileUserAgent = useMemo(() => {
-    if (typeof navigator === "undefined") return false;
-    return /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent);
-  }, []);
-  const progressiveMobileSafe = useMemo(() => {
-    if (!progressive) return null;
-    if (!isMobileUserAgent) return progressive;
-    const muxedOnly = progressive.filter((v) => v.t === "muxed");
-    // Mobile browsers are much stricter with split <video>+<audio>; prefer
-    // single-file muxed variants when available for reliable audio playback.
-    return muxedOnly.length > 0 ? muxedOnly : progressive;
-  }, [progressive, isMobileUserAgent]);
+  const progressiveMobileSafe = progressive;
   const [qualityIndex, setQualityIndex] = useState(0);
   const [resumeSeekSeconds, setResumeSeekSeconds] = useState<
     number | undefined
@@ -2000,6 +2245,22 @@ export function VideoPlayer({
   const [splitVolume, setSplitVolume] = useState(
     () => readPlayerMediaPrefs().volume,
   );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (typeof startAtSeconds === "number" && Number.isFinite(startAtSeconds)) {
+      return;
+    }
+    try {
+      const raw = window.sessionStorage.getItem(playbackResumeStorageKey());
+      if (!raw) return;
+      window.sessionStorage.removeItem(playbackResumeStorageKey());
+      const parsed = Number.parseInt(raw, 10);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        setResumeSeekSeconds(parsed);
+      }
+    } catch {}
+  }, [startAtSeconds]);
 
   const setQualityWithResume = useCallback(
     (i: number, seekSeconds?: number) => {
@@ -2098,6 +2359,7 @@ export function VideoPlayer({
           key={active.v.video}
           video={active.v.video}
           audioTracks={active.v.audioTracks}
+          defaultAudioIndex={active.v.defaultAudioIndex}
           poster={poster}
           title={title}
           volume={splitVolume}

@@ -231,6 +231,8 @@ export type ProxiedPlayableVariant =
       video: string;
       audio: string;
       audioTracks: { label: string; src: string }[];
+      /** Default language row index (original when upstream marks it). */
+      defaultAudioIndex?: number;
     };
 
 export function toProxiedOrDirectVariants(
@@ -261,6 +263,7 @@ export function toProxiedOrDirectVariants(
           detail,
         ),
         audioTracks,
+        defaultAudioIndex: v.defaultAudioIndex ?? 0,
       };
     }
     return {

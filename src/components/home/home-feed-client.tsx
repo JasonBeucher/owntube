@@ -40,6 +40,15 @@ function findVerticalScrollParent(el: HTMLElement | null): HTMLElement | null {
   return document.querySelector(".ot-app-scroll");
 }
 
+/** Main app scroller — prefer this as IO root so intersection matches user scroll. */
+function getInfiniteScrollRoot(
+  sentinel: HTMLElement | null,
+): HTMLElement | null {
+  const app = document.querySelector<HTMLElement>(".ot-app-scroll");
+  if (app) return app;
+  return findVerticalScrollParent(sentinel);
+}
+
 export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
   const [page, setPage] = useState(1);
   const [merged, setMerged] = useState<UnifiedVideo[]>([]);
@@ -92,7 +101,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
   useEffect(() => {
     const el = loadMoreRef.current;
     if (!el) return;
-    const root = findVerticalScrollParent(el);
+    const root = getInfiniteScrollRoot(el);
     const obs = new IntersectionObserver(
       (entries) => {
         const visible = entries.some((e) => e.isIntersecting);
@@ -106,7 +115,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [onIntersect, merged.length]);
+  }, [onIntersect]);
 
   /** When a page just finished loading, continue if the sentinel is still visible. */
   useEffect(() => {
@@ -128,7 +137,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
   /** Fallback scroll: some browsers do not retrigger the observer while the target stays visible. */
   useEffect(() => {
     const el = loadMoreRef.current;
-    const root = el ? findVerticalScrollParent(el) : null;
+    const root = el ? getInfiniteScrollRoot(el) : null;
     const onScrollOrResize = () => {
       const sentinel = loadMoreRef.current;
       if (!sentinel) return;
@@ -151,7 +160,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
       scrollTarget.removeEventListener("scroll", onScrollOrResize);
       window.removeEventListener("resize", onScrollOrResize);
     };
-  }, [bumpPage, merged.length]);
+  }, [bumpPage]);
 
   const subtitle = useMemo(() => {
     if (!feed.data) return "";

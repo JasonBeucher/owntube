@@ -83,7 +83,8 @@ export function watchedRepeatPenalty(
 /**
  * Drops obvious junk from the trending-heavy pool when we have enough history:
  * keep items that match topics you watch, channels you watch, or channels
- * present in your recent watch window (see `historyChannelIds`).
+ * present in your recent watch window or from like/save interactions (caller
+ * should pass the merged channel-id set).
  */
 export function keepCandidateForPersonalizedFeed(
   video: UnifiedVideo,

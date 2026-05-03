@@ -19,6 +19,10 @@ function emptySignals(overrides: Partial<UserSignals> = {}): UserSignals {
     channelLastWatchedAt: new Map(),
     channelsOrderedByRecentWatch: [],
     historyChannelIds: new Set(),
+    likedVideoIds: new Set(),
+    dislikedVideoIds: new Set(),
+    savedVideoIds: new Set(),
+    interactionInterestChannelIds: new Set(),
     ...overrides,
   };
 }

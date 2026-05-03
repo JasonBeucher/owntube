@@ -4,6 +4,7 @@ import {
   coercePublishedSecondsFromUpstream,
   compareSubscriptionHeads,
   parseRelativePublishedToUnix,
+  pickNewestVideoPerChannel,
   publishedSortKey,
 } from "./published-sort-key";
 
@@ -49,6 +50,52 @@ describe("publishedSortKey", () => {
 describe("coercePublishedSecondsFromUpstream", () => {
   it("rejects tiny numeric values that are not plausible unix timestamps", () => {
     expect(coercePublishedSecondsFromUpstream(3_600)).toBeUndefined();
+  });
+});
+
+describe("pickNewestVideoPerChannel", () => {
+  it("with maxPerChannel 1 keeps only the newest upload per channel", () => {
+    const now = 1_700_000_000;
+    const ch = "UCamixem";
+    const old: UnifiedVideo = {
+      videoId: "old",
+      title: "Old",
+      channelId: ch,
+      publishedText: "2 months ago",
+    };
+    const recent: UnifiedVideo = {
+      videoId: "new",
+      title: "New",
+      channelId: ch,
+      publishedText: "1 hour ago",
+    };
+    const picked = pickNewestVideoPerChannel([old, recent], {
+      nowSec: now,
+      maxPerChannel: 1,
+    });
+    expect(picked).toHaveLength(1);
+    expect(picked[0]!.videoId).toBe("new");
+  });
+
+  it("default keeps up to maxPerChannel newest per channel", () => {
+    const now = 1_700_000_000;
+    const ch = "UCx";
+    const rows: UnifiedVideo[] = Array.from({ length: 14 }, (_, i) => ({
+      videoId: `v${i}`,
+      title: `t${i}`,
+      channelId: ch,
+      publishedText: `${i + 1} days ago`,
+    }));
+    const picked = pickNewestVideoPerChannel(rows, { nowSec: now });
+    expect(picked).toHaveLength(10);
+    expect(picked.map((v) => v.videoId)).toContain("v0");
+    expect(picked.map((v) => v.videoId)).not.toContain("v13");
+  });
+
+  it("keeps every video that has no channelId", () => {
+    const a: UnifiedVideo = { videoId: "a", title: "a" };
+    const b: UnifiedVideo = { videoId: "b", title: "b" };
+    expect(pickNewestVideoPerChannel([a, b])).toHaveLength(2);
   });
 });
 

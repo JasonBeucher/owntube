@@ -1,8 +1,9 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { logger } from "@/lib/logger";
+import { pickNewestVideoPerChannel } from "@/lib/published-sort-key";
 import type { AppDb } from "@/server/db/client";
-import { channelMeta, subscriptions, watchHistory } from "@/server/db/schema";
-import { useColdStartBlend } from "@/server/recommendation/coldstart";
+import { channelMeta, watchHistory } from "@/server/db/schema";
+import { collectTaggedVideoCandidates } from "@/server/recommendation/collect-tagged-candidates";
 import {
   appendRecommendationDebugLog,
   recommendationDebugEnabled,
@@ -15,13 +16,11 @@ import {
   scoreCandidateDetail,
 } from "@/server/recommendation/scoring";
 import { collectUserSignals } from "@/server/recommendation/signals";
+import { readCachedDetailTitlesForVideos } from "@/server/recommendation/taste-corpus";
 import type { ScoredVideo } from "@/server/recommendation/types";
-import {
-  fetchChannelPage,
-  fetchTrendingVideos,
-  type ProxySourceOverrides,
-} from "@/server/services/proxy";
+import type { ProxySourceOverrides } from "@/server/services/proxy";
 import type { UnifiedVideo } from "@/server/services/proxy.types";
+import { getUserSettings } from "@/server/settings/profile";
 
 export type RecommendationResult = {
   videos: UnifiedVideo[];
@@ -29,13 +28,6 @@ export type RecommendationResult = {
   hasMore: boolean;
 };
 
-const MIN_WATCH_ROWS_FOR_HISTORY_POOL = 3;
-const MAX_HISTORY_CHANNEL_FETCHES = 32;
-const VIDEOS_PER_HISTORY_CHANNEL = 12;
-/** If the history-only pool is smaller than this (after dedupe), blend trending in. */
-const MIN_UNIQUE_CANDIDATES_HISTORY_ONLY = 14;
-
-type TaggedVideo = { video: UnifiedVideo; source: string };
 type RecommendationPoolCacheEntry = {
   expiresAt: number;
   coldStart: boolean;
@@ -43,7 +35,6 @@ type RecommendationPoolCacheEntry = {
 };
 
 const RECOMMENDATION_POOL_CACHE_TTL_MS = 90_000;
-const CHANNEL_FETCH_CONCURRENCY = 6;
 const recommendationPoolCache = new Map<string, RecommendationPoolCacheEntry>();
 const recommendationPoolInFlight = new Map<
   string,
@@ -117,15 +108,7 @@ function isMissingChannelMetaTableError(error: unknown): boolean {
   return msg.toLowerCase().includes("no such table: channel_meta");
 }
 
-function withChannelAvatarFallback(
-  video: UnifiedVideo,
-  channelAvatarUrl: string | undefined,
-): UnifiedVideo {
-  if (video.channelAvatarUrl || !channelAvatarUrl) return video;
-  return { ...video, channelAvatarUrl };
-}
-
-function enrichVideosWithStoredChannelAvatars(
+export function enrichVideosWithStoredChannelAvatars(
   db: AppDb,
   videos: UnifiedVideo[],
 ): UnifiedVideo[] {
@@ -221,151 +204,22 @@ export async function getRecommendations(
     const watchedEver = new Set(watchedRows.map((r) => r.videoId));
 
     const signals = collectUserSignals(db, userId);
+    for (const id of signals.dislikedVideoIds) {
+      watchedEver.add(id);
+    }
     const region = opts.region ?? "US";
-    const coldStart = useColdStartBlend(signals.totalWatches);
-
-    const taggedCandidates: TaggedVideo[] = [];
-    const recentCoverageByChannel = new Map<string, number>();
-
-    const canBuildFromHistory =
-      signals.totalWatches >= MIN_WATCH_ROWS_FOR_HISTORY_POOL &&
-      signals.channelsOrderedByRecentWatch.length > 0;
-
-    if (canBuildFromHistory) {
-      const historyChannels = signals.channelsOrderedByRecentWatch.slice(
-        0,
-        MAX_HISTORY_CHANNEL_FETCHES,
-      );
-      for (
-        let i = 0;
-        i < historyChannels.length;
-        i += CHANNEL_FETCH_CONCURRENCY
-      ) {
-        const batch = historyChannels.slice(i, i + CHANNEL_FETCH_CONCURRENCY);
-        const settled = await Promise.allSettled(
-          batch.map(async (channelId) => {
-            const ch = await fetchChannelPage(
-              db,
-              { channelId },
-              opts.overrides,
-            );
-            return {
-              channelId,
-              channelAvatarUrl: ch.avatarUrl ?? undefined,
-              page: ch.videos.slice(0, VIDEOS_PER_HISTORY_CHANNEL),
-            };
-          }),
-        );
-        for (const item of settled) {
-          if (item.status !== "fulfilled") continue;
-          const { channelId, channelAvatarUrl, page } = item.value;
-          for (const v of page) {
-            taggedCandidates.push({
-              video: withChannelAvatarFallback(v, channelAvatarUrl),
-              source: `history_channel:${channelId}`,
-            });
-          }
-          const pageIds = page
-            .map((v) => v.videoId)
-            .filter((id) => id.length > 0);
-          if (pageIds.length > 0) {
-            let hit = 0;
-            for (const id of pageIds) {
-              if (signals.watchedVideoIds.has(id)) hit += 1;
-            }
-            recentCoverageByChannel.set(channelId, hit / pageIds.length);
-          }
-        }
-      }
-    }
-
-    const dedupePreview = new Map<string, UnifiedVideo>();
-    for (const { video: v } of taggedCandidates) {
-      if (!dedupePreview.has(v.videoId)) dedupePreview.set(v.videoId, v);
-    }
-    const historyOnlyUnique = dedupePreview.size;
-
-    const needTrendingBlend =
-      coldStart ||
-      !canBuildFromHistory ||
-      historyOnlyUnique < MIN_UNIQUE_CANDIDATES_HISTORY_ONLY;
-
-    if (needTrendingBlend) {
-      const trending = await fetchTrendingVideos(
-        db,
-        { region, limit: 45 },
-        opts.overrides,
-      );
-      for (const v of trending.videos) {
-        taggedCandidates.push({ video: v, source: "trending" });
-      }
-    }
-
-    if (coldStart || !canBuildFromHistory) {
-      const subs = db
-        .select({
-          channelId: subscriptions.channelId,
-          subscribedAt: subscriptions.subscribedAt,
-        })
-        .from(subscriptions)
-        .where(eq(subscriptions.userId, userId))
-        .orderBy(desc(subscriptions.subscribedAt))
-        .limit(80)
-        .all();
-
-      const sortedSubs = [...subs].sort((a, b) => {
-        const wa = signals.channelWeights.get(a.channelId) ?? 0;
-        const wb = signals.channelWeights.get(b.channelId) ?? 0;
-        if (wb !== wa) return wb - wa;
-        return b.subscribedAt - a.subscribedAt;
-      });
-
-      const subsWithWatchActivity = sortedSubs.filter((s) => {
-        const w = signals.channelWeights.get(s.channelId) ?? 0;
-        const d = signals.distinctWatchesByChannel.get(s.channelId) ?? 0;
-        return w > 0 || d > 0;
-      });
-
-      const maxChannelFetches = 24;
-      const channels = subsWithWatchActivity.slice(0, maxChannelFetches);
-      for (let i = 0; i < channels.length; i += CHANNEL_FETCH_CONCURRENCY) {
-        const batch = channels.slice(i, i + CHANNEL_FETCH_CONCURRENCY);
-        const settled = await Promise.allSettled(
-          batch.map(async (s) => {
-            const ch = await fetchChannelPage(
-              db,
-              { channelId: s.channelId },
-              opts.overrides,
-            );
-            return {
-              channelId: s.channelId,
-              channelAvatarUrl: ch.avatarUrl ?? undefined,
-              page: ch.videos.slice(0, 10),
-            };
-          }),
-        );
-        for (const item of settled) {
-          if (item.status !== "fulfilled") continue;
-          const { channelId, channelAvatarUrl, page } = item.value;
-          for (const v of page) {
-            taggedCandidates.push({
-              video: withChannelAvatarFallback(v, channelAvatarUrl),
-              source: `subscription:${channelId}`,
-            });
-          }
-          const pageIds = page
-            .map((v) => v.videoId)
-            .filter((id) => id.length > 0);
-          if (pageIds.length > 0) {
-            let hit = 0;
-            for (const id of pageIds) {
-              if (signals.watchedVideoIds.has(id)) hit += 1;
-            }
-            recentCoverageByChannel.set(channelId, hit / pageIds.length);
-          }
-        }
-      }
-    }
+    const {
+      tagged: taggedCandidates,
+      recentCoverageByChannel,
+      coldStart,
+      needTrendingBlend,
+      canBuildFromHistory,
+      historyOnlyUnique,
+    } = await collectTaggedVideoCandidates(db, userId, {
+      region,
+      overrides: opts.overrides,
+      signals,
+    });
 
     const scoreContext: RecommendationScoreContext = {
       recentCoverageByChannel,
@@ -379,11 +233,37 @@ export async function getRecommendations(
         sourceByVideoId.set(v.videoId, source);
       }
     }
-    const uniqueRaw = [...byId.values()].filter(
-      (v) => !watchedEver.has(v.videoId),
+    const nowSec = Math.floor(Date.now() / 1000);
+    const uniqueRaw = pickNewestVideoPerChannel(
+      [...byId.values()].filter((v) => !watchedEver.has(v.videoId)),
+      { nowSec, maxPerChannel: 12 },
     );
     const unique = enrichVideosWithStoredChannelAvatars(db, uniqueRaw);
-    const corpusTitles = unique.map((v) => v.title).slice(0, 200);
+    const tasteVideoIds = Array.from(
+      new Set([...signals.likedVideoIds, ...signals.savedVideoIds]),
+    );
+    const tasteTitles = readCachedDetailTitlesForVideos(db, tasteVideoIds, 72);
+    const userSettings = getUserSettings(db, userId);
+    const keywordCorpus: string[] = [];
+    for (const kw of userSettings.tasteKeywords) {
+      const k = kw.trim();
+      if (!k) continue;
+      keywordCorpus.push(k, k, k);
+    }
+    const poolTitles = unique.map((v) => v.title).slice(0, 200);
+    const corpusSeen = new Set<string>();
+    const corpusTitles: string[] = [];
+    for (const t of [...keywordCorpus, ...tasteTitles, ...poolTitles]) {
+      const low = t.trim().toLowerCase();
+      if (!low || corpusSeen.has(low)) continue;
+      corpusSeen.add(low);
+      corpusTitles.push(t.trim());
+      if (corpusTitles.length >= 240) break;
+    }
+    const interestChannelIds = new Set([
+      ...signals.historyChannelIds,
+      ...signals.interactionInterestChannelIds,
+    ]);
     const maxCh = Math.max(1, ...signals.channelWeights.values());
 
     let scored: ScoredVideo[] = unique.map((v) => {
@@ -423,7 +303,7 @@ export async function getRecommendations(
           row,
           signals,
           corpusTitles,
-          signals.historyChannelIds,
+          interestChannelIds,
         ),
       );
       if (filtered.length >= Math.max(opts.pageSize * 2, 16)) {
@@ -431,7 +311,8 @@ export async function getRecommendations(
       }
     }
 
-    const poolSize = Math.min(240, scored.length);
+    /** Larger pool so pagination lasts longer before hasMore ends. */
+    const poolSize = Math.min(360, scored.length);
     const diversified = maximalMarginalRelevance(
       scored.slice(0, poolSize),
       poolSize,
@@ -440,7 +321,6 @@ export async function getRecommendations(
     const pageRows = diversified.slice(start, start + opts.pageSize);
 
     if (recommendationDebugEnabled()) {
-      const interest = signals.historyChannelIds;
       const items = pageRows.map((row, i) => {
         const passedTopicGate =
           coldStart ||
@@ -448,7 +328,7 @@ export async function getRecommendations(
             row,
             signals,
             corpusTitles,
-            interest,
+            interestChannelIds,
           );
         return {
           feedRank: start + i,

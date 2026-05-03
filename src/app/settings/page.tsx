@@ -26,8 +26,22 @@ export default async function SettingsPage() {
           <Link href="/">Home</Link>
         </Button>
       </PageHeader>
-      <SettingsPanel initial={settings} />
-      <TakeoutImportPanel />
+      <div className="space-y-8">
+        <SettingsPanel initial={settings} />
+        <TakeoutImportPanel />
+      </div>
+
+      <section className="space-y-3 rounded-[14px] border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 shadow-sm">
+        <h2 className="text-lg font-semibold tracking-tight">Recommendations</h2>
+        <p className="text-sm text-[hsl(var(--muted-foreground))]">
+          Run the taste wizard to set interest keywords and rate sample videos.
+          Likes, dislikes, and saves from the rest of the app also shape your
+          feed. For a focused view of signals, open Algorithm in the sidebar.
+        </p>
+        <Button type="button" variant="outline" size="sm" asChild>
+          <Link href="/onboarding/taste?manual=1">Refine recommendations</Link>
+        </Button>
+      </section>
     </main>
   );
 }

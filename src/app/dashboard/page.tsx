@@ -25,6 +25,12 @@ export default async function DashboardPage() {
         subtitle="Signals from your watch history — your feed stays on your machine."
       >
         <Link
+          href="/onboarding/taste?manual=1"
+          className="text-sm font-medium text-[hsl(var(--primary))] underline-offset-4 hover:underline"
+        >
+          Refine recommendations
+        </Link>
+        <Link
           href="/history"
           className="text-sm font-medium text-[hsl(var(--primary))] underline-offset-4 hover:underline"
         >

@@ -25,10 +25,10 @@ export function RegisterForm() {
             email,
             password,
             redirect: false,
-            callbackUrl: "/search",
+            callbackUrl: "/",
           });
           if (result?.ok) {
-            window.location.href = result.url ?? "/search";
+            window.location.href = "/onboarding/taste";
           }
         } catch (mutationError) {
           setError(

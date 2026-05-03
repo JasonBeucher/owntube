@@ -116,6 +116,61 @@ export function newerPublished(
   return a.videoId.localeCompare(b.videoId);
 }
 
+export type PickNewestPerChannelOptions = {
+  nowSec?: number;
+  /**
+   * Max uploads kept per channel (newest first by `publishedSortKey`).
+   * Default 10 — enough for the reco pool / infinite scroll; use 1 to keep only
+   * the single newest candidate per channel.
+   */
+  maxPerChannel?: number;
+};
+
+/**
+ * For each `channelId`, keep the `maxPerChannel` most recently published
+ * videos (default 10). Entries without `channelId` are all kept. Trims stale
+ * duplicates from the same channel while preserving pool depth for pagination.
+ */
+export function pickNewestVideoPerChannel(
+  videos: readonly UnifiedVideo[],
+  options?: PickNewestPerChannelOptions,
+): UnifiedVideo[] {
+  const nowSec = options?.nowSec ?? Math.floor(Date.now() / 1000);
+  const maxPerChannel = Math.max(
+    1,
+    Math.min(36, options?.maxPerChannel ?? 10),
+  );
+  const byChannel = new Map<string, UnifiedVideo[]>();
+  const withoutChannel: UnifiedVideo[] = [];
+  for (const v of videos) {
+    if (!v.channelId || v.channelId.length === 0) {
+      withoutChannel.push(v);
+      continue;
+    }
+    let list = byChannel.get(v.channelId);
+    if (!list) {
+      list = [];
+      byChannel.set(v.channelId, list);
+    }
+    list.push(v);
+  }
+  const out: UnifiedVideo[] = [...withoutChannel];
+  for (const arr of byChannel.values()) {
+    const sorted = [...arr].sort((a, b) => {
+      const d = publishedSortKey(b, nowSec) - publishedSortKey(a, nowSec);
+      if (d !== 0) return d;
+      return a.videoId.localeCompare(b.videoId);
+    });
+    out.push(...sorted.slice(0, maxPerChannel));
+  }
+  const seen = new Set<string>();
+  return out.filter((v) => {
+    if (seen.has(v.videoId)) return false;
+    seen.add(v.videoId);
+    return true;
+  });
+}
+
 /** Tri type flux abonnements : date décroissante, puis évite d'enchaîner sur la même chaîne si dates égales. */
 export function compareSubscriptionHeads(
   a: { subscriptionChannelId: string; v: UnifiedVideo },

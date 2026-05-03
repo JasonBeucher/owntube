@@ -31,6 +31,145 @@ describe("buildWatchPlayback", () => {
     });
   });
 
+  it("prefers progressive split over HLS when ≥2 audio languages are exposed", () => {
+    const w = buildWatchPlayback(
+      base({
+        hlsUrl: "https://h.example/playlist.m3u8",
+        videoSources: [
+          {
+            url: "https://g.example/1080v.mp4",
+            quality: "1080p",
+            videoOnly: true,
+            mimeType: "video/mp4",
+          },
+        ],
+        audioSources: [
+          {
+            url: "https://g.example/aud-en.m4a",
+            quality: "medium",
+            mimeType: "audio/mp4",
+            language: "en",
+            audioTrackDisplayName: "English",
+          },
+          {
+            url: "https://g.example/aud-fr.m4a",
+            quality: "medium",
+            mimeType: "audio/mp4",
+            language: "fr",
+            audioTrackDisplayName: "French",
+          },
+        ],
+      }),
+    );
+    expect(w.kind).toBe("progressive");
+    if (w.kind === "progressive") {
+      expect(w.variants).toHaveLength(1);
+      const v = w.variants[0];
+      expect(v?.t).toBe("split");
+      if (v?.t === "split") {
+        expect(v.audioOptions).toHaveLength(2);
+        const labels = v.audioOptions.map((o) => o.label.toLowerCase());
+        expect(labels.some((l) => /eng|angl/.test(l))).toBe(true);
+        expect(labels.some((l) => /fr[ae]|fran/.test(l))).toBe(true);
+      }
+    }
+  });
+
+  it("infers ≥2 audio languages from xtags inside googlevideo URLs and prefers split", () => {
+    const w = buildWatchPlayback(
+      base({
+        hlsUrl: "https://h.example/playlist.m3u8",
+        videoSources: [
+          {
+            url: "https://g.example/720v.mp4",
+            quality: "720p",
+            videoOnly: true,
+            mimeType: "video/mp4",
+          },
+        ],
+        audioSources: [
+          {
+            url: "https://g.example/playback?xtags=acont%3Doriginal%3Alang%3Den-US&itag=140",
+            quality: "medium",
+            mimeType: "audio/mp4",
+          },
+          {
+            url: "https://g.example/playback?xtags=acont%3Ddubbed%3Alang%3Des-419&itag=140",
+            quality: "medium",
+            mimeType: "audio/mp4",
+          },
+        ],
+      }),
+    );
+    expect(w.kind).toBe("progressive");
+    if (w.kind === "progressive" && w.variants[0]?.t === "split") {
+      expect(w.variants[0].audioOptions).toHaveLength(2);
+      const enOpt = w.variants[0].audioOptions.find((o) =>
+        o.url.includes("lang%3Den"),
+      );
+      expect(enOpt?.label.toLowerCase()).toMatch(/original/);
+      expect(w.variants[0].defaultAudioIndex).toBe(0);
+    }
+  });
+
+  it("defaults to original audio even when it is not the first adaptive row", () => {
+    const w = buildWatchPlayback(
+      base({
+        videoSources: [
+          {
+            url: "https://g.example/1080v.mp4",
+            quality: "1080p",
+            videoOnly: true,
+            mimeType: "video/mp4",
+          },
+        ],
+        audioSources: [
+          {
+            url: "https://g.example/playback?xtags=lang%3Dfr&itag=140",
+            quality: "medium",
+            mimeType: "audio/mp4",
+          },
+          {
+            url: "https://g.example/playback?xtags=acont%3Doriginal%3Alang%3Den&itag=140",
+            quality: "medium",
+            mimeType: "audio/mp4",
+          },
+        ],
+      }),
+    );
+    expect(w.kind).toBe("progressive");
+    if (w.kind === "progressive" && w.variants[0]?.t === "split") {
+      expect(w.variants[0].audioUrl).toContain("lang%3Den");
+      expect(w.variants[0].defaultAudioIndex).toBe(1);
+    }
+  });
+
+  it("keeps HLS when only one audio language is detected", () => {
+    const w = buildWatchPlayback(
+      base({
+        hlsUrl: "https://h.example/playlist.m3u8",
+        videoSources: [
+          {
+            url: "https://g.example/720v.mp4",
+            quality: "720p",
+            videoOnly: true,
+            mimeType: "video/mp4",
+          },
+        ],
+        audioSources: [
+          {
+            url: "https://g.example/aud.m4a",
+            quality: "medium",
+            mimeType: "audio/mp4",
+            language: "en",
+            audioTrackDisplayName: "English",
+          },
+        ],
+      }),
+    );
+    expect(w.kind).toBe("hls");
+  });
+
   it("uses progressive list sorted with best first (muxed)", () => {
     const w = buildWatchPlayback(
       base({
@@ -105,13 +244,13 @@ describe("buildWatchPlayback", () => {
     );
     expect(w.kind).toBe("progressive");
     if (w.kind === "progressive") {
-      expect(w.variants.map((v) => (v.t === "muxed" ? v.url : v.videoUrl))).toEqual(
-        ["https://g.example/good.mp4"],
-      );
+      expect(
+        w.variants.map((v) => (v.t === "muxed" ? v.url : v.videoUrl)),
+      ).toEqual(["https://g.example/good.mp4"]);
     }
   });
 
-  it('drops video/* rows whose codecs are audio-only when a normal muxed exists', () => {
+  it("drops video/* rows whose codecs are audio-only when a normal muxed exists", () => {
     const w = buildWatchPlayback(
       base({
         videoSources: [
@@ -190,7 +329,7 @@ describe("buildWatchPlayback", () => {
     expect(w).toEqual({ kind: "none", onlyDashOrUnsupported: true });
   });
 
-  it("uses quality-only split row label; audio submenu still shows bitrate when present", () => {
+  it("uses quality-only split row label; audio submenu shows language name without bitrate noise", () => {
     const w = buildWatchPlayback(
       base({
         videoSources: [
@@ -219,7 +358,9 @@ describe("buildWatchPlayback", () => {
       expect(w.variants[0]?.label).toBe("1080p");
       if (w.variants[0]?.t === "split") {
         const al = w.variants[0].audioOptions[0]?.label ?? "";
-        expect(al.endsWith(" · 128 kbps")).toBe(true);
+        // Language picker should be one clean row per language, no bitrate
+        // suffix and no `(English)` redundancy when the autonym already matches.
+        expect(al).not.toMatch(/kbps|Mbps/);
         expect(al).not.toContain("(");
       }
     }
@@ -397,6 +538,41 @@ describe("buildWatchPlayback", () => {
     if (w.kind === "progressive") {
       expect(w.variants).toHaveLength(2);
       expect(w.variants.map((v) => v.label)).toEqual(["1080p", "720p"]);
+    }
+  });
+
+  it("collapses multiple bitrate-only audio rows without language metadata into one split track", () => {
+    const w = buildWatchPlayback(
+      base({
+        videoSources: [
+          {
+            url: "https://g.example/1080v.mp4",
+            quality: "1080p",
+            videoOnly: true,
+            mimeType: "video/mp4",
+          },
+        ],
+        audioSources: [
+          {
+            url: "https://g.example/aud-low.m4a",
+            quality: "medium",
+            mimeType: "audio/mp4",
+            bitrate: 128_000,
+          },
+          {
+            url: "https://g.example/aud-high.m4a",
+            quality: "high",
+            mimeType: "audio/mp4",
+            bitrate: 256_000,
+          },
+        ],
+      }),
+    );
+    expect(w.kind).toBe("progressive");
+    if (w.kind === "progressive" && w.variants[0]?.t === "split") {
+      expect(w.variants[0].audioOptions).toHaveLength(1);
+      expect(w.variants[0].audioUrl).toBe("https://g.example/aud-high.m4a");
+      expect(w.variants[0].defaultAudioIndex).toBe(0);
     }
   });
 
