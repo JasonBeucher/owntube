@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, gt } from "drizzle-orm";
+import {
+  stripRestrictedListVideos,
+  titleSuggestsMembersOnlyOrSubscriberOnly,
+} from "@/lib/feed-exclude-restricted";
 import { invidiousPortCollidesWithNextApp } from "@/lib/invidious-port-collision";
 import { logger } from "@/lib/logger";
 import {
@@ -20,11 +24,11 @@ import {
   relatedVideosResultSchema,
   type SearchVideosInput,
   type SearchVideosResult,
-  type UnifiedChannel,
   searchVideosResultSchema,
   type TrendingInput,
   type TrendingVideosResult,
   trendingVideosResultSchema,
+  type UnifiedChannel,
   type UnifiedVideo,
   unifiedVideoSchema,
   type VideoDetail,
@@ -328,6 +332,65 @@ function reconcilePublishedAtWithText(
   return publishedAt;
 }
 
+function upstreamBadgesOrLabelsRestricted(o: Record<string, unknown>): boolean {
+  const lists = [o.badges, o.videoBadges, o.ownerBadges];
+  for (const raw of lists) {
+    if (!Array.isArray(raw)) continue;
+    for (const item of raw) {
+      if (typeof item === "string") {
+        if (/member|membre|subscriber\s+only|subs?\s+only/i.test(item)) {
+          return true;
+        }
+      } else if (item && typeof item === "object") {
+        const r = item as Record<string, unknown>;
+        for (const c of [
+          r.label,
+          r.text,
+          r.type,
+          r.tooltip,
+          r.style,
+          r.title,
+        ]) {
+          if (
+            typeof c === "string" &&
+            /member|membre|subscriber\s+only|subs?\s+only/i.test(c)
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  const err = o.error;
+  if (typeof err === "string" && err.trim().length > 0) {
+    if (/\b(members?\s+only|subscriber|private)\b/i.test(err)) return true;
+  }
+  return false;
+}
+
+/**
+ * Invidious/Piped list payloads may mark items that need channel membership,
+ * payment, or Premium — exclude them from feeds and unified lists.
+ */
+function isUpstreamMembersOrPaidOnly(o: Record<string, unknown>): boolean {
+  const on = (v: unknown) => v === true || v === 1 || v === "1" || v === "true";
+  if (on(o.premium)) return true;
+  if (on(o.paid)) return true;
+  if (upstreamBadgesOrLabelsRestricted(o)) return true;
+  for (const key of [
+    "isMembersOnly",
+    "membersOnly",
+    "is_members_only",
+    "members_only",
+    "uploaderMember",
+    "subscribersOnly",
+    "requiresSubscription",
+  ] as const) {
+    if (on(o[key])) return true;
+  }
+  return false;
+}
+
 function mapPipedItem(raw: unknown, pipedBase = ""): UnifiedVideo | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
@@ -337,6 +400,8 @@ function mapPipedItem(raw: unknown, pipedBase = ""): UnifiedVideo | null {
   const title = typeof o.title === "string" ? o.title : "";
   const videoId = extractVideoIdFromUrl(url);
   if (!videoId || !title) return null;
+  if (isUpstreamMembersOrPaidOnly(o)) return null;
+  if (titleSuggestsMembersOnlyOrSubscriberOnly(title)) return null;
   const thumbnail = typeof o.thumbnail === "string" ? o.thumbnail : undefined;
   const duration =
     typeof o.duration === "number" && Number.isFinite(o.duration)
@@ -408,7 +473,8 @@ function mapPipedChannelItem(
     name,
     avatarUrl: pickPipedUploaderAvatar(o, pipedBase),
     subscriberCount:
-      typeof o.subscriberCount === "number" && Number.isFinite(o.subscriberCount)
+      typeof o.subscriberCount === "number" &&
+      Number.isFinite(o.subscriberCount)
         ? Math.floor(o.subscriberCount)
         : undefined,
     description: typeof o.description === "string" ? o.description : undefined,
@@ -465,6 +531,8 @@ function mapInvidiousItem(raw: unknown, baseUrl = ""): UnifiedVideo | null {
   const videoId = typeof o.videoId === "string" ? o.videoId : "";
   const title = typeof o.title === "string" ? o.title : "";
   if (!videoId || !title) return null;
+  if (isUpstreamMembersOrPaidOnly(o)) return null;
+  if (titleSuggestsMembersOnlyOrSubscriberOnly(title)) return null;
   const thumbnailUrl = resolveInvidiousThumbnail(o.videoThumbnails, baseUrl);
   const durationSeconds =
     typeof o.lengthSeconds === "number" && Number.isFinite(o.lengthSeconds)
@@ -587,7 +655,7 @@ function toUnixText(seconds: unknown): string | undefined {
 function buildPipedSearchUrl(base: string, input: SearchVideosInput): string {
   const u = new URL("/search", `${base}/`);
   u.searchParams.set("q", input.q);
-  u.searchParams.set("filter", "videos");
+  u.searchParams.set("filter", "all");
   if (input.continuation) {
     u.searchParams.set("nextpage", input.continuation);
   }
@@ -600,7 +668,7 @@ function buildInvidiousSearchUrl(
 ): string {
   const u = new URL("/api/v1/search", `${base}/`);
   u.searchParams.set("q", input.q);
-  u.searchParams.set("type", "video");
+  u.searchParams.set("type", "all");
   const page =
     input.continuation && /^\d+$/.test(input.continuation)
       ? input.continuation
@@ -642,6 +710,7 @@ function readFreshSearchCache(
   logger.info("video_cache.hit", { cacheKey: key, kind: row.kind });
   return {
     videos: parsed.data.videos,
+    channels: parsed.data.channels,
     continuation: parsed.data.continuation,
     sourceUsed: "cache",
     stale: false,
@@ -660,6 +729,7 @@ function readStaleSearchCache(
   logger.warn("video_cache.stale_hit", { cacheKey: key, kind: row.kind });
   return {
     videos: parsed.data.videos,
+    channels: parsed.data.channels,
     continuation: parsed.data.continuation,
     sourceUsed: "cache",
     stale: true,
@@ -744,7 +814,8 @@ function parseInvidiousSearch(
   channels: UnifiedChannel[];
   continuation: string | null;
 } {
-  if (!Array.isArray(data)) return { videos: [], channels: [], continuation: null };
+  if (!Array.isArray(data))
+    return { videos: [], channels: [], continuation: null };
   const videos: UnifiedVideo[] = [];
   const channels: UnifiedChannel[] = [];
   for (const item of data) {
@@ -848,14 +919,20 @@ export async function searchVideos(
   };
 
   let resolved = await tryPiped();
-  if (!resolved || resolved.videos.length === 0) {
+  if (
+    !resolved ||
+    (resolved.videos.length === 0 && (resolved.channels?.length ?? 0) === 0)
+  ) {
     const fromInv = await tryInvidious();
     if (fromInv) {
       resolved = fromInv;
     }
   }
 
-  if (!resolved || resolved.videos.length === 0) {
+  if (
+    !resolved ||
+    (resolved.videos.length === 0 && (resolved.channels?.length ?? 0) === 0)
+  ) {
     const stale = readStaleSearchCache(db, key);
     if (stale) return stale;
     throw new UpstreamUnavailableError(errors.join("; ") || "no results");
@@ -896,9 +973,12 @@ function readPositiveNumberField(
 }
 
 /** Invidious/Piped `height` / Invidious `size` ("1280x720"); includes 0 if API sends it. */
-function readStreamHeightPx(stream: Record<string, unknown>): number | undefined {
+function readStreamHeightPx(
+  stream: Record<string, unknown>,
+): number | undefined {
   const h = stream.height;
-  if (typeof h === "number" && Number.isFinite(h) && h >= 0) return Math.round(h);
+  if (typeof h === "number" && Number.isFinite(h) && h >= 0)
+    return Math.round(h);
   if (typeof h === "string") {
     const n = Number.parseInt(h.trim(), 10);
     if (Number.isFinite(n) && n >= 0) return n;
@@ -1422,7 +1502,10 @@ function tokenizeRelatedText(value: string | undefined): string[] {
     .filter((part) => part.length >= 3);
 }
 
-function scoreRelatedCandidate(seed: VideoDetail, candidate: UnifiedVideo): number {
+function scoreRelatedCandidate(
+  seed: VideoDetail,
+  candidate: UnifiedVideo,
+): number {
   const seedTokens = new Set(tokenizeRelatedText(seed.title));
   const candidateTokens = new Set(tokenizeRelatedText(candidate.title));
   let overlap = 0;
@@ -1435,7 +1518,9 @@ function scoreRelatedCandidate(seed: VideoDetail, candidate: UnifiedVideo): numb
     Boolean(seed.channelId) && Boolean(candidate.channelId)
       ? seed.channelId === candidate.channelId
       : false;
-  const viewScore = Math.log10(Math.max(1, Math.floor(candidate.viewCount ?? 0)));
+  const viewScore = Math.log10(
+    Math.max(1, Math.floor(candidate.viewCount ?? 0)),
+  );
   return (
     overlapRatio * 100 +
     overlap * 8 +
@@ -1458,7 +1543,9 @@ function mergeAndRankRelatedVideos(
     unique.set(item.videoId, item);
   }
   const ranked = [...unique.values()];
-  ranked.sort((a, b) => scoreRelatedCandidate(seed, b) - scoreRelatedCandidate(seed, a));
+  ranked.sort(
+    (a, b) => scoreRelatedCandidate(seed, b) - scoreRelatedCandidate(seed, a),
+  );
   return ranked.slice(0, limit);
 }
 
@@ -1564,7 +1651,12 @@ export async function fetchRelatedVideos(
   }
 
   if (resolved.videos.length === 0) {
-    const fallback = await relatedVideosFromSameUploader(db, input, limit, overrides);
+    const fallback = await relatedVideosFromSameUploader(
+      db,
+      input,
+      limit,
+      overrides,
+    );
     if (fallback && fallback.length > 0) {
       resolved = {
         videos: fallback,
@@ -1602,7 +1694,7 @@ function readFreshTrendingCache(
   if (!parsed.success) return null;
   logger.info("video_cache.hit", { cacheKey: key, kind: row.kind });
   return {
-    videos: parsed.data.videos,
+    videos: stripRestrictedListVideos(parsed.data.videos),
     sourceUsed: "cache",
     stale: false,
   };
@@ -1619,7 +1711,7 @@ function readStaleTrendingCache(
   if (!parsed.success) return null;
   logger.warn("video_cache.stale_hit", { cacheKey: key, kind: row.kind });
   return {
-    videos: parsed.data.videos,
+    videos: stripRestrictedListVideos(parsed.data.videos),
     sourceUsed: "cache",
     stale: true,
     warning: "Upstream unavailable, serving stale cache.",
@@ -1751,12 +1843,17 @@ export async function fetchTrendingVideos(
       );
     }
 
+    const cleaned = stripRestrictedListVideos(resolved.videos);
+    const out: TrendingVideosResult = {
+      ...resolved,
+      videos: cleaned,
+    };
     const store = {
-      videos: resolved.videos,
-      sourceUsed: liveUpstreamSource(resolved.sourceUsed),
+      videos: out.videos,
+      sourceUsed: liveUpstreamSource(out.sourceUsed),
     };
     writeCache(db, key, store.sourceUsed, store, "trending");
-    return resolved;
+    return out;
   })();
   inFlightTrending.set(key, task);
   try {

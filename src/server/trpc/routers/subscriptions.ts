@@ -1,13 +1,14 @@
-import { and, desc, eq, or } from "drizzle-orm";
+import { and, desc, eq, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 import {
   compareSubscriptionHeads,
   newerPublished,
   publishedSortKey,
 } from "@/lib/published-sort-key";
+import { stripRestrictedListVideos } from "@/lib/feed-exclude-restricted";
 import { normalizeYoutubeChannelId } from "@/lib/youtube-channel-id";
 import type { AppDb } from "@/server/db/client";
-import { channelMeta, subscriptions } from "@/server/db/schema";
+import { channelMeta, subscriptions, watchHistory } from "@/server/db/schema";
 import { RateLimitExceededError } from "@/server/errors/rate-limit-exceeded";
 import { UpstreamUnavailableError } from "@/server/errors/upstream-unavailable";
 import {
@@ -18,7 +19,7 @@ import type {
   ChannelPageResult,
   UnifiedVideo,
 } from "@/server/services/proxy.types";
-import { getUserProxyOverrides } from "@/server/settings/profile";
+import { getUserProxyOverrides, getUserSettings } from "@/server/settings/profile";
 import { reconcileSubscriptionChannelIdsForUser } from "@/server/subscriptions/reconcile-channel-ids";
 import {
   protectedProcedure,
@@ -27,6 +28,7 @@ import {
 } from "@/server/trpc/init";
 
 const channelIdSchema = z.string().min(1).max(128);
+const videoIdSchema = z.string().min(5).max(64);
 
 /** Avoid hundreds of parallel upstream calls (rate limit → names fall back to raw IDs). */
 const LIST_DETAILED_BATCH = 5;
@@ -120,6 +122,51 @@ async function listDetailedChannelRows(
 
 function nowUnix(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+function markWatchedRows(
+  db: AppDb,
+  userId: number,
+  items: { videoId: string; channelId: string }[],
+): void {
+  const ts = nowUnix();
+  for (const item of items) {
+    const recent = db
+      .select()
+      .from(watchHistory)
+      .where(
+        and(
+          eq(watchHistory.userId, userId),
+          eq(watchHistory.videoId, item.videoId),
+          eq(watchHistory.isDeleted, 0),
+        ),
+      )
+      .orderBy(desc(watchHistory.startedAt))
+      .limit(1)
+      .all()[0];
+    if (recent) {
+      db.update(watchHistory)
+        .set({
+          completed: 1,
+          createdAt: ts,
+        })
+        .where(eq(watchHistory.id, recent.id))
+        .run();
+      continue;
+    }
+    db.insert(watchHistory)
+      .values({
+        userId,
+        videoId: item.videoId,
+        channelId: item.channelId,
+        startedAt: ts,
+        durationWatched: 0,
+        completed: 1,
+        isDeleted: 0,
+        createdAt: ts,
+      })
+      .run();
+  }
 }
 
 function isMissingChannelMetaTableError(error: unknown): boolean {
@@ -325,6 +372,73 @@ async function patchVisibleVideosWithRssDates(
       ...v,
       publishedAt: rssPublishedAt,
       publishedText: new Date(rssPublishedAt * 1000).toISOString(),
+    };
+  });
+}
+
+/** Fills `channelAvatarUrl` / name from `channel_meta` when upstream lists omit them. */
+function enrichSubscriptionVideosWithChannelMeta(
+  db: AppDb,
+  videos: UnifiedVideo[],
+): UnifiedVideo[] {
+  const channelIds = [
+    ...new Set(
+      videos
+        .map((v) => v.channelId)
+        .filter((c): c is string => typeof c === "string" && c.length > 0),
+    ),
+  ];
+  if (channelIds.length === 0) return videos;
+
+  let rows: {
+    channelId: string;
+    channelName: string;
+    avatarUrl: string | null;
+  }[] = [];
+  try {
+    rows = db
+      .select({
+        channelId: channelMeta.channelId,
+        channelName: channelMeta.channelName,
+        avatarUrl: channelMeta.avatarUrl,
+      })
+      .from(channelMeta)
+      .where(inArray(channelMeta.channelId, channelIds))
+      .all();
+  } catch (error) {
+    if (isMissingChannelMetaTableError(error)) return videos;
+    throw error;
+  }
+
+  const byId = new Map<
+    string,
+    { channelName: string; avatarUrl: string | null }
+  >();
+  for (const r of rows) {
+    const name = r.channelName?.trim();
+    if (!name) continue;
+    byId.set(r.channelId, { channelName: name, avatarUrl: r.avatarUrl ?? null });
+  }
+
+  return videos.map((v) => {
+    const id = v.channelId;
+    if (!id) return v;
+    const meta = byId.get(id);
+    if (!meta) return v;
+    const channelName = v.channelName?.trim() ? v.channelName : meta.channelName;
+    const channelAvatarUrl = v.channelAvatarUrl ?? meta.avatarUrl ?? undefined;
+    if (
+      channelName === v.channelName &&
+      channelAvatarUrl === v.channelAvatarUrl
+    ) {
+      return v;
+    }
+    return {
+      ...v,
+      channelName,
+      ...(channelAvatarUrl !== undefined
+        ? { channelAvatarUrl }
+        : {}),
     };
   });
 }
@@ -618,6 +732,46 @@ export const subscriptionsRouter = router({
       return { ok: true as const };
     }),
 
+  markWatched: protectedProcedure
+    .input(
+      z.object({
+        videoId: videoIdSchema,
+        channelId: channelIdSchema.optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) => {
+      markWatchedRows(ctx.db, ctx.userId, [
+        { videoId: input.videoId, channelId: input.channelId ?? "unknown" },
+      ]);
+      return { ok: true as const };
+    }),
+
+  markManyWatched: protectedProcedure
+    .input(
+      z.object({
+        items: z
+          .array(
+            z.object({
+              videoId: videoIdSchema,
+              channelId: channelIdSchema.optional(),
+            }),
+          )
+          .min(1)
+          .max(200),
+      }),
+    )
+    .mutation(({ ctx, input }) => {
+      markWatchedRows(
+        ctx.db,
+        ctx.userId,
+        input.items.map((i) => ({
+          videoId: i.videoId,
+          channelId: i.channelId ?? "unknown",
+        })),
+      );
+      return { ok: true as const };
+    }),
+
   /**
    * All uploads from subscribed channels (up to `pagesPerChannel` per
    * channel), de-duplicated and sorted by release date (newest first).
@@ -667,11 +821,17 @@ export const subscriptionsRouter = router({
           }
         }
       }
-      const videos = [...byId.values()].sort((a, b) =>
-        newerPublished(a, b, nowSec),
+      const videos = enrichSubscriptionVideosWithChannelMeta(
+        ctx.db,
+        [...byId.values()].sort((a, b) => newerPublished(a, b, nowSec)),
       );
+      const settings = getUserSettings(ctx.db, ctx.userId);
 
-      return { videos };
+      return {
+        videos: settings.hideRestrictedVideos
+          ? stripRestrictedListVideos(videos)
+          : videos,
+      };
     }),
 
   /** Paginated merged uploads for infinite scroll (`cursor` = pageParam from tRPC). */
@@ -717,13 +877,41 @@ export const subscriptionsRouter = router({
       const sortedPatchedVideos = [...patchedVideos].sort((a, b) =>
         newerPublished(a, b, nowSec),
       );
+      const withMeta = enrichSubscriptionVideosWithChannelMeta(
+        ctx.db,
+        sortedPatchedVideos,
+      );
+      const settings = getUserSettings(ctx.db, ctx.userId);
+      const visibleVideos = settings.hideRestrictedVideos
+        ? stripRestrictedListVideos(withMeta)
+        : withMeta;
+      const visibleVideoIds = visibleVideos.map((v) => v.videoId);
+      const watchedRows =
+        visibleVideoIds.length > 0
+          ? ctx.db
+              .select({ videoId: watchHistory.videoId })
+              .from(watchHistory)
+              .where(
+                and(
+                  eq(watchHistory.userId, ctx.userId),
+                  eq(watchHistory.isDeleted, 0),
+                  inArray(watchHistory.videoId, visibleVideoIds),
+                ),
+              )
+              .all()
+          : [];
+      const watchedSet = new Set(watchedRows.map((r) => r.videoId));
+      const visibleWithWatchState = visibleVideos.map((v) => ({
+        ...v,
+        watched: watchedSet.has(v.videoId),
+      }));
 
-      const gotFullPage = sortedPatchedVideos.length === limit;
+      const gotFullPage = withMeta.length === limit;
       const nextCursor =
         !exhausted && gotFullPage
-          ? encodeMergedFeedCursor(offset + sortedPatchedVideos.length)
+          ? encodeMergedFeedCursor(offset + withMeta.length)
           : null;
 
-      return { videos: sortedPatchedVideos, nextCursor };
+      return { videos: visibleWithWatchState, nextCursor };
     }),
 });

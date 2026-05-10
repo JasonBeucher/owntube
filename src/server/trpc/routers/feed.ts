@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
+import { stripRestrictedListVideos } from "@/lib/feed-exclude-restricted";
 import { watchHistory } from "@/server/db/schema";
 import { RateLimitExceededError } from "@/server/errors/rate-limit-exceeded";
 import { UpstreamUnavailableError } from "@/server/errors/upstream-unavailable";
@@ -41,6 +42,7 @@ export const feedRouter = router({
     const overrides = getUserProxyOverrides(ctx.db, ctx.userId);
     try {
       if (ctx.userId && !category) {
+        const settings = getUserSettings(ctx.db, ctx.userId);
         const rec = await getRecommendations(ctx.db, ctx.userId, {
           page,
           pageSize,
@@ -49,7 +51,9 @@ export const feedRouter = router({
         });
         return {
           kind: "personalized" as const,
-          videos: rec.videos,
+          videos: settings.hideRestrictedVideos
+            ? stripRestrictedListVideos(rec.videos)
+            : rec.videos,
           coldStart: rec.coldStart,
           hasMore: rec.hasMore,
           region,
@@ -63,7 +67,13 @@ export const feedRouter = router({
         overrides,
       );
       const start = (page - 1) * pageSize;
-      let pool = trending.videos;
+      let pool = stripRestrictedListVideos(trending.videos);
+      if (ctx.userId) {
+        const settings = getUserSettings(ctx.db, ctx.userId);
+        if (!settings.hideRestrictedVideos) {
+          pool = trending.videos;
+        }
+      }
       if (ctx.userId) {
         const seenRows = ctx.db
           .select({ videoId: watchHistory.videoId })

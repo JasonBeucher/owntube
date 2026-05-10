@@ -5,7 +5,8 @@ export type PlayerMediaPrefs = {
   muted: boolean;
 };
 
-const defaults: PlayerMediaPrefs = { volume: 1, muted: false };
+/** Default UI volume (before gain curve); lower than 1 avoids “too loud” on first play. */
+const defaults: PlayerMediaPrefs = { volume: 0.48, muted: false };
 
 export function readPlayerMediaPrefs(): PlayerMediaPrefs {
   if (typeof window === "undefined") return defaults;

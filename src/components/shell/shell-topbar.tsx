@@ -1,7 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
+import type { ReactNode } from "react";
 import { BrandLogo } from "@/components/shell/brand-logo";
 import { TopbarSearch } from "@/components/shell/topbar-search";
 
@@ -47,11 +47,7 @@ export function ShellTopbar({
             <line x1="3" y1="18" x2="21" y2="18" />
           </svg>
         </button>
-        <div
-          className={
-            isWatchRoute ? "block" : "hidden max-[900px]:block"
-          }
-        >
+        <div className={isWatchRoute ? "block" : "hidden max-[900px]:block"}>
           <BrandLogo showText={false} onNavigate={onLogoClick} />
         </div>
       </div>

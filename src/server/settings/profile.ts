@@ -20,6 +20,12 @@ export const appSettingsSchema = z.object({
   tasteOnboardingCompletedAt: z.number().int().optional(),
   /** Unix seconds when the user skipped the taste onboarding flow. */
   tasteOnboardingSkippedAt: z.number().int().optional(),
+  /** Hide members/subscribers-only videos when detected in list titles. */
+  hideRestrictedVideos: z.boolean().default(true),
+  /** Start watch page with cinema mode enabled. */
+  defaultCinemaMode: z.boolean().default(false),
+  /** Keep a mini player when leaving watch page. */
+  enableMiniPlayer: z.boolean().default(true),
 });
 
 export type AppSettings = z.infer<typeof appSettingsSchema>;
@@ -37,6 +43,9 @@ const defaultSettings: AppSettings = {
   theme: "system",
   trendingRegion: "US",
   tasteKeywords: [],
+  hideRestrictedVideos: true,
+  defaultCinemaMode: false,
+  enableMiniPlayer: true,
 };
 
 function nowUnix(): number {

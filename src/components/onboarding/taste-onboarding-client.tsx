@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { TRENDING_REGION_OPTIONS } from "@/lib/trending-regions";
 import {
   filterVideosBySessionDislikes,
   type SessionDislike,
@@ -11,7 +13,7 @@ import {
 import type { UnifiedVideo } from "@/server/services/proxy.types";
 import { trpc } from "@/trpc/react";
 
-type Step = "keywords" | "videos";
+type Step = "setup" | "keywords" | "videos" | "finish";
 
 const SUGGESTED_KEYWORDS: readonly string[] = [
   "linux",
@@ -135,13 +137,19 @@ export function TasteOnboardingClient() {
   const completeMutation = trpc.taste.complete.useMutation();
   const skipMutation = trpc.taste.skip.useMutation();
   const setInteractionMutation = trpc.interactions.set.useMutation();
+  const updateSettingsMutation = trpc.settings.update.useMutation();
 
-  const [step, setStep] = useState<Step>("keywords");
+  const [step, setStep] = useState<Step>("setup");
+  const [trendingRegion, setTrendingRegion] = useState("US");
+  const [pipedBaseUrl, setPipedBaseUrl] = useState("");
+  const [invidiousBaseUrl, setInvidiousBaseUrl] = useState("");
   const [keywords, setKeywords] = useState<string[]>([]);
   const [draftKeyword, setDraftKeyword] = useState("");
   const [keywordsSaved, setKeywordsSaved] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const deckInitialized = useRef(false);
+  const setupInitialized = useRef(false);
+  const completionRequested = useRef(false);
 
   const [queue, setQueue] = useState<UnifiedVideo[]>([]);
   const [sessionDislikes, setSessionDislikes] = useState<SessionDislike[]>([]);
@@ -171,7 +179,7 @@ export function TasteOnboardingClient() {
   useEffect(() => {
     if (!settingsQuery.isSuccess) return;
     if (manual) return;
-    if (keywordsSaved || step !== "keywords") return;
+    if (keywordsSaved || step !== "setup") return;
     const s = settingsQuery.data;
     if (
       typeof s.tasteOnboardingCompletedAt === "number" ||
@@ -187,6 +195,14 @@ export function TasteOnboardingClient() {
     keywordsSaved,
     step,
   ]);
+
+  useEffect(() => {
+    if (!settingsQuery.data || setupInitialized.current) return;
+    setupInitialized.current = true;
+    setTrendingRegion(settingsQuery.data.trendingRegion ?? "US");
+    setPipedBaseUrl(settingsQuery.data.pipedBaseUrl ?? "");
+    setInvidiousBaseUrl(settingsQuery.data.invidiousBaseUrl ?? "");
+  }, [settingsQuery.data]);
 
   useEffect(() => {
     const stored = settingsQuery.data?.tasteKeywords;
@@ -244,6 +260,27 @@ export function TasteOnboardingClient() {
     }
   };
 
+  const onSaveSetupContinue = async () => {
+    setMessage(null);
+    try {
+      await updateSettingsMutation.mutateAsync({
+        trendingRegion,
+        pipedBaseUrl: pipedBaseUrl.trim() || undefined,
+        invidiousBaseUrl: invidiousBaseUrl.trim() || undefined,
+      });
+      await Promise.all([
+        utils.settings.get.invalidate(),
+        utils.feed.home.invalidate(),
+        utils.trending.list.invalidate(),
+      ]);
+      setStep("keywords");
+    } catch (e) {
+      setMessage(
+        e instanceof Error ? e.message : "Could not save setup preferences.",
+      );
+    }
+  };
+
   const onSaveKeywordsContinue = async () => {
     setMessage(null);
     const merged = dedupeKeywords([
@@ -287,8 +324,7 @@ export function TasteOnboardingClient() {
       const nextQueue = filterVideosBySessionDislikes(d.videos, nextSession);
       setQueue(nextQueue);
       if (nextQueue.length === 0) {
-        await completeMutation.mutateAsync();
-        goHome();
+        await completeAndShowFinish();
       }
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Could not save choice.");
@@ -303,12 +339,20 @@ export function TasteOnboardingClient() {
   const onFinishVideosEarly = async () => {
     setMessage(null);
     try {
+      completionRequested.current = true;
       await completeMutation.mutateAsync();
-      goHome();
+      setStep("finish");
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Could not finish.");
     }
   };
+
+  const completeAndShowFinish = useCallback(async () => {
+    if (completionRequested.current) return;
+    completionRequested.current = true;
+    await completeMutation.mutateAsync();
+    setStep("finish");
+  }, [completeMutation]);
 
   const totalToRate = answered + queue.length;
   const progressPct =
@@ -327,11 +371,26 @@ export function TasteOnboardingClient() {
     return labels.slice(-4);
   }, [sessionDislikes, queue]);
 
+  const suggestedSearchHref = useMemo(() => {
+    const q = keywords[0]?.trim() || "tech";
+    return `/search?q=${encodeURIComponent(q)}`;
+  }, [keywords]);
+
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-6 py-2">
       <header className="space-y-3">
         <div className="flex items-center justify-between gap-3 text-xs font-medium uppercase tracking-wide text-[hsl(var(--muted-foreground))]">
-          <span>Step {step === "keywords" ? "1" : "2"} of 2</span>
+          <span>
+            Step{" "}
+            {step === "setup"
+              ? "1"
+              : step === "keywords"
+                ? "2"
+                : step === "videos"
+                  ? "3"
+                  : "4"}{" "}
+            of 4
+          </span>
           <Button
             type="button"
             variant="ghost"
@@ -348,10 +407,100 @@ export function TasteOnboardingClient() {
         >
           <div
             className="h-full rounded-full bg-[hsl(var(--primary))] transition-all duration-300"
-            style={{ width: step === "keywords" ? "50%" : "100%" }}
+            style={{
+              width:
+                step === "setup"
+                  ? "25%"
+                  : step === "keywords"
+                    ? "50%"
+                    : step === "videos"
+                      ? "75%"
+                      : "100%",
+            }}
           />
         </div>
       </header>
+
+      {step === "setup" ? (
+        <section className="space-y-6 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 shadow-sm">
+          <div className="space-y-1.5">
+            <h1 className="text-2xl font-extrabold tracking-tight">
+              Quick setup
+            </h1>
+            <p className="text-sm text-[hsl(var(--muted-foreground))]">
+              Choose your default region and optional video source instances.
+              You can edit these anytime in Settings.
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <label
+              htmlFor="onboarding-region"
+              className="text-xs font-medium uppercase tracking-wide text-[hsl(var(--muted-foreground))]"
+            >
+              Home / trending region
+            </label>
+            <select
+              id="onboarding-region"
+              className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm"
+              value={trendingRegion}
+              onChange={(e) => setTrendingRegion(e.target.value)}
+            >
+              {TRENDING_REGION_OPTIONS.map((o) => (
+                <option key={o.code} value={o.code}>
+                  {o.label} ({o.code})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label
+                htmlFor="onboarding-piped"
+                className="text-xs font-medium uppercase tracking-wide text-[hsl(var(--muted-foreground))]"
+              >
+                Piped base URL (optional)
+              </label>
+              <Input
+                id="onboarding-piped"
+                value={pipedBaseUrl}
+                onChange={(e) => setPipedBaseUrl(e.target.value)}
+                placeholder="https://pipedapi.kavin.rocks"
+              />
+            </div>
+            <div className="space-y-1">
+              <label
+                htmlFor="onboarding-invidious"
+                className="text-xs font-medium uppercase tracking-wide text-[hsl(var(--muted-foreground))]"
+              >
+                Invidious base URL (optional)
+              </label>
+              <Input
+                id="onboarding-invidious"
+                value={invidiousBaseUrl}
+                onChange={(e) => setInvidiousBaseUrl(e.target.value)}
+                placeholder="https://your-invidious.example"
+              />
+            </div>
+          </div>
+
+          <p className="text-xs text-[hsl(var(--muted-foreground))]">
+            Tip: you can import watch history later in Settings and subscribe to
+            channels from search/channel pages.
+          </p>
+
+          <Button
+            type="button"
+            size="lg"
+            className="w-full"
+            onClick={() => void onSaveSetupContinue()}
+            disabled={updateSettingsMutation.isPending}
+          >
+            {updateSettingsMutation.isPending ? "Saving…" : "Continue"}
+          </Button>
+        </section>
+      ) : null}
 
       {step === "keywords" ? (
         <section className="space-y-6 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 shadow-sm">
@@ -624,6 +773,39 @@ export function TasteOnboardingClient() {
         >
           {message}
         </p>
+      ) : null}
+
+      {step === "finish" ? (
+        <section className="space-y-5 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 shadow-sm">
+          <div className="space-y-1.5">
+            <h1 className="text-2xl font-extrabold tracking-tight">
+              You&apos;re all set
+            </h1>
+            <p className="text-sm text-[hsl(var(--muted-foreground))]">
+              Your taste profile has been saved. You can now import history to
+              improve recommendations faster and subscribe to channels you care
+              about.
+            </p>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Button asChild type="button">
+              <Link href="/settings">Import history in Settings</Link>
+            </Button>
+            <Button asChild type="button" variant="outline">
+              <Link href={suggestedSearchHref}>Find channels to subscribe</Link>
+            </Button>
+          </div>
+
+          <Button
+            type="button"
+            variant="ghost"
+            className="w-full"
+            onClick={goHome}
+          >
+            Go to home feed
+          </Button>
+        </section>
       ) : null}
     </div>
   );

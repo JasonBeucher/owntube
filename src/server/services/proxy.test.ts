@@ -61,6 +61,71 @@ describe("searchVideos", () => {
     sqlite.close();
   });
 
+  it("drops Piped streams whose title indicates members-only", async () => {
+    const { db, sqlite } = createTestDb();
+    process.env.PIPED_BASE_URL = "https://piped.test";
+
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              type: "stream",
+              url: "/watch?v=MEMBERSTITLE",
+              title: "Bonus clip (Members only)",
+              uploaderUrl: "/channel/UCx",
+            },
+            {
+              type: "stream",
+              url: "/watch?v=dQw4w9WgXcQ",
+              title: "Public upload",
+              uploaderUrl: "/channel/UCx",
+            },
+          ],
+          nextpage: "",
+        }),
+      ),
+    );
+
+    const r = await searchVideos(db, { q: "q", limit: 10 });
+    expect(r.videos).toHaveLength(1);
+    expect(r.videos[0]?.videoId).toBe("dQw4w9WgXcQ");
+    sqlite.close();
+  });
+
+  it("drops Piped streams marked premium or paid from unified lists", async () => {
+    const { db, sqlite } = createTestDb();
+    process.env.PIPED_BASE_URL = "https://piped.test";
+
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              type: "stream",
+              url: "/watch?v=ONLYMEMBERS",
+              title: "Members only",
+              premium: true,
+              uploaderUrl: "/channel/UCx",
+            },
+            {
+              type: "stream",
+              url: "/watch?v=dQw4w9WgXcQ",
+              title: "Public",
+              uploaderUrl: "/channel/UCx",
+            },
+          ],
+          nextpage: "",
+        }),
+      ),
+    );
+
+    const r = await searchVideos(db, { q: "q", limit: 10 });
+    expect(r.videos).toHaveLength(1);
+    expect(r.videos[0]?.videoId).toBe("dQw4w9WgXcQ");
+    sqlite.close();
+  });
+
   it("parses Piped view counts sent as strings or alternate keys", async () => {
     const { db, sqlite } = createTestDb();
     process.env.PIPED_BASE_URL = "https://piped.test";
@@ -126,6 +191,45 @@ describe("searchVideos", () => {
     expect(r.sourceUsed).toBe("invidious");
     expect(r.videos[0]?.videoId).toBe("abc12345678");
     expect(r.videos[0]?.channelAvatarUrl).toBe("https://example.com/ch.jpg");
+    sqlite.close();
+  });
+
+  it("drops Invidious videos marked premium or paid from unified lists", async () => {
+    const { db, sqlite } = createTestDb();
+    process.env.PIPED_BASE_URL = "https://piped.test";
+    process.env.INVIDIOUS_BASE_URL = "https://inv.test";
+
+    vi.mocked(fetch)
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            {
+              type: "video",
+              videoId: "paidONLY00001",
+              title: "Paid",
+              paid: true,
+              author: "A",
+              authorId: "UCa",
+              videoThumbnails: [{ url: "https://example.com/t.jpg" }],
+              lengthSeconds: 5,
+            },
+            {
+              type: "video",
+              videoId: "abc12345678",
+              title: "Ok",
+              author: "B",
+              authorId: "UCb",
+              videoThumbnails: [{ url: "https://example.com/t2.jpg" }],
+              lengthSeconds: 10,
+            },
+          ]),
+        ),
+      );
+
+    const r = await searchVideos(db, { q: "test", limit: 10 });
+    expect(r.videos).toHaveLength(1);
+    expect(r.videos[0]?.videoId).toBe("abc12345678");
     sqlite.close();
   });
 

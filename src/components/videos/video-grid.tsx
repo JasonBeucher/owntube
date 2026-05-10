@@ -24,10 +24,14 @@ export function VideoGrid({ videos, size = "default" }: VideoGridProps) {
         <li key={v.videoId}>
           <VideoCard
             href={`/watch/${v.videoId}`}
+            videoId={v.videoId}
             title={v.title}
+            channelId={v.channelId}
             channelName={v.channelName}
             channelHref={
-              v.channelId ? `/channel/${encodeURIComponent(v.channelId)}` : undefined
+              v.channelId
+                ? `/channel/${encodeURIComponent(v.channelId)}`
+                : undefined
             }
             channelAvatarUrl={v.channelAvatarUrl}
             thumbnailUrl={v.thumbnailUrl}

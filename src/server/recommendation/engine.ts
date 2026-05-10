@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import { stripRestrictedListVideos } from "@/lib/feed-exclude-restricted";
 import { logger } from "@/lib/logger";
 import { pickNewestVideoPerChannel } from "@/lib/published-sort-key";
 import type { AppDb } from "@/server/db/client";
@@ -79,17 +80,19 @@ function sliceRecommendationPool(
   const start = (page - 1) * pageSize;
   const pageRows = entry.diversified.slice(start, start + pageSize);
   const hasMore = start + pageRows.length < entry.diversified.length;
-  const videos: UnifiedVideo[] = pageRows.map((row) => {
-    const {
-      rawScore: _r,
-      preMmrRawScore: _p,
-      scoreBreakdown: _b,
-      candidateSource: _c,
-      coldStartJitter: _j,
-      ...video
-    } = row;
-    return video;
-  });
+  const videos: UnifiedVideo[] = stripRestrictedListVideos(
+    pageRows.map((row) => {
+      const {
+        rawScore: _r,
+        preMmrRawScore: _p,
+        scoreBreakdown: _b,
+        candidateSource: _c,
+        coldStartJitter: _j,
+        ...video
+      } = row;
+      return video;
+    }),
+  );
   return {
     videos,
     coldStart: entry.coldStart,
@@ -235,7 +238,9 @@ export async function getRecommendations(
     }
     const nowSec = Math.floor(Date.now() / 1000);
     const uniqueRaw = pickNewestVideoPerChannel(
-      [...byId.values()].filter((v) => !watchedEver.has(v.videoId)),
+      stripRestrictedListVideos(
+        [...byId.values()].filter((v) => !watchedEver.has(v.videoId)),
+      ),
       { nowSec, maxPerChannel: 12 },
     );
     const unique = enrichVideosWithStoredChannelAvatars(db, uniqueRaw);

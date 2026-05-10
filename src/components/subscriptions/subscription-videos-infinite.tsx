@@ -57,7 +57,7 @@ export function SubscriptionVideosInfinite() {
 
   return (
     <div className="space-y-6">
-      <VideoGrid videos={videos} />
+      <VideoGrid videos={videos} size="large" />
       {query.hasNextPage ? (
         <div ref={sentinelRef} className="h-1 w-full shrink-0" aria-hidden />
       ) : null}

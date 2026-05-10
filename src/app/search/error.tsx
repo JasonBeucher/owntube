@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 export default function SearchError({
@@ -17,9 +16,6 @@ export default function SearchError({
       <div className="flex flex-wrap gap-2">
         <Button type="button" onClick={() => reset()}>
           Try again
-        </Button>
-        <Button variant="outline" asChild>
-          <Link href="/search">Back to search</Link>
         </Button>
       </div>
     </main>

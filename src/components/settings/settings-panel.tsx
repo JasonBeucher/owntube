@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { writeWatchMiniEnabled } from "@/lib/watch-mini-player-state";
 import { TRENDING_REGION_OPTIONS } from "@/lib/trending-regions";
 import type { AppSettings } from "@/server/settings/profile";
 import { type ThemeMode, useThemeStore } from "@/stores/theme-store";
@@ -24,6 +25,15 @@ export function SettingsPanel({ initial }: SettingsPanelProps) {
   const [trendingRegion, setTrendingRegion] = useState(
     initial.trendingRegion ?? "US",
   );
+  const [hideRestrictedVideos, setHideRestrictedVideos] = useState(
+    initial.hideRestrictedVideos ?? true,
+  );
+  const [defaultCinemaMode, setDefaultCinemaMode] = useState(
+    initial.defaultCinemaMode ?? false,
+  );
+  const [enableMiniPlayer, setEnableMiniPlayer] = useState(
+    initial.enableMiniPlayer ?? true,
+  );
   const [importJson, setImportJson] = useState("");
   const [importModeReplace, setImportModeReplace] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
@@ -37,11 +47,25 @@ export function SettingsPanel({ initial }: SettingsPanelProps) {
     setTrendingRegion(initial.trendingRegion ?? "US");
   }, [initial.trendingRegion]);
 
+  useEffect(() => {
+    setHideRestrictedVideos(initial.hideRestrictedVideos ?? true);
+  }, [initial.hideRestrictedVideos]);
+
+  useEffect(() => {
+    setDefaultCinemaMode(initial.defaultCinemaMode ?? false);
+  }, [initial.defaultCinemaMode]);
+
+  useEffect(() => {
+    setEnableMiniPlayer(initial.enableMiniPlayer ?? true);
+    writeWatchMiniEnabled(initial.enableMiniPlayer ?? true);
+  }, [initial.enableMiniPlayer]);
+
   const updateMutation = trpc.settings.update.useMutation({
     onSuccess: async (data) => {
       setTheme(data.theme);
       setThemeLocal(data.theme);
       setTrendingRegion(data.trendingRegion ?? "US");
+      writeWatchMiniEnabled(data.enableMiniPlayer ?? true);
       await utils.settings.get.invalidate();
       await utils.feed.home.invalidate();
       await utils.trending.list.invalidate();
@@ -108,6 +132,9 @@ export function SettingsPanel({ initial }: SettingsPanelProps) {
       pipedBaseUrl: pipedBaseUrl.trim() || undefined,
       invidiousBaseUrl: invidiousBaseUrl.trim() || undefined,
       trendingRegion,
+      hideRestrictedVideos,
+      defaultCinemaMode,
+      enableMiniPlayer,
     });
   }
 
@@ -226,6 +253,36 @@ export function SettingsPanel({ initial }: SettingsPanelProps) {
               {healthMessage}
             </p>
           ) : null}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold">Watch and feed behavior</h2>
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={hideRestrictedVideos}
+              onChange={(e) => setHideRestrictedVideos(e.currentTarget.checked)}
+            />
+            Hide members-only / subscribers-only videos in feeds
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={defaultCinemaMode}
+              onChange={(e) => setDefaultCinemaMode(e.currentTarget.checked)}
+            />
+            Enable cinema mode by default on watch pages
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={enableMiniPlayer}
+              onChange={(e) => setEnableMiniPlayer(e.currentTarget.checked)}
+            />
+            Keep mini-player when leaving watch page
+          </label>
         </div>
       </section>
 

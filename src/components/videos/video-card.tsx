@@ -1,5 +1,8 @@
 import Link from "next/link";
+import { AddToQueueButton } from "@/components/player/add-to-queue-button";
 import { ChannelAvatarCircle } from "@/components/videos/channel-avatar-circle";
+import { VideoCardMarkWatchedButton } from "@/components/videos/video-card-mark-watched-button";
+import { VideoCardThumbnailInteractive } from "@/components/videos/video-card-thumbnail-interactive";
 import {
   formatDuration,
   formatPublishedAbsoluteLabel,
@@ -10,7 +13,10 @@ import {
 
 type VideoCardProps = {
   href: string;
+  /** When set, thumbnail hover (1s) plays an inline preview with mute control. */
+  videoId?: string;
   title: string;
+  channelId?: string;
   channelName?: string;
   channelHref?: string;
   channelAvatarUrl?: string;
@@ -25,7 +31,9 @@ type VideoCardProps = {
 
 export function VideoCard({
   href,
+  videoId,
   title,
+  channelId,
   channelName,
   channelHref,
   channelAvatarUrl,
@@ -45,41 +53,69 @@ export function VideoCard({
   );
   const channel = channelName ?? "Unknown channel";
 
+  const thumbShell =
+    "relative aspect-video w-full overflow-hidden rounded-[14px] bg-[hsl(var(--muted))] shadow-none transition duration-300 group-hover:-translate-y-0.5 group-hover:shadow-[0_20px_40px_rgba(0,0,0,0.45)]";
+  const thumbImg =
+    "h-full w-full object-cover transition duration-500 ease-out group-hover:scale-[1.04]";
+
   return (
     <article className="group flex h-full flex-col gap-3 text-left text-[hsl(var(--foreground))]">
-      <Link href={href} className="block">
-        <div className="relative aspect-video w-full overflow-hidden rounded-[14px] bg-[hsl(var(--muted))] shadow-none transition duration-300 group-hover:-translate-y-0.5 group-hover:shadow-[0_20px_40px_rgba(0,0,0,0.45)]">
-          {thumbnailUrl ? (
-            // biome-ignore lint/performance/noImgElement: third-party instance thumbnails
-            <img
-              src={thumbnailUrl}
-              alt=""
-              className="h-full w-full object-cover transition duration-500 ease-out group-hover:scale-[1.04]"
-              loading="lazy"
-            />
-          ) : null}
-          <div
-            className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/35 opacity-0 transition-opacity duration-200 group-hover:opacity-100"
-            aria-hidden
-          >
-            <svg
-              width="56"
-              height="56"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              className="scale-90 text-white drop-shadow-lg transition duration-300 group-hover:scale-100"
-            >
-              <title>Play</title>
-              <polygon points="6 4 20 12 6 20 6 4" />
-            </svg>
-          </div>
-          {durationLabel ? (
-            <span className="absolute bottom-2 right-2 rounded-md border border-white/10 bg-black/85 px-2 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-white backdrop-blur-sm">
-              {durationLabel}
-            </span>
-          ) : null}
+      {videoId ? (
+        <div className="relative">
+          <VideoCardThumbnailInteractive
+            href={href}
+            videoId={videoId}
+            thumbnailUrl={thumbnailUrl}
+            durationLabel={durationLabel}
+            thumbClassName={thumbShell}
+            imgClassName={thumbImg}
+          />
+          <VideoCardMarkWatchedButton
+            videoId={videoId}
+            channelId={channelId}
+            className="absolute left-2 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100"
+          />
         </div>
-      </Link>
+      ) : (
+        <Link href={href} className="block">
+          <div className={thumbShell}>
+            {thumbnailUrl ? (
+              // biome-ignore lint/performance/noImgElement: third-party instance thumbnails
+              <img
+                src={thumbnailUrl}
+                alt=""
+                className={thumbImg}
+                loading="lazy"
+              />
+            ) : null}
+            <div
+              className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/35 opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+              aria-hidden
+            >
+              <svg
+                width="56"
+                height="56"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                className="scale-90 text-white drop-shadow-lg transition duration-300 group-hover:scale-100"
+              >
+                <title>Play</title>
+                <polygon points="6 4 20 12 6 20 6 4" />
+              </svg>
+            </div>
+            {durationLabel ? (
+              <span className="absolute bottom-2 right-2 rounded-md border border-white/10 bg-black/85 px-2 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-white backdrop-blur-sm">
+                {durationLabel}
+              </span>
+            ) : null}
+            <VideoCardMarkWatchedButton
+              videoId={videoId}
+              channelId={channelId}
+              className="absolute left-2 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100"
+            />
+          </div>
+        </Link>
+      )}
       <div className="flex gap-3">
         {channelHref ? (
           <Link href={channelHref} className="mt-0.5 shrink-0">
@@ -145,7 +181,9 @@ export function VideoCard({
 
 type VideoCardCompactProps = {
   href: string;
+  videoId?: string;
   title: string;
+  channelId?: string;
   channelName?: string;
   channelHref?: string;
   channelAvatarUrl?: string;
@@ -155,11 +193,14 @@ type VideoCardCompactProps = {
   publishedAt?: number;
   showChannelAvatar?: boolean;
   size?: "default" | "large";
+  showAddToQueue?: boolean;
 };
 
 export function VideoCardCompact({
   href,
+  videoId,
   title,
+  channelId,
   channelName,
   channelHref,
   channelAvatarUrl,
@@ -169,6 +210,7 @@ export function VideoCardCompact({
   publishedAt,
   showChannelAvatar = true,
   size = "default",
+  showAddToQueue = false,
 }: VideoCardCompactProps) {
   const durationLabel = formatDuration(durationSeconds);
   const publishedLabel = formatPublishedLabel(publishedText, publishedAt);
@@ -207,6 +249,11 @@ export function VideoCardCompact({
                 {durationLabel}
               </span>
             ) : null}
+            <VideoCardMarkWatchedButton
+              videoId={videoId}
+              channelId={channelId}
+              className="absolute left-1.5 top-1.5 z-20 flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100"
+            />
           </div>
         </Link>
         <div className="flex min-w-0 flex-1 flex-col gap-1 py-0.5 pr-1">
@@ -231,9 +278,7 @@ export function VideoCardCompact({
               )
             ) : null}
             <Link href={href} className="min-w-0 flex-1">
-              <p className={titleClass}>
-                {title}
-              </p>
+              <p className={titleClass}>{title}</p>
             </Link>
           </div>
           <p
@@ -265,6 +310,11 @@ export function VideoCardCompact({
               </>
             ) : null}
           </p>
+          {showAddToQueue ? (
+            <div className={metaPadClass}>
+              <AddToQueueButton href={href} title={title} />
+            </div>
+          ) : null}
         </div>
       </div>
     </article>

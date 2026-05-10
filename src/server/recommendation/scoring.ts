@@ -54,7 +54,7 @@ export function publicationFreshnessScore(published?: string): number {
   return 0.3;
 }
 
-/** Heuristic Shorts / vertical — duration and title markers from upstreams. */
+/** Heuristic short-form / vertical — duration and title markers from upstreams. */
 export function isLikelyShortVideo(video: UnifiedVideo): boolean {
   const d = video.durationSeconds;
   if (typeof d === "number" && d > 0 && d <= 60) return true;

@@ -15,6 +15,8 @@ import {
   useRef,
   useState,
 } from "react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import type { MediaPlayerElement } from "vidstack";
 import {
   audioTrackLanguageInfo,
@@ -26,8 +28,14 @@ import {
   writePlayerMediaPrefs,
   writePlayerVolumeOnly,
 } from "@/lib/player-media-prefs";
+import { gainToUiVolume, uiVolumeToGain } from "@/lib/player-volume-gain";
 import { cn } from "@/lib/utils";
+import { useWatchCinema } from "@/components/watch/watch-cinema-context";
 import { chapterIndexAt, type VideoChapter } from "@/lib/video-chapters";
+import {
+  readWatchMiniEnabled,
+  writeWatchMiniState,
+} from "@/lib/watch-mini-player-state";
 
 type ProxiedVariant =
   | { t: "muxed"; label: string; src: string }
@@ -45,12 +53,47 @@ export type VideoPlayerPayload =
   | { mode: "progressive"; variants: ProxiedVariant[] };
 
 type VideoPlayerProps = {
+  videoId: string;
   payload: VideoPlayerPayload;
   title: string;
   poster?: string;
   chapters?: VideoChapter[];
   startAtSeconds?: number;
+  miniMode?: boolean;
 };
+
+type WatchQueueItem = { href: string; title: string };
+
+const WATCH_QUEUE_STORAGE_KEY = "ot:watch-queue";
+
+function readWatchQueue(): WatchQueueItem[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(WATCH_QUEUE_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (item): item is WatchQueueItem =>
+          Boolean(item) &&
+          typeof item === "object" &&
+          typeof (item as { href?: unknown }).href === "string" &&
+          typeof (item as { title?: unknown }).title === "string",
+      )
+      .slice(0, 100);
+  } catch {
+    return [];
+  }
+}
+
+function writeWatchQueue(items: WatchQueueItem[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(WATCH_QUEUE_STORAGE_KEY, JSON.stringify(items));
+    window.dispatchEvent(new CustomEvent("ot:watch-queue-updated"));
+  } catch {}
+}
 
 function shouldAutoRecoverPlaybackSource(src: string): boolean {
   return (
@@ -129,6 +172,21 @@ function formatClock(seconds: number) {
 /* --------------------------------- Icons --------------------------------- */
 
 function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      role="img"
+      aria-label="Play"
+    >
+      <title>Play</title>
+      <path d="M8 5v14l11-7z" />
+    </svg>
+  );
+}
+
+function BigPlayOverlayIcon({ className }: { className?: string }) {
   return (
     <svg
       className={className}
@@ -252,6 +310,36 @@ function PipIcon({ className }: { className?: string }) {
     >
       <title>Picture in picture</title>
       <path d="M19 7H5c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V9c0-1.1-.9-2-2-2zm0 10H5V9h14v8zm-8-7h7v5h-7z" />
+    </svg>
+  );
+}
+
+function NextIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      role="img"
+      aria-label="Next video"
+    >
+      <title>Next video</title>
+      <path d="M6 5v14l9-7-9-7zm10 0h2v14h-2z" />
+    </svg>
+  );
+}
+
+function CinemaIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      role="img"
+      aria-label="Cinema mode"
+    >
+      <title>Cinema mode</title>
+      <path d="M18 3v2h-2V3H8v2H6V3H4v18h2v-2h2v2h8v-2h2v2h2V3h-2zM8 17H6v-2h2v2zm0-4H6v-2h2v2zm0-4H6V7h2v2zm10 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V7h2v2z" />
     </svg>
   );
 }
@@ -405,7 +493,7 @@ function useVidstackAdapter(
     duration: Number.isFinite(state.duration) ? state.duration : 0,
     currentTime: state.currentTime,
     bufferedEnd: state.bufferedEnd ?? 0,
-    volume: state.volume,
+    volume: state.muted ? 0 : gainToUiVolume(state.volume),
     muted: state.muted,
     playbackRate: state.playbackRate,
     play: () => {
@@ -428,7 +516,7 @@ function useVidstackAdapter(
     setVolume: (v) => {
       if (v > 0) {
         if (state.muted) remote.unmute();
-        remote.changeVolume(v);
+        remote.changeVolume(uiVolumeToGain(v));
       } else {
         remote.mute();
       }
@@ -480,7 +568,7 @@ function useNativeAdapter(opts: {
 
   useEffect(() => {
     const a = audioRef.current;
-    if (a) a.volume = muted ? 0 : externalVolume;
+    if (a) a.volume = muted ? 0 : uiVolumeToGain(externalVolume);
   }, [audioRef, externalVolume, muted]);
 
   useEffect(() => {
@@ -527,7 +615,7 @@ function useNativeAdapter(opts: {
       if (a) {
         try {
           a.muted = muted;
-          a.volume = muted ? 0 : externalVolume;
+          a.volume = muted ? 0 : uiVolumeToGain(externalVolume);
         } catch {}
         void a.play().catch(() => {});
       }
@@ -545,7 +633,7 @@ function useNativeAdapter(opts: {
         if (a) {
           try {
             a.muted = muted;
-            a.volume = muted ? 0 : externalVolume;
+            a.volume = muted ? 0 : uiVolumeToGain(externalVolume);
           } catch {}
           void a.play().catch(() => {});
         }
@@ -575,7 +663,7 @@ function useNativeAdapter(opts: {
       const a = audioRef.current;
       if (a) {
         a.muted = nextMuted;
-        a.volume = nextMuted ? 0 : n;
+        a.volume = nextMuted ? 0 : uiVolumeToGain(n);
         if (!nextMuted && videoRef.current && !videoRef.current.paused) {
           void a.play().catch(() => {});
         }
@@ -587,7 +675,7 @@ function useNativeAdapter(opts: {
       const a = audioRef.current;
       if (a) {
         a.muted = next;
-        a.volume = next ? 0 : externalVolume;
+        a.volume = next ? 0 : uiVolumeToGain(externalVolume);
         if (!next && videoRef.current && !videoRef.current.paused) {
           void a.play().catch(() => {});
         }
@@ -1104,6 +1192,44 @@ function SettingsMenu({
   );
 }
 
+type ScrubPreviewConfig = { streamSrc: string; poster?: string };
+
+function VolumeSlider({
+  value,
+  onChange,
+  id,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  id?: string;
+}) {
+  const pct = Math.min(100, Math.max(0, value * 100));
+  return (
+    <div className="relative flex h-8 w-[6.5rem] shrink-0 items-center">
+      <div
+        className="pointer-events-none absolute inset-x-0 top-1/2 h-2 -translate-y-1/2 rounded-full bg-white/10 shadow-[inset_0_1px_2px_rgba(0,0,0,0.4)] ring-1 ring-black/40"
+        aria-hidden
+      />
+      <div
+        className="pointer-events-none absolute left-0 top-1/2 h-2 max-w-full -translate-y-1/2 rounded-l-full bg-white/75 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]"
+        style={{ width: `${pct}%` }}
+        aria-hidden
+      />
+      <input
+        id={id}
+        type="range"
+        min={0}
+        max={1}
+        step={0.01}
+        value={value}
+        onChange={(e) => onChange(Number(e.currentTarget.value))}
+        className="absolute inset-0 h-full w-full cursor-pointer opacity-[0.02]"
+        aria-label="Volume"
+      />
+    </div>
+  );
+}
+
 /* ------------------------------- Progress -------------------------------- */
 
 function ProgressBar({
@@ -1111,6 +1237,7 @@ function ProgressBar({
   duration,
   buffered,
   chapters,
+  scrubPreview,
   onScrub,
   onScrubEnd,
 }: {
@@ -1118,6 +1245,7 @@ function ProgressBar({
   duration: number;
   buffered: number;
   chapters: VideoChapter[];
+  scrubPreview?: ScrubPreviewConfig | null;
   onScrub: (t: number) => void;
   onScrubEnd: (t: number) => void;
 }) {
@@ -1202,6 +1330,49 @@ function ProgressBar({
     hover !== null && duration > 0
       ? Math.min(1, Math.max(0, hover / duration))
       : 0.5;
+
+  const previewRef = useRef<HTMLVideoElement | null>(null);
+  const [previewVideoFailed, setPreviewVideoFailed] = useState(false);
+  const previewFailedRef = useRef(false);
+  const seekTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    previewFailedRef.current = false;
+    setPreviewVideoFailed(false);
+  }, [scrubPreview?.streamSrc]);
+
+  useEffect(() => {
+    if (seekTimerRef.current != null) {
+      window.clearTimeout(seekTimerRef.current);
+      seekTimerRef.current = null;
+    }
+    if (hover === null || !scrubPreview?.streamSrc || duration <= 0) return;
+    seekTimerRef.current = window.setTimeout(() => {
+      seekTimerRef.current = null;
+      if (previewFailedRef.current) return;
+      const v = previewRef.current;
+      if (!v) return;
+      const t = Math.max(0, Math.min(hover, duration - 0.05));
+      if (Math.abs(v.currentTime - t) > 0.2) {
+        try {
+          v.currentTime = t;
+        } catch {
+          /* ignore */
+        }
+      }
+    }, 80);
+    return () => {
+      if (seekTimerRef.current != null) {
+        window.clearTimeout(seekTimerRef.current);
+        seekTimerRef.current = null;
+      }
+    };
+  }, [hover, duration, scrubPreview?.streamSrc]);
+
+  const onPreviewVideoError = useCallback(() => {
+    previewFailedRef.current = true;
+    setPreviewVideoFailed(true);
+  }, []);
 
   return (
     <div
@@ -1294,12 +1465,12 @@ function ProgressBar({
       )}
       {hover !== null ? (
         <div
-          className="pointer-events-none absolute -top-2 z-10 -translate-x-1/2 sm:-top-9"
+          className="pointer-events-none absolute bottom-full z-10 mb-1.5 -translate-x-1/2"
           style={{ left: `${pct(hover)}%` }}
         >
           <div
             className={cn(
-              "flex flex-col items-center gap-0.5",
+              "flex flex-col items-center gap-1",
               hoverPositionRatio < 0.15
                 ? "translate-x-[calc(50%-1.25rem)] items-start"
                 : hoverPositionRatio > 0.85
@@ -1307,12 +1478,36 @@ function ProgressBar({
                   : "",
             )}
           >
+            {scrubPreview ? (
+              <div className="relative aspect-video w-[7.5rem] shrink-0 overflow-hidden rounded-md bg-zinc-950 shadow-lg ring-1 ring-white/20">
+                {scrubPreview.poster ? (
+                  <img
+                    src={scrubPreview.poster}
+                    alt=""
+                    className="absolute inset-0 h-full w-full object-cover"
+                  />
+                ) : null}
+                {scrubPreview.streamSrc && !previewVideoFailed ? (
+                  <video
+                    key={scrubPreview.streamSrc}
+                    ref={previewRef}
+                    src={scrubPreview.streamSrc}
+                    muted
+                    playsInline
+                    preload="metadata"
+                    className="relative z-[1] h-full w-full object-cover"
+                    aria-hidden
+                    onError={onPreviewVideoError}
+                  />
+                ) : null}
+              </div>
+            ) : null}
             {hoverChapterTitle ? (
               <span className="max-w-[16rem] truncate rounded-md bg-black/85 px-2 py-0.5 text-[11px] font-medium text-white shadow ring-1 ring-white/10">
                 {hoverChapterTitle}
               </span>
             ) : null}
-            <span className="rounded bg-black/80 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-white shadow">
+            <span className="rounded bg-black/80 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-white shadow ring-1 ring-white/10">
               {formatClock(hover)}
             </span>
           </div>
@@ -1336,7 +1531,17 @@ type ChromeProps = {
   chapters: VideoChapter[];
   quality: QualityModel;
   audio: AudioModel;
+  cinemaMode: boolean;
+  onExitCinema: () => void;
+  onToggleCinema: () => void;
+  scrubPreview?: ScrubPreviewConfig | null;
   centerHint?: { kind: "play" | "pause"; tick: number } | null;
+  nextUp?: { href: string; title: string } | null;
+  queue?: { href: string; title: string }[];
+  autoplayNext: boolean;
+  onToggleAutoplayNext: () => void;
+  onPlayNext: () => void;
+  miniMode?: boolean;
 };
 
 function PlayerChrome({
@@ -1346,7 +1551,17 @@ function PlayerChrome({
   chapters,
   quality,
   audio,
+  cinemaMode,
+  onExitCinema,
+  onToggleCinema,
+  scrubPreview,
   centerHint,
+  nextUp,
+  queue = [],
+  autoplayNext,
+  onToggleAutoplayNext,
+  onPlayNext,
+  miniMode = false,
 }: ChromeProps) {
   const [hydrated, setHydrated] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1354,6 +1569,13 @@ function PlayerChrome({
   const { visible, ping, hide } = useIdleVisible(adapter.paused, settingsOpen);
   const [scrub, setScrub] = useState<number | null>(null);
   const [showVolPanel, setShowVolPanel] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
+  const [autoCenterHint, setAutoCenterHint] = useState<{
+    kind: "play" | "pause";
+    tick: number;
+  } | null>(null);
+  const prevPausedRef = useRef<boolean | null>(null);
+  const miniAutoplayTriedRef = useRef(false);
   /** True while long-press 2× is active: hides chrome, shows a small ×2 hint. */
   const [hold2xUi, setHold2xUi] = useState(false);
 
@@ -1361,15 +1583,60 @@ function PlayerChrome({
     setHydrated(true);
   }, []);
 
+  useEffect(() => {
+    if (!miniMode) return;
+    if (miniAutoplayTriedRef.current) return;
+    if (!adapter.canPlay) return;
+    miniAutoplayTriedRef.current = true;
+    if (!adapter.paused) return;
+    adapter.play();
+  }, [adapter, miniMode]);
+
+  useEffect(() => {
+    const prev = prevPausedRef.current;
+    prevPausedRef.current = adapter.paused;
+    if (prev == null || prev === adapter.paused) return;
+    const next = {
+      kind: adapter.paused ? ("pause" as const) : ("play" as const),
+      tick: Date.now(),
+    };
+    setAutoCenterHint(next);
+    const t = window.setTimeout(() => setAutoCenterHint(null), 1000);
+    return () => window.clearTimeout(t);
+  }, [adapter.paused]);
+
   const hold2xTimerRef = useRef<number | null>(null);
   const holding2xRef = useRef(false);
   const rateBeforeHoldRef = useRef(1);
   const suppressNextClickRef = useRef(false);
 
+  /** ×2 UI can be held by pointer long-press and/or Space long-press — ref-counted. */
+  const hold2xLeaseRef = useRef(0);
+  const acquireHold2xLease = useCallback(() => {
+    hold2xLeaseRef.current += 1;
+    if (hold2xLeaseRef.current === 1) setHold2xUi(true);
+  }, []);
+  const releaseHold2xLease = useCallback(() => {
+    hold2xLeaseRef.current = Math.max(0, hold2xLeaseRef.current - 1);
+    if (hold2xLeaseRef.current === 0) setHold2xUi(false);
+  }, []);
+
   const clearHold2xTimer = useCallback(() => {
     if (hold2xTimerRef.current != null) {
       window.clearTimeout(hold2xTimerRef.current);
       hold2xTimerRef.current = null;
+    }
+  }, []);
+
+  const spacePhysDownRef = useRef(false);
+  const spaceHoldTimerRef = useRef<number | null>(null);
+  const spaceHold2xEngagedRef = useRef(false);
+  const rateBeforeSpaceHoldRef = useRef(1);
+
+  const clearSpaceHoldTimer = useCallback(() => {
+    if (spaceHoldTimerRef.current != null) {
+      window.clearTimeout(spaceHoldTimerRef.current);
+      spaceHoldTimerRef.current = null;
     }
   }, []);
 
@@ -1379,37 +1646,46 @@ function PlayerChrome({
     (e: ReactPointerEvent) => {
       if ((e.target as HTMLElement).closest("[data-controls]")) return;
       if (settingsOpen) return;
+      // Long-press ×2 only for real pointing devices (not keyboard/synthetic).
+      if (
+        e.pointerType !== "mouse" &&
+        e.pointerType !== "pen" &&
+        e.pointerType !== "touch"
+      ) {
+        return;
+      }
+      if (!e.isPrimary) return;
       rateBeforeHoldRef.current = adapter.playbackRate;
       clearHold2xTimer();
       hold2xTimerRef.current = window.setTimeout(() => {
         hold2xTimerRef.current = null;
         holding2xRef.current = true;
         adapter.setPlaybackRate(2);
-        setHold2xUi(true);
+        acquireHold2xLease();
       }, 220);
     },
-    [adapter, settingsOpen, clearHold2xTimer],
+    [adapter, acquireHold2xLease, settingsOpen, clearHold2xTimer],
   );
 
   const onSurfacePointerUp = useCallback(() => {
     clearHold2xTimer();
     if (holding2xRef.current) {
       holding2xRef.current = false;
-      setHold2xUi(false);
+      releaseHold2xLease();
       suppressNextClickRef.current = true;
       adapter.setPlaybackRate(rateBeforeHoldRef.current);
     }
-  }, [adapter, clearHold2xTimer]);
+  }, [adapter, clearHold2xTimer, releaseHold2xLease]);
 
   const onSurfacePointerLeave = useCallback(() => {
     clearHold2xTimer();
     if (holding2xRef.current) {
       holding2xRef.current = false;
-      setHold2xUi(false);
+      releaseHold2xLease();
       suppressNextClickRef.current = true;
       adapter.setPlaybackRate(rateBeforeHoldRef.current);
     }
-  }, [adapter, clearHold2xTimer]);
+  }, [adapter, clearHold2xTimer, releaseHold2xLease]);
 
   useEffect(() => {
     const el = shellRef.current;
@@ -1429,8 +1705,62 @@ function PlayerChrome({
   }, [shellRef, ping, hide, adapter.paused, settingsOpen]);
 
   useEffect(() => {
+    if (fsActive && cinemaMode) onExitCinema();
+  }, [fsActive, cinemaMode, onExitCinema]);
+
+  useEffect(() => {
     const el = shellRef.current;
     if (!el) return;
+
+    const releaseSpaceHoldIfNeeded = () => {
+      clearSpaceHoldTimer();
+      if (!spacePhysDownRef.current) return;
+      spacePhysDownRef.current = false;
+      if (spaceHold2xEngagedRef.current) {
+        spaceHold2xEngagedRef.current = false;
+        adapter.setPlaybackRate(rateBeforeSpaceHoldRef.current);
+        releaseHold2xLease();
+      }
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== "Space" && e.key !== " ") return;
+      if (!spacePhysDownRef.current) return;
+      if (
+        e.target instanceof HTMLElement &&
+        (e.target.tagName === "INPUT" ||
+          e.target.tagName === "TEXTAREA" ||
+          e.target.isContentEditable)
+      ) {
+        return;
+      }
+      if (!shellRef.current?.contains(document.activeElement) && !fsActive) {
+        return;
+      }
+      e.preventDefault();
+      spacePhysDownRef.current = false;
+      clearSpaceHoldTimer();
+      if (spaceHold2xEngagedRef.current) {
+        spaceHold2xEngagedRef.current = false;
+        adapter.setPlaybackRate(rateBeforeSpaceHoldRef.current);
+        releaseHold2xLease();
+      } else {
+        adapter.togglePaused();
+        ping();
+      }
+    };
+
+    const onWinBlur = () => {
+      clearSpaceHoldTimer();
+      if (!spacePhysDownRef.current) return;
+      spacePhysDownRef.current = false;
+      if (spaceHold2xEngagedRef.current) {
+        spaceHold2xEngagedRef.current = false;
+        adapter.setPlaybackRate(rateBeforeSpaceHoldRef.current);
+        releaseHold2xLease();
+      }
+    };
+
     const handler = (e: KeyboardEvent) => {
       if (
         e.target instanceof HTMLElement &&
@@ -1444,11 +1774,43 @@ function PlayerChrome({
         return;
       }
       const key = e.key.toLowerCase();
-      if (key === " " || key === "k") {
+      if (key === "escape") {
+        releaseSpaceHoldIfNeeded();
+        if (settingsOpen) {
+          e.preventDefault();
+          setSettingsOpen(false);
+          ping();
+        } else if (cinemaMode) {
+          e.preventDefault();
+          onExitCinema();
+          ping();
+        }
+        return;
+      }
+      if (key === " ") {
         e.preventDefault();
+        if (e.repeat) return;
+        clearHold2xTimer();
+        rateBeforeSpaceHoldRef.current = adapter.playbackRate;
+        spacePhysDownRef.current = true;
+        spaceHold2xEngagedRef.current = false;
+        clearSpaceHoldTimer();
+        spaceHoldTimerRef.current = window.setTimeout(() => {
+          spaceHoldTimerRef.current = null;
+          spaceHold2xEngagedRef.current = true;
+          adapter.setPlaybackRate(2);
+          acquireHold2xLease();
+        }, 220);
+        return;
+      }
+      if (key === "k") {
+        e.preventDefault();
+        if (e.repeat) return;
         adapter.togglePaused();
         ping();
-      } else if (key === "arrowleft" || key === "j") {
+        return;
+      }
+      if (key === "arrowleft" || key === "j") {
         e.preventDefault();
         adapter.seek(Math.max(0, adapter.currentTime - (key === "j" ? 10 : 5)));
         ping();
@@ -1480,14 +1842,38 @@ function PlayerChrome({
       } else if (key === "f") {
         e.preventDefault();
         void toggleFs();
+      } else if (key === "c") {
+        e.preventDefault();
+        onToggleCinema();
+        ping();
       } else if (key === "i") {
         e.preventDefault();
         adapter.togglePictureInPicture();
       }
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [adapter, fsActive, ping, shellRef, toggleFs]);
+    window.addEventListener("keydown", handler, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("blur", onWinBlur);
+    return () => {
+      window.removeEventListener("keydown", handler, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("blur", onWinBlur);
+    };
+  }, [
+    acquireHold2xLease,
+    adapter,
+    cinemaMode,
+    clearHold2xTimer,
+    clearSpaceHoldTimer,
+    fsActive,
+    onExitCinema,
+    onToggleCinema,
+    ping,
+    releaseHold2xLease,
+    settingsOpen,
+    shellRef,
+    toggleFs,
+  ]);
 
   const onSurfaceClick = (e: ReactMouseEvent) => {
     if (suppressNextClickRef.current) {
@@ -1501,6 +1887,7 @@ function PlayerChrome({
       setSettingsOpen(false);
       return;
     }
+    if (miniMode) return;
     adapter.togglePaused();
   };
 
@@ -1540,29 +1927,17 @@ function PlayerChrome({
         </div>
       ) : null}
 
-      {/* Center play indicator (only when paused & ready) */}
-      {adapter.paused && adapter.canPlay && !hold2xUi ? (
-        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
-          <div
-            className="flex h-16 w-16 items-center justify-center rounded-full bg-black/50 text-white shadow-lg ring-1 ring-white/20"
-            aria-hidden
-          >
-            <PlayIcon className="h-9 w-9 pl-1" />
-          </div>
-        </div>
-      ) : null}
-
-      {/* Center pulse on play/pause toggle */}
-      {centerHint && !hold2xUi ? (
+      {/* Toggle hint icon (play/pause) */}
+      {(centerHint ?? autoCenterHint) && !hold2xUi ? (
         <div
-          key={centerHint.tick}
+          key={(centerHint ?? autoCenterHint)?.tick}
           className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
         >
-          <div className="flex h-16 w-16 animate-[fadeOut_500ms_ease-out_forwards] items-center justify-center rounded-full bg-black/55 text-white">
-            {centerHint.kind === "play" ? (
-              <PlayIcon className="h-8 w-8 pl-1" />
+          <div className="flex h-16 w-16 animate-[hintFade_1000ms_ease-in-out_forwards] items-center justify-center rounded-full bg-black/55 text-white">
+            {(centerHint ?? autoCenterHint)?.kind === "play" ? (
+              <BigPlayOverlayIcon className="h-10 w-10" />
             ) : (
-              <PauseIcon className="h-8 w-8" />
+              <PauseIcon className="h-9 w-9" />
             )}
           </div>
         </div>
@@ -1589,9 +1964,11 @@ function PlayerChrome({
           height: "5rem",
         }}
       >
-        <p className="line-clamp-1 text-sm font-medium text-white drop-shadow">
-          {title}
-        </p>
+        {!miniMode ? (
+          <p className="line-clamp-1 text-sm font-medium text-white drop-shadow">
+            {title}
+          </p>
+        ) : null}
       </div>
 
       {/* Bottom gradient + controls */}
@@ -1612,6 +1989,7 @@ function PlayerChrome({
             duration={adapter.duration}
             buffered={adapter.bufferedEnd}
             chapters={chapters}
+            scrubPreview={scrubPreview ?? null}
             onScrub={(t) => {
               setScrub(t);
               adapter.seekPreview(t);
@@ -1659,21 +2037,13 @@ function PlayerChrome({
               </button>
               <div
                 className={cn(
-                  "ml-1 overflow-hidden transition-[width,opacity] duration-200",
-                  showVolPanel ? "w-24 opacity-100" : "w-0 opacity-0",
+                  "ml-0.5 overflow-hidden transition-[width,opacity] duration-200 ease-out",
+                  showVolPanel ? "w-[6.75rem] opacity-100" : "w-0 opacity-0",
                 )}
               >
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.01}
+                <VolumeSlider
                   value={levelUi}
-                  onChange={(e) =>
-                    adapter.setVolume(Number(e.currentTarget.value))
-                  }
-                  className="h-1 w-24 cursor-pointer accent-white"
-                  aria-label="Volume slider"
+                  onChange={(v) => adapter.setVolume(v)}
                 />
               </div>
             </fieldset>
@@ -1699,20 +2069,127 @@ function PlayerChrome({
 
             <span className="ml-auto" />
 
-            <div className="relative">
+            {miniMode ? (
+              <span className="rounded bg-black/35 px-2 py-0.5 text-[10px] uppercase tracking-wide text-white/80">
+                Mini
+              </span>
+            ) : null}
+
+            {nextUp && !miniMode ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onToggleAutoplayNext}
+                  className={cn(
+                    "rounded-md px-2 py-1 text-[11px] font-medium tracking-wide transition",
+                    autoplayNext
+                      ? "bg-[hsl(var(--primary))] text-white"
+                      : "bg-white/10 text-white/90 hover:bg-white/15",
+                  )}
+                  aria-pressed={autoplayNext}
+                  title="Autoplay next"
+                >
+                  Autoplay
+                </button>
+                <button
+                  type="button"
+                  onClick={onPlayNext}
+                  className="flex h-9 w-9 items-center justify-center rounded-full transition hover:bg-white/15"
+                  aria-label="Play next video"
+                  title={nextUp.title}
+                >
+                  <NextIcon className="h-5 w-5" />
+                </button>
+              </>
+            ) : null}
+
+            {queue.length > 0 && !miniMode ? (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setQueueOpen((v) => !v)}
+                  className={cn(
+                    "rounded-md px-2 py-1 text-[11px] font-medium tracking-wide transition",
+                    queueOpen
+                      ? "bg-white/20 text-white"
+                      : "bg-white/10 text-white/90 hover:bg-white/15",
+                  )}
+                  aria-expanded={queueOpen}
+                >
+                  Queue ({queue.length})
+                </button>
+                {queueOpen ? (
+                  <div className="absolute bottom-11 right-0 z-50 w-72 max-w-[80vw] rounded-lg border border-white/10 bg-zinc-950/95 p-2 shadow-xl backdrop-blur">
+                    <p className="px-2 pb-1 text-[11px] uppercase tracking-wide text-zinc-400">
+                      Up next
+                    </p>
+                    <ul className="max-h-64 overflow-auto">
+                      {queue.map((item, idx) => (
+                        <li key={`${item.href}-${idx}`}>
+                          <Link
+                            href={item.href}
+                            className="line-clamp-2 block rounded-md px-2 py-1.5 text-xs text-zinc-100 hover:bg-white/10"
+                            onClick={() => setQueueOpen(false)}
+                          >
+                            {idx + 1}. {item.title}
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {!miniMode ? (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen((v) => !v)}
+                  className={cn(
+                    "flex h-9 w-9 items-center justify-center rounded-full transition hover:bg-white/15",
+                    settingsOpen ? "bg-white/15" : "",
+                  )}
+                  aria-label="Settings"
+                  aria-expanded={settingsOpen}
+                >
+                  <GearIcon className="h-5 w-5" />
+                </button>
+              </div>
+            ) : null}
+
+            {!miniMode ? (
               <button
                 type="button"
-                onClick={() => setSettingsOpen((v) => !v)}
+                onClick={() => onToggleCinema()}
                 className={cn(
                   "flex h-9 w-9 items-center justify-center rounded-full transition hover:bg-white/15",
-                  settingsOpen ? "bg-white/15" : "",
+                  cinemaMode ? "bg-white/15 text-white" : "",
                 )}
-                aria-label="Settings"
-                aria-expanded={settingsOpen}
+                aria-label={
+                  cinemaMode ? "Exit cinema mode" : "Enter cinema mode"
+                }
+                aria-pressed={cinemaMode}
+                title="Cinema (C)"
               >
-                <GearIcon className="h-5 w-5" />
+                <CinemaIcon className="h-5 w-5" />
               </button>
-            </div>
+            ) : null}
+
+            {!miniMode ? (
+              <button
+                type="button"
+                onClick={() => void toggleFs()}
+                className="flex h-9 w-9 items-center justify-center rounded-full transition hover:bg-white/15"
+                aria-label={fsActive ? "Exit fullscreen" : "Enter fullscreen"}
+              >
+                {fsActive ? (
+                  <FsExitIcon className="h-6 w-6" />
+                ) : (
+                  <FsEnterIcon className="h-6 w-6" />
+                )}
+              </button>
+            ) : null}
 
             {adapter.canPictureInPicture ? (
               <button
@@ -1731,19 +2208,6 @@ function PlayerChrome({
                 <PipIcon className="h-5 w-5" />
               </button>
             ) : null}
-
-            <button
-              type="button"
-              onClick={() => void toggleFs()}
-              className="flex h-9 w-9 items-center justify-center rounded-full transition hover:bg-white/15"
-              aria-label={fsActive ? "Exit fullscreen" : "Enter fullscreen"}
-            >
-              {fsActive ? (
-                <FsExitIcon className="h-6 w-6" />
-              ) : (
-                <FsEnterIcon className="h-6 w-6" />
-              )}
-            </button>
           </div>
         </div>
       </div>
@@ -1759,9 +2223,11 @@ function PlayerChrome({
       ) : null}
 
       <style jsx>{`
-        @keyframes fadeOut {
-          0% { opacity: 1; transform: scale(0.9); }
-          100% { opacity: 0; transform: scale(1.1); }
+        @keyframes hintFade {
+          0% { opacity: 0; transform: scale(0.88); }
+          12% { opacity: 1; transform: scale(1); }
+          78% { opacity: 1; transform: scale(1); }
+          100% { opacity: 0; transform: scale(1.06); }
         }
       `}</style>
     </>
@@ -1781,7 +2247,17 @@ function VidstackBlock({
   progressive,
   chapters,
   startAtSeconds,
+  cinemaMode,
+  onExitCinema,
+  onToggleCinema,
   onPlaybackError,
+  onEnded,
+  nextUp,
+  queue,
+  autoplayNext,
+  onToggleAutoplayNext,
+  onPlayNext,
+  miniMode = false,
 }: {
   src: string;
   title: string;
@@ -1793,7 +2269,17 @@ function VidstackBlock({
   progressive: ProxiedVariant[] | null;
   chapters: VideoChapter[];
   startAtSeconds?: number;
+  cinemaMode: boolean;
+  onExitCinema: () => void;
+  onToggleCinema: () => void;
   onPlaybackError?: () => void;
+  onEnded?: () => void;
+  nextUp?: { href: string; title: string } | null;
+  queue?: { href: string; title: string }[];
+  autoplayNext: boolean;
+  onToggleAutoplayNext: () => void;
+  onPlayNext: () => void;
+  miniMode?: boolean;
 }) {
   const playerRef = useRef<MediaPlayerElement | null>(null);
   const shellRef = useRef<HTMLDivElement>(null);
@@ -1840,7 +2326,7 @@ function VidstackBlock({
     persistTimerRef.current = setTimeout(() => {
       persistTimerRef.current = null;
       writePlayerMediaPrefs({
-        volume: persistStore.volume,
+        volume: gainToUiVolume(persistStore.volume),
         muted: persistStore.muted,
       });
     }, 200);
@@ -1863,7 +2349,7 @@ function VidstackBlock({
       Number.isFinite(mediaPrefs.volume)
         ? Math.min(1, Math.max(0, mediaPrefs.volume))
         : 1;
-    remote.changeVolume(vol);
+    remote.changeVolume(uiVolumeToGain(vol));
     if (mediaPrefs.muted || vol <= 0.001) remote.mute();
     else remote.unmute();
     initialMediaPrefsAppliedRef.current = true;
@@ -1883,7 +2369,12 @@ function VidstackBlock({
     <div
       ref={shellRef}
       tabIndex={-1}
-      className="group/player relative aspect-video w-full overflow-hidden bg-black focus:outline-none"
+      className={cn(
+        "group/player relative overflow-hidden bg-black focus:outline-none",
+        cinemaMode
+          ? "aspect-video w-full max-h-[min(88vh,92dvh)] rounded-lg shadow-xl ring-1 ring-white/10"
+          : "aspect-video w-full",
+      )}
     >
       <MediaPlayer
         key={reactKey}
@@ -1896,6 +2387,7 @@ function VidstackBlock({
         preferNativeHLS={false}
         playsInline
         onError={emitPlaybackError}
+        onEnded={onEnded}
         className={cn("absolute inset-0", PLAYER_FILL)}
       >
         <MediaOutlet />
@@ -1907,6 +2399,16 @@ function VidstackBlock({
         chapters={chapters}
         quality={quality}
         audio={hlsAudio}
+        cinemaMode={cinemaMode}
+        onExitCinema={onExitCinema}
+        onToggleCinema={onToggleCinema}
+        scrubPreview={{ streamSrc: src, ...(poster ? { poster } : {}) }}
+        nextUp={nextUp}
+        queue={queue}
+        autoplayNext={autoplayNext}
+        onToggleAutoplayNext={onToggleAutoplayNext}
+        onPlayNext={onPlayNext}
+        miniMode={miniMode}
       />
     </div>
   );
@@ -1928,7 +2430,17 @@ function SplitBlock({
   setQualityIndex,
   chapters,
   startAtSeconds,
+  cinemaMode,
+  onExitCinema,
+  onToggleCinema,
   onPlaybackError,
+  onEnded,
+  nextUp,
+  queue,
+  autoplayNext,
+  onToggleAutoplayNext,
+  onPlayNext,
+  miniMode = false,
 }: {
   video: string;
   audioTracks: { label: string; src: string }[];
@@ -1944,7 +2456,17 @@ function SplitBlock({
   setQualityIndex: (i: number, seekSeconds?: number) => void;
   chapters: VideoChapter[];
   startAtSeconds?: number;
+  cinemaMode: boolean;
+  onExitCinema: () => void;
+  onToggleCinema: () => void;
   onPlaybackError?: () => void;
+  onEnded?: () => void;
+  nextUp?: { href: string; title: string } | null;
+  queue?: { href: string; title: string }[];
+  autoplayNext: boolean;
+  onToggleAutoplayNext: () => void;
+  onPlayNext: () => void;
+  miniMode?: boolean;
 }) {
   const shellRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1979,9 +2501,11 @@ function SplitBlock({
     const a = audioRef.current;
     if (!v || !a) return;
 
-    const SYNC_TOLERANCE = 0.2;
+    const SYNC_TOLERANCE = 0.16;
     /** Rare hard snap — avoid tight timers that hammer `currentTime` (breaks decode). */
-    const DRIFT_HARD = 0.85;
+    const DRIFT_HARD = 0.45;
+    /** Medium drift that should be corrected quickly while both tracks are playing. */
+    const DRIFT_RECOVER = 0.28;
 
     const align = (force = false) => {
       const drift = Math.abs(a.currentTime - v.currentTime);
@@ -1993,13 +2517,34 @@ function SplitBlock({
     // Resume audio when video resumes after a real pause; only re-align time
     // if drift is large to avoid resetting (and "pop"-ing) on every event.
     let waitingPauseTimer: ReturnType<typeof setTimeout> | null = null;
+    let driftRecoveryTimer: ReturnType<typeof setInterval> | null = null;
     const clearWaitingPauseTimer = () => {
       if (!waitingPauseTimer) return;
       clearTimeout(waitingPauseTimer);
       waitingPauseTimer = null;
     };
+    const clearDriftRecoveryTimer = () => {
+      if (!driftRecoveryTimer) return;
+      clearInterval(driftRecoveryTimer);
+      driftRecoveryTimer = null;
+    };
+    const primeDriftRecovery = () => {
+      clearDriftRecoveryTimer();
+      driftRecoveryTimer = setInterval(() => {
+        if (v.paused) return;
+        if (a.paused) {
+          void a.play().catch(() => {});
+          return;
+        }
+        const drift = Math.abs(a.currentTime - v.currentTime);
+        if (drift > DRIFT_RECOVER) {
+          a.currentTime = v.currentTime;
+        }
+      }, 350);
+    };
     const onPlay = () => {
       clearWaitingPauseTimer();
+      primeDriftRecovery();
       // Only gate when the audio element has no media yet (HAVE_NOTHING). Waiting
       // for HAVE_CURRENT_DATA breaks playback on some browsers / slow networks
       // because `currentTime` seeks never become safe while stalled.
@@ -2031,6 +2576,7 @@ function SplitBlock({
     };
     const onPlaying = () => {
       clearWaitingPauseTimer();
+      primeDriftRecovery();
       align(false);
       if (a.paused) void a.play().catch(() => {});
     };
@@ -2046,9 +2592,10 @@ function SplitBlock({
     };
     const onWaiting = () => {
       clearWaitingPauseTimer();
+      // Let brief network jitter recover without immediately muting companion audio.
       waitingPauseTimer = setTimeout(() => {
         if (!v.paused) a.pause();
-      }, 220);
+      }, 420);
     };
     const alignSeek = () => {
       clearWaitingPauseTimer();
@@ -2098,6 +2645,7 @@ function SplitBlock({
     // the user does not have to toggle play/pause to hear the new track.
     a.playbackRate = v.playbackRate;
     if (!v.paused) {
+      primeDriftRecovery();
       align(true);
       void a.play().catch(() => {});
     }
@@ -2117,6 +2665,7 @@ function SplitBlock({
       window.removeEventListener("focus", onTabResume);
       window.removeEventListener("pageshow", onTabResume);
       clearWaitingPauseTimer();
+      clearDriftRecoveryTimer();
     };
     // Re-bind when companion audio element is remounted (track change).
   }, [activeAudioSrc, video]);
@@ -2144,7 +2693,7 @@ function SplitBlock({
 
   useEffect(() => {
     const a = audioRef.current;
-    if (a) a.volume = adapter.muted ? 0 : volume;
+    if (a) a.volume = adapter.muted ? 0 : uiVolumeToGain(volume);
   }, [activeAudioSrc, adapter.muted, volume]);
 
   // Resume companion audio when the audio source is swapped mid-playback (track
@@ -2194,7 +2743,12 @@ function SplitBlock({
     <div
       ref={shellRef}
       tabIndex={-1}
-      className="group/player relative aspect-video w-full overflow-hidden bg-black focus:outline-none"
+      className={cn(
+        "group/player relative overflow-hidden bg-black focus:outline-none",
+        cinemaMode
+          ? "aspect-video w-full max-h-[min(88vh,92dvh)] rounded-lg shadow-xl ring-1 ring-white/10"
+          : "aspect-video w-full",
+      )}
     >
       <video
         ref={videoRef}
@@ -2204,6 +2758,7 @@ function SplitBlock({
         muted
         preload="metadata"
         onError={emitPlaybackError}
+        onEnded={onEnded}
         className="absolute inset-0 h-full w-full object-contain"
       />
       {/* biome-ignore lint/a11y/useMediaCaption: companion audio, no VTT */}
@@ -2222,6 +2777,19 @@ function SplitBlock({
         chapters={chapters}
         quality={quality}
         audio={audioModel}
+        cinemaMode={cinemaMode}
+        onExitCinema={onExitCinema}
+        onToggleCinema={onToggleCinema}
+        scrubPreview={{
+          streamSrc: video,
+          ...(poster ? { poster } : {}),
+        }}
+        nextUp={nextUp}
+        queue={queue}
+        autoplayNext={autoplayNext}
+        onToggleAutoplayNext={onToggleAutoplayNext}
+        onPlayNext={onPlayNext}
+        miniMode={miniMode}
       />
     </div>
   );
@@ -2230,12 +2798,28 @@ function SplitBlock({
 /* ------------------------------- Top level ------------------------------- */
 
 export function VideoPlayer({
+  videoId,
   payload,
   title,
   poster,
   chapters = [],
   startAtSeconds,
+  miniMode = false,
 }: VideoPlayerProps) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const watchCinema = useWatchCinema();
+  const [localCinema, setLocalCinema] = useState(false);
+  const cinemaMode = watchCinema ? watchCinema.cinemaMode : localCinema;
+  const setCinemaMode = watchCinema
+    ? watchCinema.setCinemaMode
+    : setLocalCinema;
+  const exitCinema = useCallback(() => setCinemaMode(false), [setCinemaMode]);
+  const toggleCinema = useCallback(
+    () => setCinemaMode((v) => !v),
+    [setCinemaMode],
+  );
+
   const progressive = payload.mode === "progressive" ? payload.variants : null;
   const progressiveMobileSafe = progressive;
   const [qualityIndex, setQualityIndex] = useState(0);
@@ -2245,6 +2829,58 @@ export function VideoPlayer({
   const [splitVolume, setSplitVolume] = useState(
     () => readPlayerMediaPrefs().volume,
   );
+  const [queue, setQueue] = useState<WatchQueueItem[]>([]);
+  const [autoplayNext, setAutoplayNext] = useState(true);
+  const [nextCountdown, setNextCountdown] = useState<number | null>(null);
+  const nextUp = queue[0] ?? null;
+
+  useEffect(() => {
+    const load = () => setQueue(readWatchQueue());
+    load();
+    window.addEventListener("storage", load);
+    window.addEventListener("ot:watch-queue-updated", load as EventListener);
+    return () => {
+      window.removeEventListener("storage", load);
+      window.removeEventListener(
+        "ot:watch-queue-updated",
+        load as EventListener,
+      );
+    };
+  }, []);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("ot:watch-autoplay-next");
+      if (raw === "0") setAutoplayNext(false);
+      if (raw === "1") setAutoplayNext(true);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "ot:watch-autoplay-next",
+        autoplayNext ? "1" : "0",
+      );
+    } catch {}
+  }, [autoplayNext]);
+
+  useEffect(() => {
+    if (nextCountdown == null) return;
+    if (nextCountdown <= 0) {
+      if (nextUp && autoplayNext) {
+        writeWatchQueue(queue.slice(1));
+        router.push(nextUp.href);
+      }
+      setNextCountdown(null);
+      return;
+    }
+    const t = window.setTimeout(
+      () => setNextCountdown((n) => (n ?? 1) - 1),
+      1000,
+    );
+    return () => window.clearTimeout(t);
+  }, [nextCountdown, nextUp, autoplayNext, router, queue]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2300,6 +2936,26 @@ export function VideoPlayer({
 
   const effectiveStartAt =
     typeof resumeSeekSeconds === "number" ? resumeSeekSeconds : startAtSeconds;
+  const miniPayload: VideoPlayerPayload | null =
+    active.kind === "hls"
+      ? { mode: "hls", src: active.src }
+      : active.kind === "variant"
+        ? active.v.t === "muxed"
+          ? { mode: "progressive", variants: [active.v] }
+          : {
+              mode: "progressive",
+              variants: [
+                {
+                  t: "split",
+                  label: active.v.label,
+                  video: active.v.video,
+                  audio: active.v.audio,
+                  audioTracks: active.v.audioTracks,
+                  defaultAudioIndex: active.v.defaultAudioIndex,
+                },
+              ],
+            }
+        : null;
 
   const handleHlsPlaybackError = useCallback(() => {
     const candidates: string[] = [];
@@ -2319,59 +2975,150 @@ export function VideoPlayer({
     }
   }, [active]);
 
+  const playNextNow = useCallback(() => {
+    if (!nextUp) return;
+    writeWatchQueue(queue.slice(1));
+    router.push(nextUp.href);
+  }, [nextUp, router, queue]);
+
+  const handleVideoEnded = useCallback(() => {
+    if (!nextUp || !autoplayNext) return;
+    setNextCountdown(3);
+  }, [nextUp, autoplayNext]);
+
+  useEffect(() => {
+    if (!pathname.startsWith("/watch/")) return;
+    if (!readWatchMiniEnabled(true)) return;
+    if (!miniPayload) return;
+
+    const media = document.querySelector("video");
+    const saveSnapshot = (target: HTMLVideoElement | null) => {
+      const media = target;
+      if (!media) return;
+      const currentTime =
+        Number.isFinite(media.currentTime) && media.currentTime > 0
+          ? media.currentTime
+          : 0;
+      writeWatchMiniState({
+        videoId,
+        title,
+        poster,
+        payload: miniPayload,
+        currentTime,
+      });
+    };
+
+    // Keep mini-state warm while watching so navigation doesn't miss it.
+    const onTimeUpdate = () => {
+      if (!media || media.paused) return;
+      saveSnapshot(media);
+    };
+    media?.addEventListener("timeupdate", onTimeUpdate);
+
+    return () => {
+      media?.removeEventListener("timeupdate", onTimeUpdate);
+      saveSnapshot(media);
+    };
+  }, [pathname, miniPayload, poster, title, videoId]);
+
   if (active.kind === "empty") return null;
   if (active.kind === "hls" && !active.src) return null;
   if (active.kind === "variant" && !active.v) return null;
 
   return (
-    <div className="w-full overflow-hidden rounded-xl border border-[hsl(var(--border))] bg-black shadow-lg ring-1 ring-black/5">
-      {active.kind === "hls" ? (
-        <VidstackBlock
-          reactKey={active.src}
-          src={active.src}
-          title={title}
-          poster={poster}
-          payload={payload}
-          progressive={progressiveMobileSafe}
-          qualityIndex={qualityIndex}
-          setQualityIndex={setQualityWithResume}
-          chapters={chapters}
-          startAtSeconds={effectiveStartAt}
-          onPlaybackError={handleHlsPlaybackError}
-        />
-      ) : null}
-      {active.kind === "variant" && active.v.t === "muxed" ? (
-        <VidstackBlock
-          reactKey={active.v.src}
-          src={active.v.src}
-          title={title}
-          poster={poster}
-          payload={payload}
-          progressive={progressiveMobileSafe}
-          qualityIndex={qualityIndex}
-          setQualityIndex={setQualityWithResume}
-          chapters={chapters}
-          startAtSeconds={effectiveStartAt}
-        />
-      ) : null}
-      {active.kind === "variant" && active.v.t === "split" ? (
-        <SplitBlock
-          key={active.v.video}
-          video={active.v.video}
-          audioTracks={active.v.audioTracks}
-          defaultAudioIndex={active.v.defaultAudioIndex}
-          poster={poster}
-          title={title}
-          volume={splitVolume}
-          setVolume={setSplitVolume}
-          payload={payload}
-          progressive={progressiveMobileSafe}
-          qualityIndex={qualityIndex}
-          setQualityIndex={setQualityWithResume}
-          chapters={chapters}
-          startAtSeconds={effectiveStartAt}
-          onPlaybackError={handleHlsPlaybackError}
-        />
+    <div
+      className={cn(
+        "relative w-full bg-black",
+        cinemaMode
+          ? "w-full max-w-full overflow-visible border-0 shadow-2xl ring-1 ring-white/15 sm:rounded-xl"
+          : "overflow-hidden rounded-xl border border-[hsl(var(--border))] shadow-lg ring-1 ring-black/5",
+      )}
+    >
+      <div className="relative w-full">
+        {active.kind === "hls" ? (
+          <VidstackBlock
+            reactKey={active.src}
+            src={active.src}
+            title={title}
+            poster={poster}
+            payload={payload}
+            progressive={progressiveMobileSafe}
+            qualityIndex={qualityIndex}
+            setQualityIndex={setQualityWithResume}
+            chapters={chapters}
+            startAtSeconds={effectiveStartAt}
+            cinemaMode={cinemaMode}
+            onExitCinema={exitCinema}
+            onToggleCinema={toggleCinema}
+            onPlaybackError={handleHlsPlaybackError}
+            onEnded={handleVideoEnded}
+            nextUp={nextUp}
+            queue={queue}
+            autoplayNext={autoplayNext}
+            onToggleAutoplayNext={() => setAutoplayNext((v) => !v)}
+            onPlayNext={playNextNow}
+            miniMode={miniMode}
+          />
+        ) : null}
+        {active.kind === "variant" && active.v.t === "muxed" ? (
+          <VidstackBlock
+            reactKey={active.v.src}
+            src={active.v.src}
+            title={title}
+            poster={poster}
+            payload={payload}
+            progressive={progressiveMobileSafe}
+            qualityIndex={qualityIndex}
+            setQualityIndex={setQualityWithResume}
+            chapters={chapters}
+            startAtSeconds={effectiveStartAt}
+            cinemaMode={cinemaMode}
+            onExitCinema={exitCinema}
+            onToggleCinema={toggleCinema}
+            onPlaybackError={handleHlsPlaybackError}
+            onEnded={handleVideoEnded}
+            nextUp={nextUp}
+            queue={queue}
+            autoplayNext={autoplayNext}
+            onToggleAutoplayNext={() => setAutoplayNext((v) => !v)}
+            onPlayNext={playNextNow}
+            miniMode={miniMode}
+          />
+        ) : null}
+        {active.kind === "variant" && active.v.t === "split" ? (
+          <SplitBlock
+            key={active.v.video}
+            video={active.v.video}
+            audioTracks={active.v.audioTracks}
+            defaultAudioIndex={active.v.defaultAudioIndex}
+            poster={poster}
+            title={title}
+            volume={splitVolume}
+            setVolume={setSplitVolume}
+            payload={payload}
+            progressive={progressiveMobileSafe}
+            qualityIndex={qualityIndex}
+            setQualityIndex={setQualityWithResume}
+            chapters={chapters}
+            startAtSeconds={effectiveStartAt}
+            cinemaMode={cinemaMode}
+            onExitCinema={exitCinema}
+            onToggleCinema={toggleCinema}
+            onPlaybackError={handleHlsPlaybackError}
+            onEnded={handleVideoEnded}
+            nextUp={nextUp}
+            queue={queue}
+            autoplayNext={autoplayNext}
+            onToggleAutoplayNext={() => setAutoplayNext((v) => !v)}
+            onPlayNext={playNextNow}
+            miniMode={miniMode}
+          />
+        ) : null}
+      </div>
+      {nextCountdown != null && nextUp ? (
+        <div className="absolute right-3 top-3 z-40 rounded-md bg-black/70 px-3 py-1.5 text-xs text-white shadow">
+          Next in {nextCountdown}s: {nextUp.title}
+        </div>
       ) : null}
     </div>
   );

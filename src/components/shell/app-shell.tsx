@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { useCallback, useState } from "react";
+import { WatchMiniPlayer } from "@/components/player/watch-mini-player";
 import { ShellSidebar } from "@/components/shell/shell-sidebar";
 import { ShellTopbar } from "@/components/shell/shell-topbar";
 
@@ -36,6 +37,7 @@ export function AppShell({ children, topbarRight, isLoggedIn }: AppShellProps) {
           {children}
         </div>
       </div>
+      <WatchMiniPlayer isLoggedIn={isLoggedIn} />
       {sidebarOpen ? (
         <button
           type="button"

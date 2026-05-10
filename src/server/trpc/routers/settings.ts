@@ -20,6 +20,9 @@ const settingsPatchSchema = z.object({
   pipedBaseUrl: z.string().max(512).optional(),
   invidiousBaseUrl: z.string().max(512).optional(),
   trendingRegion: z.string().length(2).optional(),
+  hideRestrictedVideos: z.boolean().optional(),
+  defaultCinemaMode: z.boolean().optional(),
+  enableMiniPlayer: z.boolean().optional(),
 });
 
 const healthCheckInputSchema = z.object({
