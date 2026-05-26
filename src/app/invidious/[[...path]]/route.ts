@@ -2,9 +2,10 @@ import {
   getAppOriginFromRequestHeaders,
   rewriteM3u8AllProxies,
 } from "@/lib/invidious-proxy";
+import { normalizeUpstreamBaseUrl } from "@/lib/upstream-base-url";
 
 function invidiousUpstreamBase(): string {
-  return process.env.INVIDIOUS_BASE_URL?.trim().replace(/\/+$/, "") ?? "";
+  return normalizeUpstreamBaseUrl(process.env.INVIDIOUS_BASE_URL);
 }
 
 /** `/vi/{id}/maxres.jpg` often 404s when YouTube has no maxres; try smaller stills. */
@@ -62,7 +63,7 @@ export async function GET(
 ) {
   const inv = invidiousUpstreamBase();
   if (!inv) {
-    return new Response("INVIDIOUS_BASE_URL is not set", { status: 500 });
+    return new Response("INVIDIOUS_BASE_URL is not configured", { status: 503 });
   }
 
   const { path: segs } = await context.params;

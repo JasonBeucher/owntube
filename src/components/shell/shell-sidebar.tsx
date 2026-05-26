@@ -7,7 +7,7 @@ import { BrandLogo } from "@/components/shell/brand-logo";
 import { SidebarSubscriptions } from "@/components/shell/sidebar-subscriptions";
 import { cn } from "@/lib/utils";
 
-type NavKey = "home" | "explore" | "subs" | "library" | "algorithm";
+type NavKey = "home" | "shorts" | "explore" | "subs" | "library" | "algorithm";
 
 const NAV: { key: NavKey; href: string; label: string; icon: ReactNode }[] = [
   {
@@ -26,6 +26,26 @@ const NAV: { key: NavKey; href: string; label: string; icon: ReactNode }[] = [
       >
         <title>Home</title>
         <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      </svg>
+    ),
+  },
+  {
+    key: "shorts",
+    href: "/shorts",
+    label: "Shorts",
+    icon: (
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <title>Shorts</title>
+        <rect x="7" y="2" width="10" height="20" rx="2" />
+        <path d="M10 8v8l5-4-5-4z" fill="currentColor" stroke="none" />
       </svg>
     ),
   },
@@ -134,58 +154,48 @@ type ShellSidebarProps = {
 
 export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
   const pathname = usePathname();
-  const isWatchRoute = pathname.startsWith("/watch/");
 
   return (
     <aside
+      aria-hidden={!open}
       className={cn(
-        isWatchRoute
-          ? "fixed bottom-0 left-0 top-0 z-50 flex h-full w-[248px] flex-col overflow-y-auto border-r border-[hsl(var(--border))] bg-[hsl(var(--sidebar))] px-2.5 py-4 shadow-[20px_0_60px_rgba(0,0,0,0.5)] transition-transform"
-          : "z-50 flex h-full w-[248px] shrink-0 flex-col overflow-y-auto border-r border-[hsl(var(--border))] bg-[hsl(var(--sidebar))] px-2.5 py-4 transition-transform max-[900px]:fixed max-[900px]:bottom-0 max-[900px]:left-0 max-[900px]:top-0 max-[900px]:shadow-[20px_0_60px_rgba(0,0,0,0.5)]",
-        isWatchRoute
-          ? open
-            ? "translate-x-0"
-            : "-translate-x-full"
-          : open
-            ? "max-[900px]:translate-x-0"
-            : "max-[900px]:-translate-x-full",
+        "flex h-full shrink-0 flex-col overflow-hidden bg-[hsl(var(--sidebar))] transition-[width,border-color] duration-200 ease-out",
+        open ? "w-[248px] border-r border-[hsl(var(--border))]" : "w-0 border-r-0",
       )}
     >
-      <div className="flex items-center justify-between px-2.5 pb-4 pt-1">
-        <BrandLogo onNavigate={onClose} />
-        <button
-          type="button"
-          className={cn(
-            "h-8 w-8 items-center justify-center rounded-lg text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]",
-            isWatchRoute ? "inline-flex" : "hidden max-[900px]:inline-flex",
-          )}
-          aria-label="Close menu"
-          onClick={onClose}
-        >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            aria-hidden
+      <div className="flex h-full w-[248px] flex-col overflow-y-auto px-2.5 py-4">
+        <div className="flex items-center gap-1 px-2.5 pb-4 pt-1">
+          <button
+            type="button"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]"
+            aria-label="Collapse menu"
+            onClick={onClose}
           >
-            <title>Close</title>
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-      </div>
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <title>Collapse</title>
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+          </button>
+          <BrandLogo />
+        </div>
 
-      <nav className="flex flex-col gap-0.5">
+        <nav className="flex flex-col gap-0.5">
         {NAV.map((n) => {
           const active = activeForPath(pathname, n.href, n.key);
           return (
             <Link
               key={n.key}
               href={n.href}
-              onClick={onClose}
               className={cn(
                 "relative flex items-center gap-3.5 rounded-[10px] px-3 py-2.5 text-left text-sm font-medium transition before:pointer-events-none",
                 active
@@ -207,7 +217,6 @@ export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
       <div className="flex flex-col gap-0.5">
         <Link
           href="/playlists"
-          onClick={onClose}
           className={cn(
             "flex items-center gap-3.5 rounded-[10px] px-3 py-2.5 text-sm font-medium transition",
             pathname.startsWith("/playlists")
@@ -231,7 +240,6 @@ export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
         </Link>
         <Link
           href="/settings"
-          onClick={onClose}
           className={cn(
             "flex items-center gap-3.5 rounded-[10px] px-3 py-2.5 text-sm font-medium transition",
             pathname.startsWith("/settings")
@@ -270,13 +278,14 @@ export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
         </>
       ) : null}
 
-      <div className="mt-auto border-t border-[hsl(var(--border))] px-3 pb-2 pt-4 text-xs text-[hsl(var(--muted-foreground))]">
-        <div className="flex items-center gap-2">
-          <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" />
-          <span>Feed from your instance</span>
-        </div>
-        <div className="mt-1.5 font-mono text-[11px] text-[hsl(var(--muted-foreground))]">
-          OwnTube
+        <div className="mt-auto border-t border-[hsl(var(--border))] px-3 pb-2 pt-4 text-xs text-[hsl(var(--muted-foreground))]">
+          <div className="flex items-center gap-2">
+            <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" />
+            <span>Feed from your instance</span>
+          </div>
+          <div className="mt-1.5 font-mono text-[11px] text-[hsl(var(--muted-foreground))]">
+            OwnTube
+          </div>
         </div>
       </div>
     </aside>

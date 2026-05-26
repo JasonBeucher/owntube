@@ -20,7 +20,12 @@ export function WatchMiniPlayer({ isLoggedIn }: WatchMiniPlayerProps) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState(() => readWatchMiniState());
   const [enabled, setEnabled] = useState(() => readWatchMiniEnabled(true));
-  const hidden = !isLoggedIn || !enabled || pathname.startsWith("/watch/");
+  const hidden =
+    !isLoggedIn ||
+    !enabled ||
+    pathname.startsWith("/watch/") ||
+    pathname === "/shorts" ||
+    pathname.startsWith("/shorts?");
 
   useEffect(() => {
     const load = () => {

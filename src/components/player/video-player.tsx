@@ -15,6 +15,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { MediaPlayerElement } from "vidstack";
@@ -22,16 +23,34 @@ import {
   audioTrackLanguageInfo,
   languageFirstAudioMenuLabel,
 } from "@/lib/audio-track-label";
-import { sourceFromUrl } from "@/lib/media-source-from-url";
+import { sourceFromUrl, isDirectProgressiveVideoUrl } from "@/lib/media-source-from-url";
 import {
   readPlayerMediaPrefs,
   writePlayerMediaPrefs,
   writePlayerVolumeOnly,
 } from "@/lib/player-media-prefs";
-import { gainToUiVolume, uiVolumeToGain } from "@/lib/player-volume-gain";
+import {
+  gainToUiVolume,
+  playbackRateVolumeAttenuation,
+  uiVolumeToGain,
+} from "@/lib/player-volume-gain";
 import { cn } from "@/lib/utils";
+import {
+  DEFAULT_PLAYBACK_QUALITY,
+  type DefaultPlaybackQuality,
+  readDefaultPlaybackQuality,
+  variantIndexForDefaultQuality,
+} from "@/lib/default-playback-quality";
 import { useWatchCinema } from "@/components/watch/watch-cinema-context";
 import { chapterIndexAt, type VideoChapter } from "@/lib/video-chapters";
+import {
+  mergeScrubPreview,
+  useScrubFramePreview,
+  type ScrubFramePreview,
+  type ScrubPreviewConfig,
+} from "@/hooks/use-scrub-frame-preview";
+import type { VideoStoryboard } from "@/server/services/proxy.types";
+import { nextPlaybackVariantIndex } from "@/lib/playback-variant-fallback";
 import {
   readWatchMiniEnabled,
   writeWatchMiniState,
@@ -59,8 +78,25 @@ type VideoPlayerProps = {
   poster?: string;
   chapters?: VideoChapter[];
   startAtSeconds?: number;
+  durationSeconds?: number;
+  storyboard?: VideoStoryboard;
+  /** Low-quality stream for timeline scrub (falls back to main stream). */
+  scrubPreviewStreamSrc?: string;
   miniMode?: boolean;
+  /** Vertical full-height Shorts viewer (minimal chrome, cover fit). */
+  shortsMode?: boolean;
+  /** Called when playback reaches the end (Shorts auto-advance). */
+  onEnded?: () => void;
+  defaultPlaybackQuality?: DefaultPlaybackQuality;
 };
+
+function initialQualityIndexForPayload(
+  payload: VideoPlayerPayload,
+  preference: DefaultPlaybackQuality,
+): number {
+  if (payload.mode !== "progressive") return 0;
+  return variantIndexForDefaultQuality(payload.variants, preference);
+}
 
 type WatchQueueItem = { href: string; title: string };
 
@@ -96,6 +132,7 @@ function writeWatchQueue(items: WatchQueueItem[]): void {
 }
 
 function shouldAutoRecoverPlaybackSource(src: string): boolean {
+  if (src.includes("/videoplayback")) return true;
   return (
     src.includes("/yt-hls?url=") ||
     src.includes("/invidious/api/manifest/hls") ||
@@ -105,16 +142,23 @@ function shouldAutoRecoverPlaybackSource(src: string): boolean {
 
 const RECOVERY_ATTEMPT_WINDOW_MS = 5 * 60_000;
 const MAX_RECOVERY_ATTEMPTS = 3;
+const MAX_VARIANT_FALLBACK_ATTEMPTS = 8;
+const SPLIT_START_TIMEOUT_MS = 7_000;
 
 function playbackResumeStorageKey(): string {
   if (typeof window === "undefined") return "ot:playback-resume:";
   return `ot:playback-resume:${window.location.pathname}`;
 }
 
-function tryOneShotPlaybackRecovery(recoveryKey: string): boolean {
+function tryOneShotPlaybackRecovery(
+  recoveryKey: string,
+  videoId?: string,
+): boolean {
   if (typeof window === "undefined") return false;
   try {
-    const storageKey = `ot:playback-recover:${recoveryKey}`;
+    const storageKey = videoId
+      ? `ot:playback-recover:${videoId}:${recoveryKey}`
+      : `ot:playback-recover:${recoveryKey}`;
     const now = Date.now();
     const stateRaw = window.sessionStorage.getItem(storageKey);
     const [lastStr, countStr] = stateRaw ? stateRaw.split(":") : [];
@@ -545,6 +589,57 @@ function useNativeAdapter(opts: {
   const [muted, setMuted] = useState(false);
   const [pictureInPicture, setPictureInPicture] = useState(false);
 
+  const syncCompanionVolume = useCallback(
+    (overrides?: { muted?: boolean; volumeUi?: number }) => {
+      const v = videoRef.current;
+      const a = audioRef.current;
+      if (!a) return;
+      const m = overrides?.muted ?? muted;
+      const volUi = overrides?.volumeUi ?? externalVolume;
+      const rate = v?.playbackRate ?? 1;
+      const base = m ? 0 : uiVolumeToGain(volUi);
+      const att = playbackRateVolumeAttenuation(rate);
+      try {
+        a.muted = m;
+        a.volume = Math.min(1, base * att);
+      } catch {
+        /* ignore */
+      }
+    },
+    [videoRef, audioRef, externalVolume, muted],
+  );
+
+  const applyVideoElementVolume = useCallback(
+    (overrides?: { muted?: boolean; volumeUi?: number }) => {
+      const v = videoRef.current;
+      if (!v) return;
+      const m = overrides?.muted ?? muted;
+      const volUi = overrides?.volumeUi ?? externalVolume;
+      try {
+        v.muted = m || volUi <= 0;
+        if (!v.muted) {
+          v.volume = uiVolumeToGain(volUi);
+        }
+      } catch {
+        /* ignore */
+      }
+    },
+    [videoRef, externalVolume, muted],
+  );
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    syncCompanionVolume();
+    if (!audioRef.current) applyVideoElementVolume();
+    const onRate = () => {
+      syncCompanionVolume();
+      if (!audioRef.current) applyVideoElementVolume();
+    };
+    v.addEventListener("ratechange", onRate);
+    return () => v.removeEventListener("ratechange", onRate);
+  }, [syncCompanionVolume, applyVideoElementVolume, audioRef]);
+
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -565,11 +660,6 @@ function useNativeAdapter(opts: {
       for (const e of events) v.removeEventListener(e, bump);
     };
   }, [videoRef, bump]);
-
-  useEffect(() => {
-    const a = audioRef.current;
-    if (a) a.volume = muted ? 0 : uiVolumeToGain(externalVolume);
-  }, [audioRef, externalVolume, muted]);
 
   useEffect(() => {
     const onPiPChange = () => {
@@ -613,10 +703,7 @@ function useNativeAdapter(opts: {
       void videoRef.current?.play().catch(() => {});
       const a = audioRef.current;
       if (a) {
-        try {
-          a.muted = muted;
-          a.volume = muted ? 0 : uiVolumeToGain(externalVolume);
-        } catch {}
+        syncCompanionVolume();
         void a.play().catch(() => {});
       }
     },
@@ -631,10 +718,7 @@ function useNativeAdapter(opts: {
       if (el.paused) {
         void el.play().catch(() => {});
         if (a) {
-          try {
-            a.muted = muted;
-            a.volume = muted ? 0 : uiVolumeToGain(externalVolume);
-          } catch {}
+          syncCompanionVolume();
           void a.play().catch(() => {});
         }
       } else {
@@ -662,11 +746,12 @@ function useNativeAdapter(opts: {
       // effect above also keeps things in sync as React state catches up.
       const a = audioRef.current;
       if (a) {
-        a.muted = nextMuted;
-        a.volume = nextMuted ? 0 : uiVolumeToGain(n);
+        syncCompanionVolume({ muted: nextMuted, volumeUi: n });
         if (!nextMuted && videoRef.current && !videoRef.current.paused) {
           void a.play().catch(() => {});
         }
+      } else {
+        applyVideoElementVolume({ muted: nextMuted, volumeUi: n });
       }
     },
     toggleMuted: () => {
@@ -674,18 +759,22 @@ function useNativeAdapter(opts: {
       setMuted(next);
       const a = audioRef.current;
       if (a) {
-        a.muted = next;
-        a.volume = next ? 0 : uiVolumeToGain(externalVolume);
+        syncCompanionVolume({ muted: next });
         if (!next && videoRef.current && !videoRef.current.paused) {
           void a.play().catch(() => {});
         }
+      } else {
+        applyVideoElementVolume({ muted: next });
       }
     },
     setPlaybackRate: (r) => {
       const v = videoRef.current;
       const a = audioRef.current;
       if (v) v.playbackRate = r;
-      if (a) a.playbackRate = r;
+      if (a) {
+        a.playbackRate = r;
+        syncCompanionVolume();
+      }
     },
     canPictureInPicture:
       typeof document !== "undefined" &&
@@ -721,6 +810,38 @@ type QualityModel =
       remote: ReturnType<typeof useMediaRemote>;
     }
   | { kind: "none" };
+
+/** Menu rows from the full SSR payload — never the active variant alone. */
+type ProgressiveQualityMenu = {
+  kind: "progressive";
+  index: number;
+  items: { label: string }[];
+};
+
+function progressiveQualityMenuFromPayload(
+  payload: VideoPlayerPayload,
+  qualityIndex: number,
+): ProgressiveQualityMenu | null {
+  if (payload.mode !== "progressive" || payload.variants.length === 0) {
+    return null;
+  }
+  return {
+    kind: "progressive",
+    index: qualityIndex,
+    items: payload.variants.map((p) => ({ label: p.label })),
+  };
+}
+
+function withProgressiveQualitySetter(
+  menu: ProgressiveQualityMenu,
+  setQualityIndex: (i: number, seekSeconds?: number) => void,
+  seekSeconds: number,
+): QualityModel {
+  return {
+    ...menu,
+    setIndex: (i) => setQualityIndex(i, seekSeconds),
+  };
+}
 
 type AudioModel =
   | {
@@ -1192,7 +1313,182 @@ function SettingsMenu({
   );
 }
 
-type ScrubPreviewConfig = { streamSrc: string; poster?: string };
+function ScrubPreviewVisual({
+  frame,
+  scrubPreview,
+  previewRef,
+  previewVideoFailed,
+  onPreviewVideoError,
+  previewSeekKey,
+}: {
+  frame: ScrubFramePreview | null;
+  scrubPreview: ScrubPreviewConfig;
+  previewRef: React.RefObject<HTMLVideoElement | null>;
+  previewVideoFailed: boolean;
+  onPreviewVideoError: () => void;
+  previewSeekKey: number | null;
+}) {
+  const [frameFailed, setFrameFailed] = useState(false);
+  const [videoSeekReady, setVideoSeekReady] = useState(false);
+
+  useEffect(() => {
+    setFrameFailed(false);
+  }, [frame?.url]);
+
+  useEffect(() => {
+    setVideoSeekReady(false);
+  }, [previewSeekKey, scrubPreview.streamSrc]);
+
+  useEffect(() => {
+    if (frame || !scrubPreview.streamSrc || previewVideoFailed) return;
+    const v = previewRef.current;
+    if (!v) return;
+    const onSeeked = () => setVideoSeekReady(true);
+    const onLoaded = () => {
+      if (v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        setVideoSeekReady(true);
+      }
+    };
+    v.addEventListener("seeked", onSeeked);
+    v.addEventListener("loadeddata", onLoaded);
+    return () => {
+      v.removeEventListener("seeked", onSeeked);
+      v.removeEventListener("loadeddata", onLoaded);
+    };
+  }, [frame, scrubPreview.streamSrc, previewVideoFailed]);
+
+  if (frame && !frameFailed) {
+    if (frame.backgroundSize) {
+      return (
+        <div
+          className="relative shrink-0 overflow-hidden rounded-md bg-zinc-950 shadow-lg ring-1 ring-white/20"
+          style={{
+            width: frame.width,
+            height: frame.height,
+            backgroundImage: `url(${frame.url})`,
+            backgroundRepeat: "no-repeat",
+            backgroundSize: frame.backgroundSize,
+            backgroundPosition: frame.backgroundPosition ?? "0 0",
+          }}
+          aria-hidden
+        >
+          {/* biome-ignore lint/performance/noImgElement: probe storyboard sheet load */}
+          <img
+            src={frame.url}
+            alt=""
+            className="absolute h-0 w-0 opacity-0"
+            onError={() => setFrameFailed(true)}
+          />
+        </div>
+      );
+    }
+    return (
+      // biome-ignore lint/performance/noImgElement: timeline scrub thumbnail
+      <img
+        src={frame.url}
+        alt=""
+        width={frame.width}
+        height={frame.height}
+        className="relative shrink-0 rounded-md bg-zinc-950 object-cover shadow-lg ring-1 ring-white/20"
+        onError={() => setFrameFailed(true)}
+      />
+    );
+  }
+
+  return (
+    <div className="relative aspect-video w-[7.5rem] shrink-0 overflow-hidden rounded-md bg-zinc-950 shadow-lg ring-1 ring-white/20">
+      {scrubPreview.poster ? (
+        <img
+          src={scrubPreview.poster}
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      ) : null}
+      {scrubPreview.streamSrc && !previewVideoFailed ? (
+        <video
+          key={scrubPreview.streamSrc}
+          ref={previewRef}
+          src={scrubPreview.streamSrc}
+          muted
+          playsInline
+          preload="auto"
+          className={cn(
+            "relative z-[1] h-full w-full object-cover transition-opacity",
+            videoSeekReady ? "opacity-100" : "opacity-0",
+          )}
+          aria-hidden
+          onError={onPreviewVideoError}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ScrubPreviewOverlay({
+  hover,
+  duration,
+  scrubPreview,
+}: {
+  hover: number;
+  duration: number;
+  scrubPreview: ScrubPreviewConfig;
+}) {
+  const previewRef = useRef<HTMLVideoElement | null>(null);
+  const [previewVideoFailed, setPreviewVideoFailed] = useState(false);
+  const previewFailedRef = useRef(false);
+  const seekTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    previewFailedRef.current = false;
+    setPreviewVideoFailed(false);
+  }, [scrubPreview.streamSrc]);
+
+  useEffect(() => {
+    if (seekTimerRef.current != null) {
+      window.clearTimeout(seekTimerRef.current);
+      seekTimerRef.current = null;
+    }
+    if (!scrubPreview.streamSrc || duration <= 0) return;
+    seekTimerRef.current = window.setTimeout(() => {
+      seekTimerRef.current = null;
+      if (previewFailedRef.current) return;
+      const v = previewRef.current;
+      if (!v) return;
+      const t = Math.max(0, Math.min(hover, duration - 0.05));
+      try {
+        if (Math.abs(v.currentTime - t) > 0.15) {
+          v.currentTime = t;
+        } else {
+          v.dispatchEvent(new Event("seeked"));
+        }
+      } catch {
+        /* ignore */
+      }
+    }, 50);
+    return () => {
+      if (seekTimerRef.current != null) {
+        window.clearTimeout(seekTimerRef.current);
+        seekTimerRef.current = null;
+      }
+    };
+  }, [hover, duration, scrubPreview.streamSrc]);
+
+  const onPreviewVideoError = useCallback(() => {
+    previewFailedRef.current = true;
+    setPreviewVideoFailed(true);
+  }, []);
+
+  return (
+    <ScrubPreviewVisual
+      frame={scrubPreview.frameAt?.(hover) ?? null}
+      scrubPreview={scrubPreview}
+      previewRef={previewRef}
+      previewVideoFailed={previewVideoFailed}
+      onPreviewVideoError={onPreviewVideoError}
+      previewSeekKey={hover}
+    />
+  );
+}
 
 function VolumeSlider({
   value,
@@ -1251,8 +1547,18 @@ function ProgressBar({
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
+  const [hoverAnchor, setHoverAnchor] = useState<{ x: number; y: number } | null>(
+    null,
+  );
   const [dragging, setDragging] = useState(false);
   const draggingRef = useRef(false);
+
+  const syncHoverAnchor = useCallback((clientX: number) => {
+    const el = trackRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setHoverAnchor({ x: clientX, y: rect.top });
+  }, []);
 
   const pct = (n: number) =>
     duration > 0 ? Math.min(100, Math.max(0, (n / duration) * 100)) : 0;
@@ -1271,17 +1577,22 @@ function ProgressBar({
 
   const onPointerDown = (e: ReactPointerEvent) => {
     if (duration <= 0) return;
+    scrubPreview?.primeFrames?.();
     e.preventDefault();
     e.stopPropagation();
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
     draggingRef.current = true;
     setDragging(true);
     const t = tFromPointer(e.clientX);
+    setHover(t);
+    syncHoverAnchor(e.clientX);
     onScrub(t);
   };
   const onPointerMove = (e: ReactPointerEvent) => {
+    scrubPreview?.primeFrames?.();
     const t = tFromPointer(e.clientX);
     setHover(t);
+    syncHoverAnchor(e.clientX);
     if (draggingRef.current) onScrub(t);
   };
   const onPointerUp = (e: ReactPointerEvent) => {
@@ -1297,6 +1608,7 @@ function ProgressBar({
     const onWinPointerMove = (e: PointerEvent) => {
       const t = tFromPointer(e.clientX);
       setHover(t);
+      syncHoverAnchor(e.clientX);
       if (draggingRef.current) onScrub(t);
     };
     const finish = (e: PointerEvent) => {
@@ -1314,7 +1626,7 @@ function ProgressBar({
       window.removeEventListener("pointerup", finish);
       window.removeEventListener("pointercancel", finish);
     };
-  }, [dragging, onScrub, onScrubEnd, tFromPointer]);
+  }, [dragging, onScrub, onScrubEnd, syncHoverAnchor, tFromPointer]);
 
   const hasChapters = chapters.length > 1;
   const hoverChapterIndex = useMemo(
@@ -1326,63 +1638,19 @@ function ProgressBar({
     hoverChapterIndex >= 0
       ? (chapters[hoverChapterIndex]?.title ?? null)
       : null;
-  const hoverPositionRatio =
-    hover !== null && duration > 0
-      ? Math.min(1, Math.max(0, hover / duration))
-      : 0.5;
-
-  const previewRef = useRef<HTMLVideoElement | null>(null);
-  const [previewVideoFailed, setPreviewVideoFailed] = useState(false);
-  const previewFailedRef = useRef(false);
-  const seekTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    previewFailedRef.current = false;
-    setPreviewVideoFailed(false);
-  }, [scrubPreview?.streamSrc]);
-
-  useEffect(() => {
-    if (seekTimerRef.current != null) {
-      window.clearTimeout(seekTimerRef.current);
-      seekTimerRef.current = null;
-    }
-    if (hover === null || !scrubPreview?.streamSrc || duration <= 0) return;
-    seekTimerRef.current = window.setTimeout(() => {
-      seekTimerRef.current = null;
-      if (previewFailedRef.current) return;
-      const v = previewRef.current;
-      if (!v) return;
-      const t = Math.max(0, Math.min(hover, duration - 0.05));
-      if (Math.abs(v.currentTime - t) > 0.2) {
-        try {
-          v.currentTime = t;
-        } catch {
-          /* ignore */
-        }
-      }
-    }, 80);
-    return () => {
-      if (seekTimerRef.current != null) {
-        window.clearTimeout(seekTimerRef.current);
-        seekTimerRef.current = null;
-      }
-    };
-  }, [hover, duration, scrubPreview?.streamSrc]);
-
-  const onPreviewVideoError = useCallback(() => {
-    previewFailedRef.current = true;
-    setPreviewVideoFailed(true);
-  }, []);
 
   return (
     <div
       ref={trackRef}
-      className="group/scrub relative flex min-h-10 cursor-pointer select-none items-center py-1.5 pointer-events-auto"
+      className="group/scrub relative flex min-h-10 cursor-pointer select-none items-center overflow-visible py-1.5 pointer-events-auto"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
-      onPointerLeave={() => setHover(null)}
+      onPointerLeave={() => {
+        setHover(null);
+        setHoverAnchor(null);
+      }}
       role="slider"
       aria-label="Seek"
       aria-valuemin={0}
@@ -1463,61 +1731,364 @@ function ProgressBar({
           </div>
         </>
       )}
-      {hover !== null ? (
-        <div
-          className="pointer-events-none absolute bottom-full z-10 mb-1.5 -translate-x-1/2"
-          style={{ left: `${pct(hover)}%` }}
-        >
-          <div
-            className={cn(
-              "flex flex-col items-center gap-1",
-              hoverPositionRatio < 0.15
-                ? "translate-x-[calc(50%-1.25rem)] items-start"
-                : hoverPositionRatio > 0.85
-                  ? "-translate-x-[calc(50%-1.25rem)] items-end"
-                  : "",
-            )}
-          >
-            {scrubPreview ? (
-              <div className="relative aspect-video w-[7.5rem] shrink-0 overflow-hidden rounded-md bg-zinc-950 shadow-lg ring-1 ring-white/20">
-                {scrubPreview.poster ? (
-                  <img
-                    src={scrubPreview.poster}
-                    alt=""
-                    className="absolute inset-0 h-full w-full object-cover"
-                  />
-                ) : null}
-                {scrubPreview.streamSrc && !previewVideoFailed ? (
-                  <video
-                    key={scrubPreview.streamSrc}
-                    ref={previewRef}
-                    src={scrubPreview.streamSrc}
-                    muted
-                    playsInline
-                    preload="metadata"
-                    className="relative z-[1] h-full w-full object-cover"
-                    aria-hidden
-                    onError={onPreviewVideoError}
-                  />
-                ) : null}
-              </div>
-            ) : null}
-            {hoverChapterTitle ? (
-              <span className="max-w-[16rem] truncate rounded-md bg-black/85 px-2 py-0.5 text-[11px] font-medium text-white shadow ring-1 ring-white/10">
-                {hoverChapterTitle}
+      {hover !== null && hoverAnchor && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="pointer-events-none fixed z-[80] flex w-max shrink-0 flex-col items-center gap-1"
+              style={{
+                left: hoverAnchor.x,
+                top: hoverAnchor.y,
+                transform: "translate(-50%, calc(-100% - 0.375rem))",
+              }}
+            >
+              {scrubPreview ? (
+                <ScrubPreviewOverlay
+                  hover={hover}
+                  duration={duration}
+                  scrubPreview={scrubPreview}
+                />
+              ) : null}
+              {hoverChapterTitle ? (
+                <span className="max-w-[16rem] truncate rounded-md bg-black/85 px-2 py-0.5 text-[11px] font-medium text-white shadow ring-1 ring-white/10">
+                  {hoverChapterTitle}
+                </span>
+              ) : null}
+              <span className="rounded bg-black/80 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-white shadow ring-1 ring-white/10">
+                {formatClock(hover)}
               </span>
-            ) : null}
-            <span className="rounded bg-black/80 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-white shadow ring-1 ring-white/10">
-              {formatClock(hover)}
-            </span>
-          </div>
-        </div>
-      ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
       <div
         className="pointer-events-none absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[hsl(var(--primary))] opacity-0 shadow ring-2 ring-black/40 transition-opacity group-hover/scrub:opacity-100"
         style={{ left: `${pct(current)}%` }}
         aria-hidden
       />
+    </div>
+  );
+}
+
+function qualityShortLabel(quality: QualityModel): string {
+  if (quality.kind === "progressive") {
+    const raw = quality.items[quality.index]?.label ?? "";
+    const head = raw.split(/\s*·\s*/)[0]?.trim() ?? raw;
+    return head || "—";
+  }
+  if (quality.kind === "hls-managed") {
+    if (quality.auto) return "Auto";
+    const sel = quality.items.find((i) => i.selected);
+    const raw = sel?.label ?? quality.items[0]?.label ?? "";
+    const head = raw.split(/\s*·\s*/)[0]?.trim() ?? raw;
+    return head || "Auto";
+  }
+  return "—";
+}
+
+function ShortsProgressBar({
+  current,
+  duration,
+  buffered,
+  onScrub,
+  onScrubEnd,
+}: {
+  current: number;
+  duration: number;
+  buffered: number;
+  onScrub: (t: number) => void;
+  onScrubEnd: (t: number) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  const [dragging, setDragging] = useState(false);
+
+  const pct = (n: number) =>
+    duration > 0 ? Math.min(100, Math.max(0, (n / duration) * 100)) : 0;
+
+  const tFromPointer = useCallback(
+    (clientX: number) => {
+      const el = trackRef.current;
+      if (!el || duration <= 0) return 0;
+      const rect = el.getBoundingClientRect();
+      const x = Math.min(rect.right, Math.max(rect.left, clientX));
+      const ratio = (x - rect.left) / Math.max(rect.width, 1);
+      return ratio * duration;
+    },
+    [duration],
+  );
+
+  const onPointerDown = (e: ReactPointerEvent) => {
+    if (duration <= 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+    draggingRef.current = true;
+    setDragging(true);
+    onScrub(tFromPointer(e.clientX));
+  };
+  const onPointerMove = (e: ReactPointerEvent) => {
+    if (!draggingRef.current) return;
+    onScrub(tFromPointer(e.clientX));
+  };
+  const onPointerUp = (e: ReactPointerEvent) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    setDragging(false);
+    onScrubEnd(tFromPointer(e.clientX));
+  };
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onWinPointerMove = (e: PointerEvent) => {
+      if (draggingRef.current) onScrub(tFromPointer(e.clientX));
+    };
+    const finish = (e: PointerEvent) => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      setDragging(false);
+      onScrubEnd(tFromPointer(e.clientX));
+    };
+    window.addEventListener("pointermove", onWinPointerMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    return () => {
+      window.removeEventListener("pointermove", onWinPointerMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+  }, [dragging, onScrub, onScrubEnd, tFromPointer]);
+
+  return (
+    <div
+      ref={trackRef}
+      className="relative flex h-4 w-full cursor-pointer select-none items-end pointer-events-auto"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      role="slider"
+      aria-label="Seek"
+      aria-valuemin={0}
+      aria-valuemax={Math.max(duration, 1)}
+      aria-valuenow={Math.min(current, Math.max(duration, 1))}
+      tabIndex={0}
+    >
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-0.5 overflow-hidden rounded-full bg-white/25">
+        <div
+          className="absolute inset-y-0 left-0 bg-white/40"
+          style={{ width: `${pct(buffered)}%` }}
+        />
+        <div
+          className="absolute inset-y-0 left-0 bg-red-600"
+          style={{ width: `${pct(current)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ShortsTopControls({
+  adapter,
+  levelUi,
+  chromeShown,
+  showVolPanel,
+  onShowVolPanelChange,
+}: {
+  adapter: PlayerAdapter;
+  levelUi: number;
+  chromeShown: boolean;
+  showVolPanel: boolean;
+  onShowVolPanelChange: (open: boolean) => void;
+}) {
+  const volSliderVisible = chromeShown && showVolPanel;
+
+  return (
+    <div
+      data-controls
+      className={cn(
+        "pointer-events-auto absolute left-2 top-2 z-30 flex max-w-[calc(100%-1rem)] items-center gap-1 transition-opacity duration-200 sm:left-3 sm:top-3",
+        chromeShown ? "opacity-100" : "opacity-0",
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => adapter.togglePaused()}
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-black/45 text-white transition hover:bg-black/60"
+        aria-label={adapter.paused ? "Play" : "Pause"}
+      >
+        {adapter.paused ? (
+          <PlayIcon className="h-5 w-5 pl-0.5" />
+        ) : (
+          <PauseIcon className="h-5 w-5" />
+        )}
+      </button>
+      <fieldset
+        className="flex min-w-0 items-center rounded-full border-0 bg-black/45 px-0.5"
+        onMouseEnter={() => onShowVolPanelChange(true)}
+        onMouseLeave={() => onShowVolPanelChange(false)}
+        onFocus={() => onShowVolPanelChange(true)}
+        onBlur={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+            onShowVolPanelChange(false);
+          }
+        }}
+        onPointerDown={() => onShowVolPanelChange(true)}
+      >
+        <legend className="sr-only">Volume</legend>
+        <button
+          type="button"
+          onClick={() => adapter.toggleMuted()}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white transition hover:bg-black/60"
+          aria-label={adapter.muted ? "Unmute" : "Mute"}
+        >
+          {levelUi < 0.01 ? (
+            <MuteIcon className="h-5 w-5" />
+          ) : levelUi < 0.5 ? (
+            <VolLowIcon className="h-5 w-5" />
+          ) : (
+            <VolHighIcon className="h-5 w-5" />
+          )}
+        </button>
+        <div
+          className={cn(
+            "overflow-hidden transition-[width,opacity] duration-200 ease-out",
+            volSliderVisible ? "w-[6.75rem] opacity-100" : "w-0 opacity-0",
+          )}
+        >
+          <VolumeSlider
+            value={levelUi}
+            onChange={(v) => adapter.setVolume(v)}
+          />
+        </div>
+      </fieldset>
+    </div>
+  );
+}
+
+function ShortsQualityPicker({
+  quality,
+  open,
+  onOpenChange,
+  chromeShown,
+}: {
+  quality: QualityModel;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  chromeShown: boolean;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) {
+        onOpenChange(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onOpenChange(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, onOpenChange]);
+
+  if (quality.kind === "none") return null;
+
+  return (
+    <div
+      ref={rootRef}
+      data-controls
+      className={cn(
+        "pointer-events-auto absolute right-2 top-2 z-30 transition-opacity duration-200 sm:right-3 sm:top-3",
+        chromeShown ? "opacity-100" : "opacity-0",
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => onOpenChange(!open)}
+        className={cn(
+          "rounded-full bg-black/45 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-black/60",
+          open && "bg-black/60",
+        )}
+        aria-label="Quality"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+      >
+        {qualityShortLabel(quality)}
+      </button>
+      {open ? (
+        <div
+          role="listbox"
+          aria-label="Quality"
+          className="absolute right-0 top-full z-40 mt-1 max-h-64 w-44 overflow-y-auto rounded-lg border border-white/10 bg-zinc-950/95 py-1 text-sm shadow-xl backdrop-blur-md"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {quality.kind === "progressive"
+            ? quality.items.map((it, i) => (
+                <button
+                  key={`${it.label}-${i}`}
+                  type="button"
+                  role="option"
+                  aria-selected={i === quality.index}
+                  onClick={() => {
+                    quality.setIndex(i);
+                    onOpenChange(false);
+                  }}
+                  className={cn(
+                    "flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-white/10",
+                    i === quality.index
+                      ? "text-[hsl(var(--primary))]"
+                      : "text-zinc-100",
+                  )}
+                >
+                  <span>{it.label}</span>
+                  {i === quality.index ? <span aria-hidden>✓</span> : null}
+                </button>
+              ))
+            : null}
+          {quality.kind === "hls-managed"
+            ? quality.items.map((it) => (
+                <button
+                  key={`${it.label}-${it.idx}`}
+                  type="button"
+                  role="option"
+                  aria-selected={
+                    it.idx === -1
+                      ? quality.auto
+                      : !quality.auto && it.selected
+                  }
+                  onClick={() => {
+                    quality.remote.changeQuality(it.idx);
+                    onOpenChange(false);
+                  }}
+                  className={cn(
+                    "flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-white/10",
+                    it.idx === -1
+                      ? quality.auto
+                        ? "text-[hsl(var(--primary))]"
+                        : "text-zinc-100"
+                      : !quality.auto && it.selected
+                        ? "text-[hsl(var(--primary))]"
+                        : "text-zinc-100",
+                  )}
+                >
+                  <span>{it.label}</span>
+                  {it.idx === -1 ? (
+                    quality.auto ? (
+                      <span aria-hidden>✓</span>
+                    ) : null
+                  ) : !quality.auto && it.selected ? (
+                    <span aria-hidden>✓</span>
+                  ) : null}
+                </button>
+              ))
+            : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1531,6 +2102,8 @@ type ChromeProps = {
   chapters: VideoChapter[];
   quality: QualityModel;
   audio: AudioModel;
+  settingsOpen: boolean;
+  onSettingsOpenChange: (open: boolean) => void;
   cinemaMode: boolean;
   onExitCinema: () => void;
   onToggleCinema: () => void;
@@ -1542,6 +2115,7 @@ type ChromeProps = {
   onToggleAutoplayNext: () => void;
   onPlayNext: () => void;
   miniMode?: boolean;
+  shortsMode?: boolean;
 };
 
 function PlayerChrome({
@@ -1551,6 +2125,8 @@ function PlayerChrome({
   chapters,
   quality,
   audio,
+  settingsOpen,
+  onSettingsOpenChange,
   cinemaMode,
   onExitCinema,
   onToggleCinema,
@@ -1562,13 +2138,14 @@ function PlayerChrome({
   onToggleAutoplayNext,
   onPlayNext,
   miniMode = false,
+  shortsMode = false,
 }: ChromeProps) {
   const [hydrated, setHydrated] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const { active: fsActive, toggle: toggleFs } = useFullscreenShell(shellRef);
   const { visible, ping, hide } = useIdleVisible(adapter.paused, settingsOpen);
   const [scrub, setScrub] = useState<number | null>(null);
   const [showVolPanel, setShowVolPanel] = useState(false);
+  const [shortsQualityOpen, setShortsQualityOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
   const [autoCenterHint, setAutoCenterHint] = useState<{
     kind: "play" | "pause";
@@ -1584,13 +2161,15 @@ function PlayerChrome({
   }, []);
 
   useEffect(() => {
-    if (!miniMode) return;
+    if (!miniMode || shortsMode) return;
     if (miniAutoplayTriedRef.current) return;
-    if (!adapter.canPlay) return;
+    if (!adapter.canPlay || !adapter.paused) return;
     miniAutoplayTriedRef.current = true;
-    if (!adapter.paused) return;
-    adapter.play();
-  }, [adapter, miniMode]);
+    const id = window.setTimeout(() => {
+      if (adapter.paused) adapter.play();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [adapter.canPlay, adapter.paused, adapter.play, miniMode, shortsMode]);
 
   useEffect(() => {
     const prev = prevPausedRef.current;
@@ -1778,7 +2357,7 @@ function PlayerChrome({
         releaseSpaceHoldIfNeeded();
         if (settingsOpen) {
           e.preventDefault();
-          setSettingsOpen(false);
+          onSettingsOpenChange(false);
           ping();
         } else if (cinemaMode) {
           e.preventDefault();
@@ -1884,7 +2463,11 @@ function PlayerChrome({
     }
     if ((e.target as HTMLElement).closest("[data-controls]")) return;
     if (settingsOpen) {
-      setSettingsOpen(false);
+      onSettingsOpenChange(false);
+      return;
+    }
+    if (shortsQualityOpen) {
+      setShortsQualityOpen(false);
       return;
     }
     if (miniMode) return;
@@ -1894,7 +2477,7 @@ function PlayerChrome({
   const level = adapter.muted ? 0 : adapter.volume;
   const levelUi = hydrated ? level : 1;
   const seekPos = scrub ?? adapter.currentTime;
-  const chromeShown = visible && !hold2xUi;
+  const chromeShown = (shortsMode || visible) && !hold2xUi;
   const currentChapterTitle =
     chapters.length > 1
       ? (chapters[chapterIndexAt(chapters, seekPos)]?.title ?? null)
@@ -1911,8 +2494,11 @@ function PlayerChrome({
         onPointerUp={onSurfacePointerUp}
         onPointerCancel={onSurfacePointerUp}
         onPointerLeave={onSurfacePointerLeave}
-        onDoubleClick={() => void toggleFs()}
-        className="absolute inset-0 z-10 cursor-pointer bg-transparent"
+        onDoubleClick={shortsMode ? undefined : () => void toggleFs()}
+        className={cn(
+          "absolute inset-0 z-10 cursor-pointer bg-transparent",
+          shortsMode && "pointer-events-none",
+        )}
       />
 
       {/* Buffering spinner */}
@@ -1952,44 +2538,56 @@ function PlayerChrome({
         </div>
       ) : null}
 
-      {/* Top gradient + title */}
-      <div
-        className={cn(
-          "pointer-events-none absolute inset-x-0 top-0 z-30 px-4 pt-2 transition-opacity duration-200",
-          chromeShown ? "opacity-100" : "opacity-0",
-        )}
-        style={{
-          background:
-            "linear-gradient(to bottom, rgba(0,0,0,0.55), rgba(0,0,0,0))",
-          height: "5rem",
-        }}
-      >
-        {!miniMode ? (
-          <p className="line-clamp-1 text-sm font-medium text-white drop-shadow">
-            {title}
-          </p>
-        ) : null}
-      </div>
+      {/* Top chrome */}
+      {shortsMode ? (
+        <>
+          <ShortsTopControls
+            adapter={adapter}
+            levelUi={levelUi}
+            chromeShown={chromeShown}
+            showVolPanel={showVolPanel}
+            onShowVolPanelChange={setShowVolPanel}
+          />
+          <ShortsQualityPicker
+            quality={quality}
+            open={shortsQualityOpen}
+            onOpenChange={setShortsQualityOpen}
+            chromeShown={chromeShown}
+          />
+        </>
+      ) : (
+        <div
+          className={cn(
+            "pointer-events-none absolute inset-x-0 top-0 z-30 px-4 pt-2 transition-opacity duration-200",
+            chromeShown ? "opacity-100" : "opacity-0",
+          )}
+          style={{
+            background:
+              "linear-gradient(to bottom, rgba(0,0,0,0.55), rgba(0,0,0,0))",
+            height: "5rem",
+          }}
+        >
+          {!miniMode ? (
+            <p className="line-clamp-1 text-sm font-medium text-white drop-shadow">
+              {title}
+            </p>
+          ) : null}
+        </div>
+      )}
 
-      {/* Bottom gradient + controls */}
-      <div
-        data-controls
-        className={cn(
-          "absolute inset-x-0 bottom-0 z-30 transition-opacity duration-200",
-          chromeShown ? "opacity-100" : "opacity-0 pointer-events-none",
-        )}
-        style={{
-          background:
-            "linear-gradient(to top, rgba(0,0,0,0.78), rgba(0,0,0,0))",
-        }}
-      >
-        <div className="px-3 pb-2 pt-12 sm:px-4">
-          <ProgressBar
+      {/* Bottom chrome */}
+      {shortsMode ? (
+        <div
+          data-controls
+          className={cn(
+            "absolute inset-x-0 bottom-0 z-30 transition-opacity duration-200",
+            chromeShown ? "opacity-100" : "opacity-0 pointer-events-none",
+          )}
+        >
+          <ShortsProgressBar
             current={seekPos}
             duration={adapter.duration}
             buffered={adapter.bufferedEnd}
-            chapters={chapters}
-            scrubPreview={scrubPreview ?? null}
             onScrub={(t) => {
               setScrub(t);
               adapter.seekPreview(t);
@@ -1999,7 +2597,36 @@ function PlayerChrome({
               adapter.seek(t);
             }}
           />
-          <div className="mt-1 flex items-center gap-1.5 text-white sm:gap-2">
+        </div>
+      ) : (
+        <div
+          data-controls
+          className={cn(
+            "absolute inset-x-0 bottom-0 z-30 transition-opacity duration-200",
+            chromeShown ? "opacity-100" : "opacity-0 pointer-events-none",
+          )}
+          style={{
+            background:
+              "linear-gradient(to top, rgba(0,0,0,0.78), rgba(0,0,0,0))",
+          }}
+        >
+          <div className="px-3 pb-2 pt-12 sm:px-4">
+            <ProgressBar
+              current={seekPos}
+              duration={adapter.duration}
+              buffered={adapter.bufferedEnd}
+              chapters={chapters}
+              scrubPreview={scrubPreview ?? null}
+              onScrub={(t) => {
+                setScrub(t);
+                adapter.seekPreview(t);
+              }}
+              onScrubEnd={(t) => {
+                setScrub(null);
+                adapter.seek(t);
+              }}
+            />
+            <div className="mt-1 flex items-center gap-1.5 text-white sm:gap-2">
             <button
               type="button"
               onClick={() => adapter.togglePaused()}
@@ -2075,7 +2702,7 @@ function PlayerChrome({
               </span>
             ) : null}
 
-            {nextUp && !miniMode ? (
+            {nextUp && !miniMode && !shortsMode ? (
               <>
                 <button
                   type="button"
@@ -2103,7 +2730,7 @@ function PlayerChrome({
               </>
             ) : null}
 
-            {queue.length > 0 && !miniMode ? (
+            {queue.length > 0 && !miniMode && !shortsMode ? (
               <div className="relative">
                 <button
                   type="button"
@@ -2141,11 +2768,11 @@ function PlayerChrome({
               </div>
             ) : null}
 
-            {!miniMode ? (
+            {!miniMode && !shortsMode ? (
               <div className="relative">
                 <button
                   type="button"
-                  onClick={() => setSettingsOpen((v) => !v)}
+                  onClick={() => onSettingsOpenChange(!settingsOpen)}
                   className={cn(
                     "flex h-9 w-9 items-center justify-center rounded-full transition hover:bg-white/15",
                     settingsOpen ? "bg-white/15" : "",
@@ -2158,7 +2785,7 @@ function PlayerChrome({
               </div>
             ) : null}
 
-            {!miniMode ? (
+            {!miniMode && !shortsMode ? (
               <button
                 type="button"
                 onClick={() => onToggleCinema()}
@@ -2176,7 +2803,7 @@ function PlayerChrome({
               </button>
             ) : null}
 
-            {!miniMode ? (
+            {!miniMode && !shortsMode ? (
               <button
                 type="button"
                 onClick={() => void toggleFs()}
@@ -2211,14 +2838,22 @@ function PlayerChrome({
           </div>
         </div>
       </div>
+      )}
 
-      {settingsOpen ? (
+      {settingsOpen && !shortsMode ? (
         <SettingsMenu
+          key={
+            quality.kind === "progressive"
+              ? `p-${quality.items.map((i) => i.label).join("\0")}`
+              : quality.kind === "hls-managed"
+                ? `h-${quality.items.length}`
+                : "none"
+          }
           quality={quality}
           audio={audio}
           rate={adapter.playbackRate}
           setRate={(r) => adapter.setPlaybackRate(r)}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => onSettingsOpenChange(false)}
         />
       ) : null}
 
@@ -2236,42 +2871,21 @@ function PlayerChrome({
 
 /* ------------------------- Vidstack player block ------------------------- */
 
-function VidstackBlock({
-  src,
-  title,
-  poster,
-  reactKey,
-  payload,
-  qualityIndex,
-  setQualityIndex,
-  progressive,
-  chapters,
-  startAtSeconds,
-  cinemaMode,
-  onExitCinema,
-  onToggleCinema,
-  onPlaybackError,
-  onEnded,
-  nextUp,
-  queue,
-  autoplayNext,
-  onToggleAutoplayNext,
-  onPlayNext,
-  miniMode = false,
-}: {
+type VidstackBlockProps = {
   src: string;
   title: string;
   poster?: string;
   reactKey: string;
-  payload: VideoPlayerPayload;
-  qualityIndex: number;
+  progressiveQualityMenu: ProgressiveQualityMenu | null;
   setQualityIndex: (i: number, seekSeconds?: number) => void;
-  progressive: ProxiedVariant[] | null;
+  settingsOpen: boolean;
+  onSettingsOpenChange: (open: boolean) => void;
   chapters: VideoChapter[];
   startAtSeconds?: number;
   cinemaMode: boolean;
   onExitCinema: () => void;
   onToggleCinema: () => void;
+  scrubPreview?: ScrubPreviewConfig | null;
   onPlaybackError?: () => void;
   onEnded?: () => void;
   nextUp?: { href: string; title: string } | null;
@@ -2280,9 +2894,41 @@ function VidstackBlock({
   onToggleAutoplayNext: () => void;
   onPlayNext: () => void;
   miniMode?: boolean;
+  shortsMode?: boolean;
+};
+
+/**
+ * Subscribes to Vidstack store only after MediaPlayer has mounted — avoids
+ * "Cannot update VidstackBlock while rendering MediaPlayer" (setState in render).
+ */
+function VidstackPlayerChrome({
+  playerRef,
+  shellRef,
+  src,
+  title,
+  poster,
+  reactKey,
+  setQualityIndex,
+  progressiveQualityMenu,
+  settingsOpen,
+  onSettingsOpenChange,
+  chapters,
+  startAtSeconds,
+  cinemaMode,
+  onExitCinema,
+  onToggleCinema,
+  scrubPreview,
+  nextUp,
+  queue,
+  autoplayNext,
+  onToggleAutoplayNext,
+  onPlayNext,
+  miniMode = false,
+  shortsMode = false,
+}: VidstackBlockProps & {
+  playerRef: React.RefObject<MediaPlayerElement | null>;
+  shellRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const playerRef = useRef<MediaPlayerElement | null>(null);
-  const shellRef = useRef<HTMLDivElement>(null);
   const adapter = useVidstackAdapter(playerRef);
   const remote = useMediaRemote(
     playerRef as React.RefObject<EventTarget | null>,
@@ -2295,12 +2941,6 @@ function VidstackBlock({
   const hlsAudio = useHlsAudioModel(playerRef);
   const initialSeekAppliedRef = useRef(false);
   const initialMediaPrefsAppliedRef = useRef(false);
-  const emitPlaybackError = useCallback(() => {
-    if (!onPlaybackError) return;
-    // Vidstack can surface an error synchronously while mounting; defer recovery
-    // to avoid triggering React updates during another component render.
-    window.setTimeout(() => onPlaybackError(), 0);
-  }, [onPlaybackError]);
 
   useEffect(() => {
     initialSeekAppliedRef.current = false;
@@ -2316,9 +2956,21 @@ function VidstackBlock({
     ) {
       return;
     }
-    adapter.seek(startAtSeconds);
-    initialSeekAppliedRef.current = true;
-  }, [adapter, startAtSeconds]);
+    const id = window.setTimeout(() => {
+      remote.seek(startAtSeconds);
+      initialSeekAppliedRef.current = true;
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [adapter.canPlay, remote, startAtSeconds]);
+
+  useEffect(() => {
+    if (!shortsMode && !miniMode) return;
+    if (!adapter.canPlay || !adapter.paused) return;
+    const id = window.setTimeout(() => {
+      if (adapter.paused) remote.play();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [adapter.canPlay, adapter.paused, remote, miniMode, shortsMode, reactKey]);
 
   useEffect(() => {
     if (!persistStore.canPlay) return;
@@ -2335,7 +2987,6 @@ function VidstackBlock({
     };
   }, [persistStore.volume, persistStore.muted, persistStore.canPlay]);
 
-  // Keep SSR/client first render deterministic; hydrate prefs after mount.
   const [mediaPrefs, setMediaPrefs] = useState({ volume: 1, muted: false });
   useEffect(() => {
     setMediaPrefs(readPlayerMediaPrefs());
@@ -2344,26 +2995,88 @@ function VidstackBlock({
   useEffect(() => {
     if (initialMediaPrefsAppliedRef.current) return;
     if (!persistStore.canPlay) return;
+    if (shortsMode) {
+      const id = window.setTimeout(() => {
+        remote.mute();
+        initialMediaPrefsAppliedRef.current = true;
+      }, 0);
+      return () => window.clearTimeout(id);
+    }
     const vol =
       typeof mediaPrefs.volume === "number" &&
       Number.isFinite(mediaPrefs.volume)
         ? Math.min(1, Math.max(0, mediaPrefs.volume))
         : 1;
-    remote.changeVolume(uiVolumeToGain(vol));
-    if (mediaPrefs.muted || vol <= 0.001) remote.mute();
-    else remote.unmute();
-    initialMediaPrefsAppliedRef.current = true;
-  }, [mediaPrefs, persistStore.canPlay, remote]);
+    const id = window.setTimeout(() => {
+      remote.changeVolume(uiVolumeToGain(vol));
+      if (mediaPrefs.muted || vol <= 0.001) remote.mute();
+      else remote.unmute();
+      initialMediaPrefsAppliedRef.current = true;
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [mediaPrefs, persistStore.canPlay, remote, shortsMode]);
 
-  const quality: QualityModel =
-    payload.mode === "progressive" && progressive && progressive.length > 0
-      ? {
-          kind: "progressive",
-          index: qualityIndex,
-          setIndex: (i) => setQualityIndex(i, adapter.currentTime),
-          items: progressive.map((p) => ({ label: p.label })),
-        }
-      : hlsQuality;
+  const quality: QualityModel = progressiveQualityMenu
+    ? withProgressiveQualitySetter(
+        progressiveQualityMenu,
+        setQualityIndex,
+        adapter.currentTime,
+      )
+    : hlsQuality;
+
+  return (
+    <PlayerChrome
+      adapter={adapter}
+      shellRef={shellRef}
+      title={title}
+      chapters={chapters}
+      quality={quality}
+      audio={hlsAudio}
+      settingsOpen={settingsOpen}
+      onSettingsOpenChange={onSettingsOpenChange}
+      cinemaMode={cinemaMode}
+      onExitCinema={onExitCinema}
+      onToggleCinema={onToggleCinema}
+      scrubPreview={
+        scrubPreview ?? { streamSrc: src, ...(poster ? { poster } : {}) }
+      }
+      nextUp={nextUp}
+      queue={queue}
+      autoplayNext={autoplayNext}
+      onToggleAutoplayNext={onToggleAutoplayNext}
+      onPlayNext={onPlayNext}
+      miniMode={miniMode}
+      shortsMode={shortsMode}
+    />
+  );
+}
+
+function VidstackBlock(props: VidstackBlockProps) {
+  const {
+    src,
+    title,
+    poster,
+    reactKey,
+    onPlaybackError,
+    onEnded,
+    cinemaMode,
+    shortsMode = false,
+    miniMode = false,
+  } = props;
+  const playerRef = useRef<MediaPlayerElement | null>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const [chromeReady, setChromeReady] = useState(false);
+
+  const emitPlaybackError = useCallback(() => {
+    if (!onPlaybackError) return;
+    window.setTimeout(() => onPlaybackError(), 0);
+  }, [onPlaybackError]);
+
+  useEffect(() => {
+    setChromeReady(false);
+    const id = requestAnimationFrame(() => setChromeReady(true));
+    return () => cancelAnimationFrame(id);
+  }, [reactKey]);
 
   return (
     <div
@@ -2371,9 +3084,11 @@ function VidstackBlock({
       tabIndex={-1}
       className={cn(
         "group/player relative overflow-hidden bg-black focus:outline-none",
-        cinemaMode
-          ? "aspect-video w-full max-h-[min(88vh,92dvh)] rounded-lg shadow-xl ring-1 ring-white/10"
-          : "aspect-video w-full",
+        shortsMode
+          ? "pointer-events-none absolute inset-0 h-full w-full [&_[data-controls]]:pointer-events-auto [&_video]:pointer-events-none"
+          : cinemaMode
+            ? "aspect-video w-full max-h-[min(88vh,92dvh)] rounded-lg shadow-xl ring-1 ring-white/10"
+            : "aspect-video w-full",
       )}
     >
       <MediaPlayer
@@ -2384,31 +3099,211 @@ function VidstackBlock({
         poster={poster}
         controls={false}
         load="eager"
-        preferNativeHLS={false}
+        preferNativeHLS={shortsMode}
         playsInline
+        autoPlay={shortsMode || miniMode}
+        muted={shortsMode}
         onError={emitPlaybackError}
         onEnded={onEnded}
-        className={cn("absolute inset-0", PLAYER_FILL)}
+        className={cn(
+          "absolute inset-0",
+          shortsMode
+            ? "h-full w-full [&_video]:h-full [&_video]:w-full [&_video]:object-contain [&_vds-poster]:hidden"
+            : PLAYER_FILL,
+        )}
       >
         <MediaOutlet />
       </MediaPlayer>
+      {chromeReady ? (
+        <VidstackPlayerChrome
+          {...props}
+          playerRef={playerRef}
+          shellRef={shellRef}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/* --------------------------- Native muxed block -------------------------- */
+
+/** Muted autoplay for Shorts on native <video> (muxed + split). */
+function useShortsNativeAutoplay(
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  enabled: boolean,
+  streamKey: string,
+) {
+  useEffect(() => {
+    if (!enabled) return;
+    const el = videoRef.current;
+    if (!el) return;
+
+    const tryPlay = () => {
+      if (!el.paused) return;
+      void el.play().catch(() => {
+        /* autoplay policy */
+      });
+    };
+
+    tryPlay();
+    el.addEventListener("loadeddata", tryPlay);
+    el.addEventListener("canplay", tryPlay);
+    return () => {
+      el.removeEventListener("loadeddata", tryPlay);
+      el.removeEventListener("canplay", tryPlay);
+    };
+  }, [enabled, streamKey, videoRef]);
+}
+
+function NativeMuxedBlock({
+  src,
+  poster,
+  title,
+  reactKey,
+  volume,
+  setVolume,
+  progressiveQualityMenu,
+  setQualityIndex,
+  settingsOpen,
+  onSettingsOpenChange,
+  chapters,
+  startAtSeconds,
+  cinemaMode,
+  onExitCinema,
+  onToggleCinema,
+  onPlaybackError,
+  onEnded,
+  nextUp,
+  queue,
+  autoplayNext,
+  onToggleAutoplayNext,
+  onPlayNext,
+  miniMode = false,
+  shortsMode = false,
+  scrubPreview,
+}: {
+  src: string;
+  poster?: string;
+  title: string;
+  reactKey: string;
+  volume: number;
+  setVolume: (v: number) => void;
+  progressiveQualityMenu: ProgressiveQualityMenu | null;
+  setQualityIndex: (i: number, seekSeconds?: number) => void;
+  settingsOpen: boolean;
+  onSettingsOpenChange: (open: boolean) => void;
+  chapters: VideoChapter[];
+  startAtSeconds?: number;
+  cinemaMode: boolean;
+  onExitCinema: () => void;
+  onToggleCinema: () => void;
+  onPlaybackError?: () => void;
+  onEnded?: () => void;
+  nextUp?: { href: string; title: string } | null;
+  queue?: { href: string; title: string }[];
+  autoplayNext: boolean;
+  onToggleAutoplayNext: () => void;
+  onPlayNext: () => void;
+  miniMode?: boolean;
+  shortsMode?: boolean;
+  scrubPreview?: ScrubPreviewConfig | null;
+}) {
+  const shellRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const initialSeekAppliedRef = useRef(false);
+  const emitPlaybackError = useCallback(() => {
+    if (!onPlaybackError) return;
+    window.setTimeout(() => onPlaybackError(), 0);
+  }, [onPlaybackError]);
+
+  useEffect(() => {
+    initialSeekAppliedRef.current = false;
+  }, [reactKey, startAtSeconds]);
+
+  const adapter = useNativeAdapter({
+    videoRef,
+    audioRef,
+    externalVolume: volume,
+    setExternalVolume: setVolume,
+  });
+
+  useShortsNativeAutoplay(videoRef, shortsMode, reactKey);
+
+  useEffect(() => {
+    if (initialSeekAppliedRef.current) return;
+    if (!adapter.canPlay) return;
+    if (
+      typeof startAtSeconds !== "number" ||
+      !Number.isFinite(startAtSeconds) ||
+      startAtSeconds < 0
+    ) {
+      return;
+    }
+    adapter.seek(startAtSeconds);
+    initialSeekAppliedRef.current = true;
+  }, [adapter, startAtSeconds]);
+
+  const quality: QualityModel = progressiveQualityMenu
+    ? withProgressiveQualitySetter(
+        progressiveQualityMenu,
+        setQualityIndex,
+        adapter.currentTime,
+      )
+    : { kind: "none" };
+
+  return (
+    <div
+      ref={shellRef}
+      tabIndex={-1}
+      className={cn(
+        "group/player relative overflow-hidden bg-black focus:outline-none",
+        shortsMode
+          ? "pointer-events-none absolute inset-0 h-full w-full [&_[data-controls]]:pointer-events-auto [&_video]:pointer-events-none"
+          : cinemaMode
+            ? "aspect-video w-full max-h-[min(88vh,92dvh)] rounded-lg shadow-xl ring-1 ring-white/10"
+            : "aspect-video w-full",
+      )}
+    >
+      <video
+        key={reactKey}
+        ref={videoRef}
+        src={src}
+        poster={poster}
+        playsInline
+        preload="auto"
+        autoPlay={shortsMode || miniMode}
+        muted={shortsMode || miniMode}
+        onError={emitPlaybackError}
+        onEnded={onEnded}
+        className={cn(
+          shortsMode
+            ? "relative z-0 h-full w-full object-contain"
+            : "absolute inset-0 h-full w-full object-contain",
+        )}
+      />
       <PlayerChrome
         adapter={adapter}
         shellRef={shellRef}
         title={title}
         chapters={chapters}
         quality={quality}
-        audio={hlsAudio}
+        audio={{ kind: "none" }}
+        settingsOpen={settingsOpen}
+        onSettingsOpenChange={onSettingsOpenChange}
         cinemaMode={cinemaMode}
         onExitCinema={onExitCinema}
         onToggleCinema={onToggleCinema}
-        scrubPreview={{ streamSrc: src, ...(poster ? { poster } : {}) }}
+        scrubPreview={
+          scrubPreview ?? { streamSrc: src, ...(poster ? { poster } : {}) }
+        }
         nextUp={nextUp}
         queue={queue}
         autoplayNext={autoplayNext}
         onToggleAutoplayNext={onToggleAutoplayNext}
         onPlayNext={onPlayNext}
         miniMode={miniMode}
+        shortsMode={shortsMode}
       />
     </div>
   );
@@ -2424,10 +3319,10 @@ function SplitBlock({
   title,
   volume,
   setVolume,
-  payload,
-  progressive,
-  qualityIndex,
+  progressiveQualityMenu,
   setQualityIndex,
+  settingsOpen,
+  onSettingsOpenChange,
   chapters,
   startAtSeconds,
   cinemaMode,
@@ -2441,6 +3336,8 @@ function SplitBlock({
   onToggleAutoplayNext,
   onPlayNext,
   miniMode = false,
+  shortsMode = false,
+  scrubPreview,
 }: {
   video: string;
   audioTracks: { label: string; src: string }[];
@@ -2450,10 +3347,10 @@ function SplitBlock({
   title: string;
   volume: number;
   setVolume: (v: number) => void;
-  payload: VideoPlayerPayload;
-  progressive: ProxiedVariant[] | null;
-  qualityIndex: number;
+  progressiveQualityMenu: ProgressiveQualityMenu | null;
   setQualityIndex: (i: number, seekSeconds?: number) => void;
+  settingsOpen: boolean;
+  onSettingsOpenChange: (open: boolean) => void;
   chapters: VideoChapter[];
   startAtSeconds?: number;
   cinemaMode: boolean;
@@ -2467,6 +3364,8 @@ function SplitBlock({
   onToggleAutoplayNext: () => void;
   onPlayNext: () => void;
   miniMode?: boolean;
+  shortsMode?: boolean;
+  scrubPreview?: ScrubPreviewConfig | null;
 }) {
   const shellRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -2480,6 +3379,10 @@ function SplitBlock({
   /** Skips one `pause` side-effect when we pause video ourselves to wait for audio. */
   const ignoreNextVideoPauseRef = useRef(false);
   const initialSeekAppliedRef = useRef(false);
+  /** True while the video element is stalled (`waiting`) — blocks companion audio. */
+  const videoStalledRef = useRef(false);
+  /** True after the video has emitted `playing` at least once for the current source. */
+  const videoHasPaintedRef = useRef(false);
   const emitPlaybackError = useCallback(() => {
     if (!onPlaybackError) return;
     window.setTimeout(() => onPlaybackError(), 0);
@@ -2497,25 +3400,78 @@ function SplitBlock({
     audioTracks[splitAudioIdx]?.src ?? audioTracks[0]?.src ?? "";
 
   useEffect(() => {
+    videoStalledRef.current = false;
+    videoHasPaintedRef.current = false;
+  }, [video, activeAudioSrc]);
+
+  // Stuck on split HD: no `playing` after user pressed play → trigger variant fallback.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const clearTimer = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+    const scheduleIfStuck = () => {
+      clearTimer();
+      if (videoHasPaintedRef.current || v.paused) return;
+      timer = setTimeout(() => {
+        if (videoHasPaintedRef.current || v.paused) return;
+        emitPlaybackError();
+      }, SPLIT_START_TIMEOUT_MS);
+    };
+    const onPlayingClear = () => clearTimer();
+    v.addEventListener("play", scheduleIfStuck);
+    v.addEventListener("playing", onPlayingClear);
+    return () => {
+      v.removeEventListener("play", scheduleIfStuck);
+      v.removeEventListener("playing", onPlayingClear);
+      clearTimer();
+    };
+  }, [video, activeAudioSrc, emitPlaybackError]);
+
+  // Unlock companion audio on user gesture via adapter.play(), but keep it paused
+  // until the video track is actually painting (avoids audible loop while buffering).
+  useEffect(() => {
+    const v = videoRef.current;
+    const a = audioRef.current;
+    if (!v || !a) return;
+    const onPlay = () => {
+      if (!videoHasPaintedRef.current) a.pause();
+    };
+    v.addEventListener("play", onPlay);
+    return () => v.removeEventListener("play", onPlay);
+  }, [video, activeAudioSrc]);
+
+  useEffect(() => {
     const v = videoRef.current;
     const a = audioRef.current;
     if (!v || !a) return;
 
     const SYNC_TOLERANCE = 0.16;
-    /** Rare hard snap — avoid tight timers that hammer `currentTime` (breaks decode). */
     const DRIFT_HARD = 0.45;
-    /** Medium drift that should be corrected quickly while both tracks are playing. */
     const DRIFT_RECOVER = 0.28;
 
+    const canDriveCompanionAudio = (): boolean => {
+      if (videoStalledRef.current) return false;
+      if (!videoHasPaintedRef.current) return false;
+      if (v.paused || v.seeking) return false;
+      if (v.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return false;
+      if (a.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return false;
+      return true;
+    };
+
     const align = (force = false) => {
+      if (!canDriveCompanionAudio()) return;
       const drift = Math.abs(a.currentTime - v.currentTime);
       if (force || drift > SYNC_TOLERANCE) {
         a.currentTime = v.currentTime;
       }
     };
 
-    // Resume audio when video resumes after a real pause; only re-align time
-    // if drift is large to avoid resetting (and "pop"-ing) on every event.
     let waitingPauseTimer: ReturnType<typeof setTimeout> | null = null;
     let driftRecoveryTimer: ReturnType<typeof setInterval> | null = null;
     const clearWaitingPauseTimer = () => {
@@ -2531,7 +3487,7 @@ function SplitBlock({
     const primeDriftRecovery = () => {
       clearDriftRecoveryTimer();
       driftRecoveryTimer = setInterval(() => {
-        if (v.paused) return;
+        if (!canDriveCompanionAudio()) return;
         if (a.paused) {
           void a.play().catch(() => {});
           return;
@@ -2542,45 +3498,22 @@ function SplitBlock({
         }
       }, 350);
     };
+    const resumeCompanionAudio = () => {
+      if (!canDriveCompanionAudio()) return;
+      align(false);
+      if (a.paused) void a.play().catch(() => {});
+    };
     const onPlay = () => {
       clearWaitingPauseTimer();
       primeDriftRecovery();
-      // Only gate when the audio element has no media yet (HAVE_NOTHING). Waiting
-      // for HAVE_CURRENT_DATA breaks playback on some browsers / slow networks
-      // because `currentTime` seeks never become safe while stalled.
-      if (a.readyState === HTMLMediaElement.HAVE_NOTHING) {
-        awaitingCompanionAudioRef.current = true;
-        ignoreNextVideoPauseRef.current = true;
-        v.pause();
-        a.pause();
-        let resumed = false;
-        const resume = () => {
-          if (resumed || !awaitingCompanionAudioRef.current) return;
-          resumed = true;
-          awaitingCompanionAudioRef.current = false;
-          a.removeEventListener("loadedmetadata", resume);
-          a.removeEventListener("canplay", resume);
-          a.removeEventListener("canplaythrough", resume);
-          align(true);
-          void a.play().catch(() => {});
-          void v.play().catch(() => {});
-        };
-        a.addEventListener("loadedmetadata", resume, { once: true });
-        a.addEventListener("canplay", resume, { once: true });
-        a.addEventListener("canplaythrough", resume, { once: true });
-        return;
-      }
-      awaitingCompanionAudioRef.current = false;
-      align(false);
-      if (a.paused) void a.play().catch(() => {});
     };
     const onPlaying = () => {
+      videoStalledRef.current = false;
+      videoHasPaintedRef.current = true;
       clearWaitingPauseTimer();
       primeDriftRecovery();
-      align(false);
-      if (a.paused) void a.play().catch(() => {});
+      resumeCompanionAudio();
     };
-    // Pause audio only when the user pauses or the video ends.
     const pauseAudio = () => {
       clearWaitingPauseTimer();
       if (ignoreNextVideoPauseRef.current) {
@@ -2592,39 +3525,30 @@ function SplitBlock({
     };
     const onWaiting = () => {
       clearWaitingPauseTimer();
-      // Let brief network jitter recover without immediately muting companion audio.
-      waitingPauseTimer = setTimeout(() => {
-        if (!v.paused) a.pause();
-      }, 420);
+      videoStalledRef.current = true;
+      // Video stalled — pause audio immediately so it does not run ahead and
+      // get snapped back to t≈0 (audible stutter loop while buffering).
+      a.pause();
     };
     const alignSeek = () => {
       clearWaitingPauseTimer();
-      align(true);
+      if (canDriveCompanionAudio()) align(true);
     };
     const onRate = () => {
       a.playbackRate = v.playbackRate;
-      align(true);
+      if (canDriveCompanionAudio()) align(true);
     };
     const onTime = () => {
-      if (v.paused) return;
+      if (!canDriveCompanionAudio()) return;
       const drift = Math.abs(a.currentTime - v.currentTime);
       if (drift > DRIFT_HARD) a.currentTime = v.currentTime;
     };
-    const onAudioCanPlay = () => {
-      if (!v.paused && a.paused) {
-        align(false);
-        void a.play().catch(() => {});
-      }
-    };
     const onTabResume = () => {
-      // Some browsers suspend the hidden tab's <audio> element and it may not
-      // resume automatically when returning. Re-prime split audio on resume.
       if (document.visibilityState === "hidden") return;
       if (v.paused) return;
       clearWaitingPauseTimer();
       a.playbackRate = v.playbackRate;
-      align(true);
-      void a.play().catch(() => {});
+      resumeCompanionAudio();
     };
     v.addEventListener("play", onPlay);
     v.addEventListener("playing", onPlaying);
@@ -2635,19 +3559,14 @@ function SplitBlock({
     v.addEventListener("ratechange", onRate);
     v.addEventListener("timeupdate", onTime);
     v.addEventListener("ended", pauseAudio);
-    a.addEventListener("canplay", onAudioCanPlay);
-    a.addEventListener("loadedmetadata", onAudioCanPlay);
     document.addEventListener("visibilitychange", onTabResume);
     window.addEventListener("focus", onTabResume);
     window.addEventListener("pageshow", onTabResume);
 
-    // Track switch: the new `<audio>` element is paused; resume it inline so
-    // the user does not have to toggle play/pause to hear the new track.
     a.playbackRate = v.playbackRate;
-    if (!v.paused) {
+    if (!v.paused && videoHasPaintedRef.current) {
       primeDriftRecovery();
-      align(true);
-      void a.play().catch(() => {});
+      resumeCompanionAudio();
     }
     return () => {
       v.removeEventListener("play", onPlay);
@@ -2659,8 +3578,6 @@ function SplitBlock({
       v.removeEventListener("ratechange", onRate);
       v.removeEventListener("timeupdate", onTime);
       v.removeEventListener("ended", pauseAudio);
-      a.removeEventListener("canplay", onAudioCanPlay);
-      a.removeEventListener("loadedmetadata", onAudioCanPlay);
       document.removeEventListener("visibilitychange", onTabResume);
       window.removeEventListener("focus", onTabResume);
       window.removeEventListener("pageshow", onTabResume);
@@ -2691,32 +3608,44 @@ function SplitBlock({
     initialSeekAppliedRef.current = true;
   }, [adapter, startAtSeconds]);
 
+  useShortsNativeAutoplay(videoRef, shortsMode, video);
+
   useEffect(() => {
     const a = audioRef.current;
     if (a) a.volume = adapter.muted ? 0 : uiVolumeToGain(volume);
   }, [activeAudioSrc, adapter.muted, volume]);
 
   // Resume companion audio when the audio source is swapped mid-playback (track
-  // change). The main play/pause sync is handled by the listeners above; we
-  // only need to prime the new <audio> here so users don't lose sound.
+  // change). Wait until the video track is actually painting again.
   useEffect(() => {
     const v = videoRef.current;
     const a = audioRef.current;
-    if (!v || !a) return;
-    if (v.paused) return;
-    a.currentTime = v.currentTime;
-    void a.play().catch(() => {});
+    if (!v || !a || v.paused) return;
+
+    const syncAndPlay = () => {
+      if (videoStalledRef.current) return;
+      if (!videoHasPaintedRef.current) return;
+      if (v.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+      if (a.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+      a.currentTime = v.currentTime;
+      void a.play().catch(() => {});
+    };
+
+    if (v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      syncAndPlay();
+      return;
+    }
+    v.addEventListener("playing", syncAndPlay, { once: true });
+    return () => v.removeEventListener("playing", syncAndPlay);
   }, [activeAudioSrc]);
 
-  const quality: QualityModel =
-    payload.mode === "progressive" && progressive && progressive.length > 0
-      ? {
-          kind: "progressive",
-          index: qualityIndex,
-          setIndex: (i) => setQualityIndex(i, adapter.currentTime),
-          items: progressive.map((p) => ({ label: p.label })),
-        }
-      : { kind: "none" };
+  const quality: QualityModel = progressiveQualityMenu
+    ? withProgressiveQualitySetter(
+        progressiveQualityMenu,
+        setQualityIndex,
+        adapter.currentTime,
+      )
+    : { kind: "none" };
   // `pick-playback` already collapses same-language audio variants into a
   // single language row (one URL per language, highest bitrate), so the
   // entries here can be rendered as-is — no quality re-formatting needed.
@@ -2745,9 +3674,11 @@ function SplitBlock({
       tabIndex={-1}
       className={cn(
         "group/player relative overflow-hidden bg-black focus:outline-none",
-        cinemaMode
-          ? "aspect-video w-full max-h-[min(88vh,92dvh)] rounded-lg shadow-xl ring-1 ring-white/10"
-          : "aspect-video w-full",
+        shortsMode
+          ? "pointer-events-none h-full w-full [&_[data-controls]]:pointer-events-auto [&_video]:pointer-events-none"
+          : cinemaMode
+            ? "aspect-video w-full max-h-[min(88vh,92dvh)] rounded-lg shadow-xl ring-1 ring-white/10"
+            : "aspect-video w-full",
       )}
     >
       <video
@@ -2756,10 +3687,14 @@ function SplitBlock({
         poster={poster}
         playsInline
         muted
-        preload="metadata"
+        preload="auto"
+        autoPlay={shortsMode}
         onError={emitPlaybackError}
         onEnded={onEnded}
-        className="absolute inset-0 h-full w-full object-contain"
+        className={cn(
+          "absolute inset-0 h-full w-full",
+          "object-contain",
+        )}
       />
       {/* biome-ignore lint/a11y/useMediaCaption: companion audio, no VTT */}
       <audio
@@ -2777,19 +3712,24 @@ function SplitBlock({
         chapters={chapters}
         quality={quality}
         audio={audioModel}
+        settingsOpen={settingsOpen}
+        onSettingsOpenChange={onSettingsOpenChange}
         cinemaMode={cinemaMode}
         onExitCinema={onExitCinema}
         onToggleCinema={onToggleCinema}
-        scrubPreview={{
-          streamSrc: video,
-          ...(poster ? { poster } : {}),
-        }}
+        scrubPreview={
+          scrubPreview ?? {
+            streamSrc: video,
+            ...(poster ? { poster } : {}),
+          }
+        }
         nextUp={nextUp}
         queue={queue}
         autoplayNext={autoplayNext}
         onToggleAutoplayNext={onToggleAutoplayNext}
         onPlayNext={onPlayNext}
         miniMode={miniMode}
+        shortsMode={shortsMode}
       />
     </div>
   );
@@ -2804,8 +3744,35 @@ export function VideoPlayer({
   poster,
   chapters = [],
   startAtSeconds,
+  durationSeconds,
+  storyboard,
+  scrubPreviewStreamSrc,
   miniMode = false,
+  shortsMode = false,
+  onEnded: onEndedExternal,
+  defaultPlaybackQuality: defaultPlaybackQualityProp,
 }: VideoPlayerProps) {
+  const scrubFrames = useScrubFramePreview({
+    videoId,
+    durationSeconds,
+    storyboard,
+    scrubPreviewStreamSrc,
+  });
+  const buildScrubPreview = useCallback(
+    (streamSrc: string): ScrubPreviewConfig =>
+      mergeScrubPreview(
+        scrubPreviewStreamSrc ?? streamSrc,
+        poster,
+        scrubFrames.primeFrames,
+        scrubFrames.frameAt,
+      ),
+    [
+      scrubPreviewStreamSrc,
+      poster,
+      scrubFrames.primeFrames,
+      scrubFrames.frameAt,
+    ],
+  );
   const pathname = usePathname();
   const router = useRouter();
   const watchCinema = useWatchCinema();
@@ -2820,9 +3787,27 @@ export function VideoPlayer({
     [setCinemaMode],
   );
 
-  const progressive = payload.mode === "progressive" ? payload.variants : null;
+  const effectivePayload: VideoPlayerPayload = payload;
+
+  const displayPoster = shortsMode ? undefined : poster;
+
+  const progressive =
+    effectivePayload.mode === "progressive" ? effectivePayload.variants : null;
   const progressiveMobileSafe = progressive;
-  const [qualityIndex, setQualityIndex] = useState(0);
+  const resolvedDefaultQuality =
+    defaultPlaybackQualityProp ??
+    (typeof window === "undefined"
+      ? DEFAULT_PLAYBACK_QUALITY
+      : readDefaultPlaybackQuality());
+  const [qualityIndex, setQualityIndex] = useState(() =>
+    initialQualityIndexForPayload(effectivePayload, resolvedDefaultQuality),
+  );
+  const variantFallbackAttemptsRef = useRef(0);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const progressiveQualityMenu = useMemo(
+    () => progressiveQualityMenuFromPayload(effectivePayload, qualityIndex),
+    [effectivePayload, qualityIndex],
+  );
   const [resumeSeekSeconds, setResumeSeekSeconds] = useState<
     number | undefined
   >(undefined);
@@ -2911,9 +3896,14 @@ export function VideoPlayer({
   );
 
   useEffect(() => {
-    setQualityIndex(0);
+    const pref =
+      defaultPlaybackQualityProp ??
+      readDefaultPlaybackQuality();
+    setQualityIndex(initialQualityIndexForPayload(effectivePayload, pref));
     setResumeSeekSeconds(undefined);
-  }, [payload]);
+    setSettingsOpen(false);
+    variantFallbackAttemptsRef.current = 0;
+  }, [effectivePayload, defaultPlaybackQualityProp]);
 
   useEffect(() => {
     if (!progressiveMobileSafe || progressiveMobileSafe.length === 0) return;
@@ -2927,12 +3917,15 @@ export function VideoPlayer({
   }, [splitVolume]);
 
   const active = useMemo(() => {
-    if (payload.mode === "hls")
-      return { kind: "hls" as const, src: payload.src };
+    if (effectivePayload.mode === "hls") {
+      return { kind: "hls" as const, src: effectivePayload.src };
+    }
     const v = progressiveMobileSafe?.[qualityIndex];
-    if (v) return { kind: "variant" as const, v };
+    if (v) {
+      return { kind: "variant" as const, v };
+    }
     return { kind: "empty" as const };
-  }, [payload, progressiveMobileSafe, qualityIndex]);
+  }, [effectivePayload, progressiveMobileSafe, qualityIndex, shortsMode]);
 
   const effectiveStartAt =
     typeof resumeSeekSeconds === "number" ? resumeSeekSeconds : startAtSeconds;
@@ -2957,7 +3950,37 @@ export function VideoPlayer({
             }
         : null;
 
-  const handleHlsPlaybackError = useCallback(() => {
+  const handlePlaybackError = useCallback(() => {
+    if (
+      effectivePayload.mode === "progressive" &&
+      progressiveMobileSafe &&
+      progressiveMobileSafe.length > 1
+    ) {
+      const maxAttempts = Math.min(
+        progressiveMobileSafe.length - 1,
+        MAX_VARIANT_FALLBACK_ATTEMPTS,
+      );
+      if (variantFallbackAttemptsRef.current < maxAttempts) {
+        const nextIdx = nextPlaybackVariantIndex(
+          qualityIndex,
+          progressiveMobileSafe.length,
+        );
+        if (nextIdx !== null) {
+          variantFallbackAttemptsRef.current += 1;
+          const media = document.querySelector("video");
+          const currentTime =
+            media && Number.isFinite(media.currentTime)
+              ? media.currentTime
+              : 0;
+          setQualityWithResume(
+            nextIdx,
+            currentTime > 0 ? currentTime : undefined,
+          );
+          return;
+        }
+      }
+    }
+
     const candidates: string[] = [];
     if (active.kind === "hls" && active.src) {
       candidates.push(active.src);
@@ -2971,9 +3994,16 @@ export function VideoPlayer({
     for (const src of candidates) {
       if (!src || !shouldAutoRecoverPlaybackSource(src)) continue;
       const recoveryKey = src.split("?")[0] ?? src;
-      if (tryOneShotPlaybackRecovery(recoveryKey)) return;
+      if (tryOneShotPlaybackRecovery(recoveryKey, videoId)) return;
     }
-  }, [active]);
+  }, [
+    active,
+    effectivePayload.mode,
+    progressiveMobileSafe,
+    qualityIndex,
+    setQualityWithResume,
+    videoId,
+  ]);
 
   const playNextNow = useCallback(() => {
     if (!nextUp) return;
@@ -2982,9 +4012,13 @@ export function VideoPlayer({
   }, [nextUp, router, queue]);
 
   const handleVideoEnded = useCallback(() => {
+    if (shortsMode) {
+      onEndedExternal?.();
+      return;
+    }
     if (!nextUp || !autoplayNext) return;
     setNextCountdown(3);
-  }, [nextUp, autoplayNext]);
+  }, [shortsMode, onEndedExternal, nextUp, autoplayNext]);
 
   useEffect(() => {
     if (!pathname.startsWith("/watch/")) return;
@@ -3029,28 +4063,36 @@ export function VideoPlayer({
     <div
       className={cn(
         "relative w-full bg-black",
-        cinemaMode
-          ? "w-full max-w-full overflow-visible border-0 shadow-2xl ring-1 ring-white/15 sm:rounded-xl"
-          : "overflow-hidden rounded-xl border border-[hsl(var(--border))] shadow-lg ring-1 ring-black/5",
+        shortsMode
+          ? "relative h-full min-h-0 w-full overflow-hidden border-0 shadow-none ring-0"
+          : cinemaMode
+            ? "w-full max-w-full overflow-visible border-0 shadow-2xl ring-1 ring-white/15 sm:rounded-xl"
+            : "overflow-hidden rounded-xl border border-[hsl(var(--border))] shadow-lg ring-1 ring-black/5",
       )}
     >
-      <div className="relative w-full">
+      <div
+        className={cn(
+          "relative w-full",
+          shortsMode ? "h-full min-h-0" : undefined,
+        )}
+      >
         {active.kind === "hls" ? (
           <VidstackBlock
             reactKey={active.src}
             src={active.src}
+            scrubPreview={buildScrubPreview(active.src)}
             title={title}
-            poster={poster}
-            payload={payload}
-            progressive={progressiveMobileSafe}
-            qualityIndex={qualityIndex}
+            poster={displayPoster}
+            progressiveQualityMenu={progressiveQualityMenu}
             setQualityIndex={setQualityWithResume}
+            settingsOpen={settingsOpen}
+            onSettingsOpenChange={setSettingsOpen}
             chapters={chapters}
             startAtSeconds={effectiveStartAt}
             cinemaMode={cinemaMode}
             onExitCinema={exitCinema}
             onToggleCinema={toggleCinema}
-            onPlaybackError={handleHlsPlaybackError}
+            onPlaybackError={handlePlaybackError}
             onEnded={handleVideoEnded}
             nextUp={nextUp}
             queue={queue}
@@ -3058,53 +4100,87 @@ export function VideoPlayer({
             onToggleAutoplayNext={() => setAutoplayNext((v) => !v)}
             onPlayNext={playNextNow}
             miniMode={miniMode}
+            shortsMode={shortsMode}
           />
         ) : null}
         {active.kind === "variant" && active.v.t === "muxed" ? (
-          <VidstackBlock
-            reactKey={active.v.src}
-            src={active.v.src}
-            title={title}
-            poster={poster}
-            payload={payload}
-            progressive={progressiveMobileSafe}
-            qualityIndex={qualityIndex}
-            setQualityIndex={setQualityWithResume}
-            chapters={chapters}
-            startAtSeconds={effectiveStartAt}
-            cinemaMode={cinemaMode}
-            onExitCinema={exitCinema}
-            onToggleCinema={toggleCinema}
-            onPlaybackError={handleHlsPlaybackError}
-            onEnded={handleVideoEnded}
-            nextUp={nextUp}
-            queue={queue}
-            autoplayNext={autoplayNext}
-            onToggleAutoplayNext={() => setAutoplayNext((v) => !v)}
-            onPlayNext={playNextNow}
-            miniMode={miniMode}
-          />
+          isDirectProgressiveVideoUrl(active.v.src) || shortsMode ? (
+            <NativeMuxedBlock
+              reactKey={active.v.src}
+              src={active.v.src}
+              scrubPreview={buildScrubPreview(active.v.src)}
+              title={title}
+              poster={displayPoster}
+              volume={splitVolume}
+              setVolume={setSplitVolume}
+              progressiveQualityMenu={progressiveQualityMenu}
+              setQualityIndex={setQualityWithResume}
+              settingsOpen={settingsOpen}
+              onSettingsOpenChange={setSettingsOpen}
+              chapters={chapters}
+              startAtSeconds={effectiveStartAt}
+              cinemaMode={cinemaMode}
+              onExitCinema={exitCinema}
+              onToggleCinema={toggleCinema}
+              onPlaybackError={handlePlaybackError}
+              onEnded={handleVideoEnded}
+              nextUp={nextUp}
+              queue={queue}
+              autoplayNext={autoplayNext}
+              onToggleAutoplayNext={() => setAutoplayNext((v) => !v)}
+              onPlayNext={playNextNow}
+              miniMode={miniMode}
+              shortsMode={shortsMode}
+            />
+          ) : (
+            <VidstackBlock
+              reactKey={active.v.src}
+              src={active.v.src}
+              scrubPreview={buildScrubPreview(active.v.src)}
+              title={title}
+              poster={displayPoster}
+              progressiveQualityMenu={progressiveQualityMenu}
+              setQualityIndex={setQualityWithResume}
+              settingsOpen={settingsOpen}
+              onSettingsOpenChange={setSettingsOpen}
+              chapters={chapters}
+              startAtSeconds={effectiveStartAt}
+              cinemaMode={cinemaMode}
+              onExitCinema={exitCinema}
+              onToggleCinema={toggleCinema}
+              onPlaybackError={handlePlaybackError}
+              onEnded={handleVideoEnded}
+              nextUp={nextUp}
+              queue={queue}
+              autoplayNext={autoplayNext}
+              onToggleAutoplayNext={() => setAutoplayNext((v) => !v)}
+              onPlayNext={playNextNow}
+              miniMode={miniMode}
+              shortsMode={shortsMode}
+            />
+          )
         ) : null}
         {active.kind === "variant" && active.v.t === "split" ? (
           <SplitBlock
             key={active.v.video}
             video={active.v.video}
+            scrubPreview={buildScrubPreview(active.v.video)}
             audioTracks={active.v.audioTracks}
             defaultAudioIndex={active.v.defaultAudioIndex}
-            poster={poster}
+            poster={displayPoster}
             title={title}
             volume={splitVolume}
             setVolume={setSplitVolume}
-            payload={payload}
-            progressive={progressiveMobileSafe}
-            qualityIndex={qualityIndex}
+            progressiveQualityMenu={progressiveQualityMenu}
             setQualityIndex={setQualityWithResume}
+            settingsOpen={settingsOpen}
+            onSettingsOpenChange={setSettingsOpen}
             chapters={chapters}
             startAtSeconds={effectiveStartAt}
             cinemaMode={cinemaMode}
             onExitCinema={exitCinema}
             onToggleCinema={toggleCinema}
-            onPlaybackError={handleHlsPlaybackError}
+            onPlaybackError={handlePlaybackError}
             onEnded={handleVideoEnded}
             nextUp={nextUp}
             queue={queue}
@@ -3112,6 +4188,7 @@ export function VideoPlayer({
             onToggleAutoplayNext={() => setAutoplayNext((v) => !v)}
             onPlayNext={playNextNow}
             miniMode={miniMode}
+            shortsMode={shortsMode}
           />
         ) : null}
       </div>

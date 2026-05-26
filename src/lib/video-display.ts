@@ -5,6 +5,28 @@ export function formatViews(n: number | undefined) {
   return `${n} views`;
 }
 
+export function formatSubscribersLabel(
+  count: number | undefined,
+): string | null {
+  const compact = formatCompactCount(count);
+  if (!compact) return null;
+  const n = Math.floor(count ?? 0);
+  return `${compact} subscriber${n === 1 ? "" : "s"}`;
+}
+
+export function formatCompactCount(n: number | undefined): string | null {
+  if (n === undefined || !Number.isFinite(n) || n < 0) return null;
+  if (n >= 1_000_000) {
+    const v = n / 1_000_000;
+    return v >= 10 ? `${Math.floor(v)}M` : `${v.toFixed(1).replace(/\.0$/, "")}M`;
+  }
+  if (n >= 1_000) {
+    const v = n / 1_000;
+    return v >= 10 ? `${Math.floor(v)}K` : `${v.toFixed(1).replace(/\.0$/, "")}K`;
+  }
+  return String(Math.floor(n));
+}
+
 export function formatDuration(sec: number | undefined) {
   if (sec === undefined || !Number.isFinite(sec)) return null;
   const s = Math.floor(sec % 60);
@@ -84,6 +106,13 @@ export function formatPublishedLabel(
     if (s > 1_000_000_000_000) s = Math.floor(s / 1000);
     const fromUnixText = formatRelativeFromNow(s);
     if (fromUnixText) return fromUnixText;
+  }
+  if (/^\d{4}-\d{2}-\d{2}T/.test(t)) {
+    const ms = Date.parse(t);
+    if (Number.isFinite(ms)) {
+      const fromIso = formatRelativeFromNow(Math.floor(ms / 1000));
+      if (fromIso) return fromIso;
+    }
   }
   return t.length > 56 ? `${t.slice(0, 55)}…` : t;
 }

@@ -14,7 +14,8 @@ export default async function SettingsPage() {
   }
 
   const caller = await createCaller();
-  const settings = await caller.settings.get();
+  const payload = await caller.settings.get();
+  const { instanceSources, ...settings } = payload;
 
   return (
     <main className="ot-page max-w-4xl space-y-8">
@@ -27,7 +28,10 @@ export default async function SettingsPage() {
         </Button>
       </PageHeader>
       <div className="space-y-8">
-        <SettingsPanel initial={settings} />
+        <SettingsPanel
+          initial={settings}
+          initialInstanceSources={instanceSources}
+        />
         <TakeoutImportPanel />
       </div>
 

@@ -11,6 +11,30 @@ test.describe("P0 smoke", () => {
     ).toBeVisible();
   });
 
+  test("shorts page loads feed shell", async ({ page }) => {
+    await page.goto("/shorts");
+    await expect(
+      page
+        .locator('a[href="/"]')
+        .filter({ hasText: /^Home$/ })
+        .first()
+        .or(
+          page.getByText(
+            /Loading shorts|No shorts available|Shorts feed is temporarily unavailable/i,
+          ),
+        ),
+    ).toBeVisible({ timeout: 30_000 });
+    const active = page.locator('[data-short-active="true"]');
+    if ((await active.count()) === 0) return;
+    await expect(active).toBeVisible({ timeout: 30_000 });
+    await expect(active.getByText(/^Loading…$/)).toBeHidden({
+      timeout: 45_000,
+    });
+    await expect(active.locator("video").first()).toBeVisible({
+      timeout: 30_000,
+    });
+  });
+
   test("search page shows form", async ({ page }) => {
     await page.goto("/search");
     await expect(

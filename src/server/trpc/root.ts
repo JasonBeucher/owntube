@@ -6,6 +6,7 @@ import { historyRouter } from "@/server/trpc/routers/history";
 import { interactionsRouter } from "@/server/trpc/routers/interactions";
 import { playlistsRouter } from "@/server/trpc/routers/playlists";
 import { searchRouter } from "@/server/trpc/routers/search";
+import { shortsRouter } from "@/server/trpc/routers/shorts";
 import { settingsRouter } from "@/server/trpc/routers/settings";
 import { statsRouter } from "@/server/trpc/routers/stats";
 import { subscriptionsRouter } from "@/server/trpc/routers/subscriptions";
@@ -22,6 +23,7 @@ export const appRouter = router({
   interactions: interactionsRouter,
   playlists: playlistsRouter,
   search: searchRouter,
+  shorts: shortsRouter,
   settings: settingsRouter,
   stats: statsRouter,
   subscriptions: subscriptionsRouter,

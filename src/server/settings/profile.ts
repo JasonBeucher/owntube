@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { defaultPlaybackQualitySchema } from "@/lib/default-playback-quality";
 import type { AppDb } from "@/server/db/client";
 import { userProfile } from "@/server/db/schema";
 import type { ProxySourceOverrides } from "@/server/services/proxy";
@@ -26,6 +27,13 @@ export const appSettingsSchema = z.object({
   defaultCinemaMode: z.boolean().default(false),
   /** Keep a mini player when leaving watch page. */
   enableMiniPlayer: z.boolean().default(true),
+  /** Default watch-page quality rung (1080p, 720p, muxed 360p, …). */
+  defaultPlaybackQuality: defaultPlaybackQualitySchema.default("1080p"),
+  /** Channels excluded from personalized recommendations. */
+  blockedRecommendationChannels: z
+    .array(z.string().min(1).max(128))
+    .max(200)
+    .default([]),
 });
 
 export type AppSettings = z.infer<typeof appSettingsSchema>;
@@ -46,6 +54,8 @@ const defaultSettings: AppSettings = {
   hideRestrictedVideos: true,
   defaultCinemaMode: false,
   enableMiniPlayer: true,
+  defaultPlaybackQuality: "1080p",
+  blockedRecommendationChannels: [],
 };
 
 function nowUnix(): number {
@@ -56,6 +66,22 @@ function normalizeUrlLike(input: string | undefined): string | undefined {
   if (!input) return undefined;
   const value = input.trim();
   return value.length > 0 ? value.replace(/\/+$/, "") : undefined;
+}
+
+function normalizeBlockedRecommendationChannels(
+  input: string[] | undefined,
+): string[] | undefined {
+  if (!input) return undefined;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of input) {
+    const id = raw.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+    if (out.length >= 200) break;
+  }
+  return out;
 }
 
 function normalizeTasteKeywords(
@@ -102,10 +128,17 @@ export function upsertUserSettings(
     patch.tasteKeywords !== undefined
       ? (normalizeTasteKeywords(patch.tasteKeywords) ?? [])
       : previous.tasteKeywords;
+  const nextBlockedChannels =
+    patch.blockedRecommendationChannels !== undefined
+      ? (normalizeBlockedRecommendationChannels(
+          patch.blockedRecommendationChannels,
+        ) ?? [])
+      : previous.blockedRecommendationChannels;
   const merged: AppSettings = {
     ...previous,
     ...patch,
     tasteKeywords: nextKeywords,
+    blockedRecommendationChannels: nextBlockedChannels,
     pipedBaseUrl: normalizeUrlLike(patch.pipedBaseUrl ?? previous.pipedBaseUrl),
     invidiousBaseUrl: normalizeUrlLike(
       patch.invidiousBaseUrl ?? previous.invidiousBaseUrl,

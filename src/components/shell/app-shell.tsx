@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { WatchMiniPlayer } from "@/components/player/watch-mini-player";
 import { ShellSidebar } from "@/components/shell/shell-sidebar";
 import { ShellTopbar } from "@/components/shell/shell-topbar";
@@ -13,12 +13,25 @@ type AppShellProps = {
   isLoggedIn: boolean;
 };
 
+function readDesktopSidebarDefault(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(min-width: 901px)").matches;
+}
+
 export function AppShell({ children, topbarRight, isLoggedIn }: AppShellProps) {
   const pathname = usePathname();
-  const isWatchRoute = pathname.startsWith("/watch/");
+  const isShortsRoute =
+    pathname === "/shorts" || pathname.startsWith("/shorts?");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const close = useCallback(() => setSidebarOpen(false), []);
-  const open = useCallback(() => setSidebarOpen(true), []);
+  const toggleSidebar = useCallback(
+    () => setSidebarOpen((open) => !open),
+    [],
+  );
+
+  useEffect(() => {
+    setSidebarOpen(readDesktopSidebarDefault());
+  }, []);
 
   return (
     <div className="flex h-[100dvh] w-full overflow-hidden bg-[hsl(var(--background))] text-[hsl(var(--foreground))]">
@@ -27,29 +40,23 @@ export function AppShell({ children, topbarRight, isLoggedIn }: AppShellProps) {
         onClose={close}
         isLoggedIn={isLoggedIn}
       />
-      <div className="flex min-w-0 flex-1 flex-col max-[900px]:pl-0">
+      <div className="flex min-w-0 flex-1 flex-col">
         <ShellTopbar
-          onOpenMenu={open}
-          onLogoClick={close}
+          sidebarOpen={sidebarOpen}
+          onOpenMenu={toggleSidebar}
           topbarRight={topbarRight}
         />
-        <div className="ot-app-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+        <div
+          className={
+            isShortsRoute
+              ? "relative min-h-0 flex-1 overflow-hidden"
+              : "ot-app-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+          }
+        >
           {children}
         </div>
       </div>
       <WatchMiniPlayer isLoggedIn={isLoggedIn} />
-      {sidebarOpen ? (
-        <button
-          type="button"
-          aria-label="Close menu"
-          className={
-            isWatchRoute
-              ? "fixed inset-0 z-40 block animate-[ot-fade-in_0.2s_ease] bg-black/60 backdrop-blur-sm"
-              : "fixed inset-0 z-40 hidden animate-[ot-fade-in_0.2s_ease] bg-black/60 backdrop-blur-sm max-[900px]:block"
-          }
-          onClick={close}
-        />
-      ) : null}
     </div>
   );
 }

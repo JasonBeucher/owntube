@@ -4,18 +4,35 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { writeWatchMiniEnabled } from "@/lib/watch-mini-player-state";
+import {
+  DEFAULT_PLAYBACK_QUALITY_SELECT_OPTIONS,
+  type DefaultPlaybackQuality,
+  writeDefaultPlaybackQuality,
+} from "@/lib/default-playback-quality";
 import { TRENDING_REGION_OPTIONS } from "@/lib/trending-regions";
+import { InstanceSourceHint } from "@/components/settings/instance-source-hint";
 import type { AppSettings } from "@/server/settings/profile";
+import type { InstanceSourceInfo } from "@/server/services/proxy";
 import { type ThemeMode, useThemeStore } from "@/stores/theme-store";
 import { trpc } from "@/trpc/react";
 
 type SettingsPanelProps = {
   initial: AppSettings;
+  initialInstanceSources: InstanceSourceInfo;
 };
 
-export function SettingsPanel({ initial }: SettingsPanelProps) {
+export function SettingsPanel({
+  initial,
+  initialInstanceSources,
+}: SettingsPanelProps) {
   const utils = trpc.useUtils();
   const setTheme = useThemeStore((s) => s.setTheme);
+
+  const settingsQuery = trpc.settings.get.useQuery(undefined, {
+    initialData: { ...initial, instanceSources: initialInstanceSources },
+  });
+  const instanceSources =
+    settingsQuery.data?.instanceSources ?? initialInstanceSources;
 
   const [theme, setThemeLocal] = useState<ThemeMode>(initial.theme);
   const [pipedBaseUrl, setPipedBaseUrl] = useState(initial.pipedBaseUrl ?? "");
@@ -34,6 +51,10 @@ export function SettingsPanel({ initial }: SettingsPanelProps) {
   const [enableMiniPlayer, setEnableMiniPlayer] = useState(
     initial.enableMiniPlayer ?? true,
   );
+  const [defaultPlaybackQuality, setDefaultPlaybackQuality] =
+    useState<DefaultPlaybackQuality>(
+      initial.defaultPlaybackQuality ?? "1080p",
+    );
   const [importJson, setImportJson] = useState("");
   const [importModeReplace, setImportModeReplace] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
@@ -60,12 +81,19 @@ export function SettingsPanel({ initial }: SettingsPanelProps) {
     writeWatchMiniEnabled(initial.enableMiniPlayer ?? true);
   }, [initial.enableMiniPlayer]);
 
+  useEffect(() => {
+    const q = initial.defaultPlaybackQuality ?? "1080p";
+    setDefaultPlaybackQuality(q);
+    writeDefaultPlaybackQuality(q);
+  }, [initial.defaultPlaybackQuality]);
+
   const updateMutation = trpc.settings.update.useMutation({
     onSuccess: async (data) => {
       setTheme(data.theme);
       setThemeLocal(data.theme);
       setTrendingRegion(data.trendingRegion ?? "US");
       writeWatchMiniEnabled(data.enableMiniPlayer ?? true);
+      writeDefaultPlaybackQuality(data.defaultPlaybackQuality ?? "1080p");
       await utils.settings.get.invalidate();
       await utils.feed.home.invalidate();
       await utils.trending.list.invalidate();
@@ -135,6 +163,7 @@ export function SettingsPanel({ initial }: SettingsPanelProps) {
       hideRestrictedVideos,
       defaultCinemaMode,
       enableMiniPlayer,
+      defaultPlaybackQuality,
     });
   }
 
@@ -217,30 +246,44 @@ export function SettingsPanel({ initial }: SettingsPanelProps) {
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Video source instances</h2>
         <p className="text-sm text-[hsl(var(--muted-foreground))]">
-          Optional per-account override. Leave blank to use server env values.
+          Optional per-account override. Leave blank to use the server{" "}
+          <code className="rounded bg-[hsl(var(--muted))] px-1 font-mono text-xs">
+            .env
+          </code>{" "}
+          values shown below.
         </p>
-        <div className="space-y-3 max-w-2xl">
-          <div className="space-y-1">
+        <div className="space-y-4 max-w-2xl">
+          <div className="space-y-2">
             <label htmlFor="settings-piped" className="text-sm font-medium">
-              Piped base URL
+              Piped base URL (override)
             </label>
             <Input
               id="settings-piped"
               value={pipedBaseUrl}
-              placeholder="https://pipedapi.kavin.rocks"
+              placeholder={
+                instanceSources.piped.envUrl ??
+                instanceSources.piped.envRaw ??
+                "Leave empty to use server default"
+              }
               onChange={(e) => setPipedBaseUrl(e.currentTarget.value)}
             />
+            <InstanceSourceHint row={instanceSources.piped} />
           </div>
-          <div className="space-y-1">
+          <div className="space-y-2">
             <label htmlFor="settings-invidious" className="text-sm font-medium">
-              Invidious base URL
+              Invidious base URL (override)
             </label>
             <Input
               id="settings-invidious"
               value={invidiousBaseUrl}
-              placeholder="https://your-invidious.example"
+              placeholder={
+                instanceSources.invidious.envUrl ??
+                instanceSources.invidious.envRaw ??
+                "Leave empty to use server default"
+              }
               onChange={(e) => setInvidiousBaseUrl(e.currentTarget.value)}
             />
+            <InstanceSourceHint row={instanceSources.invidious} />
           </div>
           <Button type="button" onClick={onSave} disabled={saving}>
             Save settings
@@ -283,6 +326,34 @@ export function SettingsPanel({ initial }: SettingsPanelProps) {
             />
             Keep mini-player when leaving watch page
           </label>
+          <div className="max-w-md space-y-1 pt-1">
+            <label
+              htmlFor="settings-default-playback-quality"
+              className="text-sm font-medium"
+            >
+              Default playback quality
+            </label>
+            <select
+              id="settings-default-playback-quality"
+              className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm"
+              value={defaultPlaybackQuality}
+              onChange={(e) =>
+                setDefaultPlaybackQuality(
+                  e.currentTarget.value as DefaultPlaybackQuality,
+                )
+              }
+            >
+              {DEFAULT_PLAYBACK_QUALITY_SELECT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">
+              Used when a video opens. 360p muxed starts faster on Piped; 1080p
+              uses separate video and audio streams.
+            </p>
+          </div>
         </div>
       </section>
 

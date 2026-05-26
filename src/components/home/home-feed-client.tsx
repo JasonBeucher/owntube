@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { HomeHero } from "@/components/home/home-hero";
 import { VideoGrid } from "@/components/videos/video-grid";
 import type { UnifiedVideo } from "@/server/services/proxy.types";
 import { trpc } from "@/trpc/react";
 
 const PAGE_SIZE = 24;
+/** Personalized pool (~15) + trending tail (~9) — hard stop for runaway fetches. */
+const MAX_FEED_PAGES = 32;
 const LOAD_MORE_SKELETON_COUNT = 9;
 const LOAD_MORE_SKELETON_KEYS = [
   "a",
@@ -25,160 +27,107 @@ type HomeFeedClientProps = {
   isAuthed: boolean;
 };
 
-function findVerticalScrollParent(el: HTMLElement | null): HTMLElement | null {
-  let p = el?.parentElement ?? null;
-  while (p) {
-    const st = window.getComputedStyle(p);
-    if (
-      /(auto|scroll|overlay)/.test(st.overflowY) &&
-      p.scrollHeight > p.clientHeight + 2
-    ) {
-      return p;
-    }
-    p = p.parentElement;
+function dedupeVideos(videos: UnifiedVideo[]): UnifiedVideo[] {
+  const seen = new Set<string>();
+  const out: UnifiedVideo[] = [];
+  for (const v of videos) {
+    if (seen.has(v.videoId)) continue;
+    seen.add(v.videoId);
+    out.push(v);
   }
-  return document.querySelector(".ot-app-scroll");
-}
-
-/** Main app scroller — prefer this as IO root so intersection matches user scroll. */
-function getInfiniteScrollRoot(
-  sentinel: HTMLElement | null,
-): HTMLElement | null {
-  const app = document.querySelector<HTMLElement>(".ot-app-scroll");
-  if (app) return app;
-  return findVerticalScrollParent(sentinel);
+  return out;
 }
 
 export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
-  const [page, setPage] = useState(1);
-  const [merged, setMerged] = useState<UnifiedVideo[]>([]);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreInFlightRef = useRef(false);
+  const sentinelWasVisibleRef = useRef(false);
+  const queryRef = useRef<ReturnType<typeof trpc.feed.home.useInfiniteQuery> | null>(
+    null,
+  );
 
-  const feed = trpc.feed.home.useQuery(
+  const feed = trpc.feed.home.useInfiniteQuery(
+    { region, pageSize: PAGE_SIZE },
     {
-      region,
-      page,
-      pageSize: PAGE_SIZE,
+      initialCursor: 0,
+      getNextPageParam: (lastPage, allPages) => {
+        if (!lastPage.hasMore || lastPage.videos.length === 0) {
+          return undefined;
+        }
+        const merged = dedupeVideos(allPages.flatMap((p) => p.videos));
+        const prevCount =
+          allPages.length > 1
+            ? dedupeVideos(
+                allPages.slice(0, -1).flatMap((p) => p.videos),
+              ).length
+            : 0;
+        if (merged.length <= prevCount) return undefined;
+        if (allPages.length >= MAX_FEED_PAGES) return undefined;
+        return merged.length;
+      },
+      placeholderData: (prev) => prev,
     },
-    {},
+  );
+  queryRef.current = feed;
+
+  const merged = useMemo(
+    () => dedupeVideos(feed.data?.pages.flatMap((p) => p.videos) ?? []),
+    [feed.data?.pages],
   );
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset when region changes
-  useEffect(() => {
-    setPage(1);
-    setMerged([]);
-    prevFetchingRef.current = null;
-    isSentinelVisibleRef.current = false;
-  }, [region]);
+  const lastPage = feed.data?.pages[feed.data.pages.length - 1];
 
-  useEffect(() => {
-    if (!feed.isSuccess || !feed.data) return;
-    const v = feed.data.videos;
-    setMerged((prev) => {
-      if (page === 1) return v;
-      const seen = new Set(prev.map((x) => x.videoId));
-      return [...prev, ...v.filter((x) => !seen.has(x.videoId))];
+  const tryLoadMore = useCallback(() => {
+    const q = queryRef.current;
+    if (!q?.hasNextPage || q.isFetchingNextPage || loadMoreInFlightRef.current) {
+      return;
+    }
+    loadMoreInFlightRef.current = true;
+    void q.fetchNextPage().finally(() => {
+      loadMoreInFlightRef.current = false;
     });
-  }, [feed.isSuccess, feed.data, page]);
-
-  const loadMoreRef = useRef<HTMLDivElement | null>(null);
-  const isSentinelVisibleRef = useRef(false);
-  const prevFetchingRef = useRef<boolean | null>(null);
-
-  const bumpPage = useCallback(() => {
-    if (!feed.isSuccess || !feed.data || feed.isFetching) return;
-    if (!feed.data.hasMore) return;
-    setPage((p) => p + 1);
-  }, [feed.isSuccess, feed.data, feed.isFetching]);
-
-  const onIntersect = useCallback(
-    (isIntersecting: boolean) => {
-      isSentinelVisibleRef.current = isIntersecting;
-      if (isIntersecting) bumpPage();
-    },
-    [bumpPage],
-  );
+  }, []);
 
   useEffect(() => {
-    const el = loadMoreRef.current;
+    if (!feed.hasNextPage) return;
+    const el = sentinelRef.current;
     if (!el) return;
-    const root = getInfiniteScrollRoot(el);
+
     const obs = new IntersectionObserver(
       (entries) => {
-        const visible = entries.some((e) => e.isIntersecting);
-        onIntersect(visible);
+        const visible = entries[0]?.isIntersecting ?? false;
+        const wasVisible = sentinelWasVisibleRef.current;
+        sentinelWasVisibleRef.current = visible;
+        if (visible && !wasVisible) tryLoadMore();
       },
-      {
-        root,
-        rootMargin: "480px",
-        threshold: 0,
-      },
+      { root: null, rootMargin: "320px 0px", threshold: 0 },
     );
     obs.observe(el);
-    return () => obs.disconnect();
-  }, [onIntersect]);
-
-  /** When a page just finished loading, continue if the sentinel is still visible. */
-  useEffect(() => {
-    const prev = prevFetchingRef.current;
-    const cur = feed.isFetching;
-    prevFetchingRef.current = cur;
-    if (prev === null) return;
-    if (
-      prev &&
-      !cur &&
-      feed.isSuccess &&
-      feed.data?.hasMore &&
-      isSentinelVisibleRef.current
-    ) {
-      bumpPage();
-    }
-  }, [feed.isFetching, feed.isSuccess, feed.data?.hasMore, bumpPage]);
-
-  /** Fallback scroll: some browsers do not retrigger the observer while the target stays visible. */
-  useEffect(() => {
-    const el = loadMoreRef.current;
-    const root = el ? getInfiniteScrollRoot(el) : null;
-    const onScrollOrResize = () => {
-      const sentinel = loadMoreRef.current;
-      if (!sentinel) return;
-      const rect = sentinel.getBoundingClientRect();
-      const viewportBottom =
-        root instanceof HTMLElement
-          ? root.getBoundingClientRect().bottom
-          : window.innerHeight;
-      const visibleSoon = rect.top <= viewportBottom + 480;
-      isSentinelVisibleRef.current = visibleSoon;
-      if (visibleSoon) bumpPage();
-    };
-    const scrollTarget: HTMLElement | Window = root ?? window;
-    scrollTarget.addEventListener("scroll", onScrollOrResize, {
-      passive: true,
-    });
-    window.addEventListener("resize", onScrollOrResize);
-    onScrollOrResize();
     return () => {
-      scrollTarget.removeEventListener("scroll", onScrollOrResize);
-      window.removeEventListener("resize", onScrollOrResize);
+      obs.disconnect();
+      sentinelWasVisibleRef.current = false;
     };
-  }, [bumpPage]);
+  }, [feed.hasNextPage, tryLoadMore]);
 
   const subtitle = useMemo(() => {
-    if (!feed.data) return "";
-    if (feed.data.kind === "personalized") {
-      return feed.data.coldStart
+    if (!lastPage) return "";
+    if (lastPage.kind === "personalized") {
+      return lastPage.coldStart
         ? "Personalized feed — we are still learning what you like."
         : "Based on the channels you watched recently (trending only fills a small share).";
     }
-    const cat = feed.data.category;
+    const cat = lastPage.category;
     const catLabel = cat ?? "general";
-    return `Trending ${feed.data.region} · ${catLabel}. ${
+    return `Trending ${lastPage.region} · ${catLabel}. ${
       isAuthed
         ? 'The "For You" tab contains recommendations.'
         : "Sign in for a personalized feed."
     }`;
-  }, [feed.data, isAuthed]);
+  }, [lastPage, isAuthed]);
 
   const [first, ...gridVideos] = merged;
+  const isInitialLoading = feed.isPending && merged.length === 0;
+  const isLoadingMore = feed.isFetchingNextPage;
 
   return (
     <section className="space-y-6">
@@ -188,7 +137,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
         </p>
       </div>
 
-      {feed.isPending && merged.length === 0 ? (
+      {isInitialLoading ? (
         <div className="space-y-6" aria-hidden>
           <div className="relative mb-2 aspect-[21/8] max-h-[min(52vw,420px)] min-h-[200px] w-full overflow-hidden rounded-[20px] border border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] max-sm:aspect-[4/3] max-sm:max-h-none">
             <div className="absolute inset-0 animate-pulse bg-[hsl(var(--muted)_/_0.5)]" />
@@ -198,7 +147,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
               <div className="h-7 w-2/3 animate-pulse rounded bg-white/15" />
             </div>
           </div>
-          <ul className="grid grid-cols-1 gap-x-7 gap-y-8 lg:grid-cols-2 xl:grid-cols-[repeat(auto-fill,minmax(440px,1fr))]">
+          <ul className="ot-video-grid ot-video-grid--large">
             {LOAD_MORE_SKELETON_KEYS.slice(0, 6).map((k) => (
               <li key={`initial-skeleton-${k}`} className="space-y-3">
                 <div className="aspect-video w-full animate-pulse rounded-[14px] bg-[hsl(var(--muted)_/_0.45)]" />
@@ -227,7 +176,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
         <>
           <div className="flex flex-wrap items-baseline justify-between gap-4">
             <h2 className="text-xl font-bold tracking-tight">
-              {feed.data?.kind === "personalized" ? "For You" : "Trending"}
+              {lastPage?.kind === "personalized" ? "For You" : "Trending"}
             </h2>
             <span className="font-mono text-xs text-[hsl(var(--muted-foreground))]">
               {merged.length} video{merged.length === 1 ? "" : "s"}
@@ -239,19 +188,18 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
         <p className="text-sm text-[hsl(var(--muted-foreground))]">
           Scroll to load more rows.
         </p>
-      ) : !feed.isPending ? (
+      ) : !isInitialLoading ? (
         <p className="rounded-[14px] border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-14 text-center text-sm text-[hsl(var(--muted-foreground))]">
           No videos for now.
         </p>
       ) : null}
 
-      <div ref={loadMoreRef} className="h-4 w-full shrink-0" aria-hidden />
+      {feed.hasNextPage ? (
+        <div ref={sentinelRef} className="h-4 w-full shrink-0" aria-hidden />
+      ) : null}
 
-      {feed.isFetching && page > 1 ? (
-        <ul
-          className="grid grid-cols-1 gap-x-7 gap-y-8 lg:grid-cols-2 xl:grid-cols-[repeat(auto-fill,minmax(440px,1fr))]"
-          aria-hidden
-        >
+      {isLoadingMore ? (
+        <ul className="ot-video-grid ot-video-grid--large" aria-hidden>
           {LOAD_MORE_SKELETON_KEYS.slice(0, LOAD_MORE_SKELETON_COUNT).map(
             (k) => (
               <li key={`skeleton-${k}`} className="space-y-3">
@@ -269,7 +217,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
         </ul>
       ) : null}
 
-      {feed.isFetching && page > 1 ? (
+      {isLoadingMore ? (
         <p className="text-center text-xs text-[hsl(var(--muted-foreground))]">
           Loading more...
         </p>

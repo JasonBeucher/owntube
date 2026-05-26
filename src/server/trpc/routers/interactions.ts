@@ -1,7 +1,8 @@
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { clearRecommendationCachesForUser } from "@/server/recommendation/engine";
 import { interactions } from "@/server/db/schema";
+import { clearRecommendationCachesForUser } from "@/server/recommendation/engine";
+import { getUserSettings, upsertUserSettings } from "@/server/settings/profile";
 import { protectedProcedure, router } from "@/server/trpc/init";
 
 const interactionTypeSchema = z.enum(["like", "dislike", "save"]);
@@ -78,5 +79,17 @@ export const interactionsRouter = router({
         dislike: rows.some((row) => row.type === "dislike"),
         save: rows.some((row) => row.type === "save"),
       };
+    }),
+  blockRecommendationChannel: protectedProcedure
+    .input(z.object({ channelId: z.string().min(1).max(128) }))
+    .mutation(({ ctx, input }) => {
+      const settings = getUserSettings(ctx.db, ctx.userId);
+      const blocked = new Set(settings.blockedRecommendationChannels);
+      blocked.add(input.channelId.trim());
+      upsertUserSettings(ctx.db, ctx.userId, {
+        blockedRecommendationChannels: [...blocked],
+      });
+      clearRecommendationCachesForUser(ctx.userId);
+      return { ok: true as const };
     }),
 });

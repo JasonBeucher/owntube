@@ -222,7 +222,7 @@ describe("buildWatchPlayback", () => {
     }
   });
 
-  it("drops height=0 muxed when another muxed stream exists", () => {
+  it("keeps height=0 legacy muxed (Piped itag 18) alongside other muxed rows", () => {
     const w = buildWatchPlayback(
       base({
         videoSources: [
@@ -246,7 +246,7 @@ describe("buildWatchPlayback", () => {
     if (w.kind === "progressive") {
       expect(
         w.variants.map((v) => (v.t === "muxed" ? v.url : v.videoUrl)),
-      ).toEqual(["https://g.example/good.mp4"]);
+      ).toEqual(["https://g.example/good.mp4", "https://g.example/bad.mp4"]);
     }
   });
 
@@ -608,6 +608,45 @@ describe("buildWatchPlayback", () => {
         expect(w.variants[0].audioUrl).toBe("https://g.example/aud.m4a");
       }
     }
+  });
+
+  it("shorts mode includes split variants when available", () => {
+    const w = buildWatchPlayback(
+      base({
+        hlsUrl: "https://h.example/playlist.m3u8",
+        videoSources: [
+          {
+            url: "https://g.example/1080v.mp4",
+            quality: "1080p",
+            videoOnly: true,
+            mimeType: "video/mp4",
+            height: 1080,
+          },
+          {
+            url: "https://g.example/360.mp4",
+            quality: "360p",
+            videoOnly: false,
+            mimeType: "video/mp4",
+            height: 360,
+          },
+        ],
+        audioSources: [
+          {
+            url: "https://g.example/aud-en.m4a",
+            quality: "medium",
+            mimeType: "audio/mp4",
+            language: "en",
+          },
+        ],
+      }),
+      { shorts: true },
+    );
+    expect(w.kind).toBe("progressive");
+    if (w.kind !== "progressive") return;
+    const labels = w.variants.map((v) => v.label);
+    expect(labels).toContain("1080p");
+    expect(labels).toContain("360p");
+    expect(w.variants.some((v) => v.t === "split")).toBe(true);
   });
 });
 

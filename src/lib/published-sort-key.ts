@@ -116,6 +116,106 @@ export function newerPublished(
   return a.videoId.localeCompare(b.videoId);
 }
 
+/** Newest release date first (stable tie-break on `videoId`). */
+export function sortVideosNewestFirst(
+  videos: readonly UnifiedVideo[],
+  nowSec?: number,
+): UnifiedVideo[] {
+  const now = nowSec ?? Math.floor(Date.now() / 1000);
+  return [...videos].sort((a, b) => newerPublished(a, b, now));
+}
+
+/** Dedupe across paginated channel pages, then newest-first. */
+export function mergeVideosNewestFirst(
+  pages: readonly (readonly UnifiedVideo[])[],
+  nowSec?: number,
+): UnifiedVideo[] {
+  const now = nowSec ?? Math.floor(Date.now() / 1000);
+  const byId = new Map<string, UnifiedVideo>();
+  for (const page of pages) {
+    for (const v of page) {
+      const id = v.videoId;
+      if (!id) continue;
+      const prev = byId.get(id);
+      if (!prev || publishedSortKey(v, now) >= publishedSortKey(prev, now)) {
+        byId.set(id, v);
+      }
+    }
+  }
+  return sortVideosNewestFirst([...byId.values()], now);
+}
+
+/** Newest-first slice of a flat list (e.g. one channel page before pooling). */
+export function takeNewestVideos(
+  videos: readonly UnifiedVideo[],
+  limit: number,
+  nowSec?: number,
+): UnifiedVideo[] {
+  const now = nowSec ?? Math.floor(Date.now() / 1000);
+  const cap = Math.max(0, limit);
+  if (cap === 0) return [];
+  const sorted = [...videos].sort((a, b) => {
+    const d = publishedSortKey(b, now) - publishedSortKey(a, now);
+    if (d !== 0) return d;
+    return a.videoId.localeCompare(b.videoId);
+  });
+  return sorted.slice(0, cap);
+}
+
+export type TaggedVideoCandidate = { video: UnifiedVideo; source: string };
+
+function channelPageSourceRank(source: string): number {
+  if (source === "trending") return 0;
+  if (
+    source.startsWith("history_channel:") ||
+    source.startsWith("subscription:") ||
+    source.startsWith("trending_channel_head:")
+  ) {
+    return 1;
+  }
+  return 0;
+}
+
+/**
+ * Dedupe by `videoId`, keeping the row with the best publish metadata.
+ * On tie, prefer dedicated channel-page sources over trending rows.
+ */
+export function mergeVideosByIdPreferNewer(
+  tagged: readonly TaggedVideoCandidate[],
+  nowSec: number,
+): { byId: Map<string, UnifiedVideo>; sourceByVideoId: Map<string, string> } {
+  const byId = new Map<string, UnifiedVideo>();
+  const sourceByVideoId = new Map<string, string>();
+
+  for (const { video: v, source } of tagged) {
+    const id = v.videoId;
+    if (!id) continue;
+    const prev = byId.get(id);
+    if (!prev) {
+      byId.set(id, v);
+      sourceByVideoId.set(id, source);
+      continue;
+    }
+    const prevSource = sourceByVideoId.get(id) ?? "";
+    const prevKey = publishedSortKey(prev, nowSec);
+    const nextKey = publishedSortKey(v, nowSec);
+    if (nextKey > prevKey) {
+      byId.set(id, v);
+      sourceByVideoId.set(id, source);
+      continue;
+    }
+    if (
+      nextKey === prevKey &&
+      channelPageSourceRank(source) > channelPageSourceRank(prevSource)
+    ) {
+      byId.set(id, v);
+      sourceByVideoId.set(id, source);
+    }
+  }
+
+  return { byId, sourceByVideoId };
+}
+
 export type PickNewestPerChannelOptions = {
   nowSec?: number;
   /**

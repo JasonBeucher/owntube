@@ -65,3 +65,24 @@ export function sourceFromUrl(url: string): {
   }
   return { src: url, type: "video/mp4" };
 }
+
+/** Direct Piped/googlevideo progressive URL — native `<video>` is more reliable than Vidstack. */
+export function isDirectProgressiveVideoUrl(src: string): boolean {
+  try {
+    return new URL(src).pathname === "/videoplayback";
+  } catch {
+    return src.includes("/videoplayback");
+  }
+}
+
+export function audioMimeFromMediaUrl(url: string): string | undefined {
+  try {
+    const mime = new URL(url).searchParams.get("mime")?.toLowerCase();
+    if (!mime) return undefined;
+    if (mime.startsWith("audio/")) return mime;
+    if (mime.startsWith("video/")) return undefined;
+    return `audio/${mime}`;
+  } catch {
+    return undefined;
+  }
+}

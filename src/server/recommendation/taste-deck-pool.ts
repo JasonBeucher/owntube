@@ -1,6 +1,9 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq } from "drizzle-orm";
-import { pickNewestVideoPerChannel } from "@/lib/published-sort-key";
+import {
+  mergeVideosByIdPreferNewer,
+  pickNewestVideoPerChannel,
+} from "@/lib/published-sort-key";
 import {
   recurringTokensFromDislikedTitles,
   videoPassesTasteSession,
@@ -138,6 +141,10 @@ export async function buildTasteDeckVideos(
   for (const [ch, n] of dislikeCountByChannel) {
     if (n >= 2) heavyDislikeChannels.add(ch);
   }
+  const settings = getUserSettings(db, userId);
+  for (const ch of settings.blockedRecommendationChannels) {
+    heavyDislikeChannels.add(ch);
+  }
 
   const dislikeTitles = readCachedDislikeTitlesOrdered(
     db,
@@ -173,15 +180,11 @@ export async function buildTasteDeckVideos(
   const { tagged, recentCoverageByChannel, coldStart, trendingWarning } =
     collected;
 
-  const byId = new Map<string, UnifiedVideo>();
-  for (const { video: v } of tagged) {
-    if (!byId.has(v.videoId)) byId.set(v.videoId, v);
-  }
-
   const nowSec = nowUnix();
+  const { byId } = mergeVideosByIdPreferNewer(tagged, nowSec);
   let merged = pickNewestVideoPerChannel(
     [...byId.values()].filter((v) => !interacted.has(v.videoId)),
-    { nowSec, maxPerChannel: 12 },
+    { nowSec, maxPerChannel: 1 },
   );
   merged = enrichVideosWithStoredChannelAvatars(db, merged);
 

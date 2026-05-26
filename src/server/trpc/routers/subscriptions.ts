@@ -33,6 +33,10 @@ const videoIdSchema = z.string().min(5).max(64);
 /** Avoid hundreds of parallel upstream calls (rate limit → names fall back to raw IDs). */
 const LIST_DETAILED_BATCH = 5;
 const LIST_DETAILED_RETRIES = 4;
+/** Reuse `channel_meta` without hitting upstream when recently refreshed. */
+const CHANNEL_META_TTL_SEC = 7 * 24 * 60 * 60;
+const SIDEBAR_SUBSCRIPTION_LIMIT_DEFAULT = 24;
+const SIDEBAR_SUBSCRIPTION_LIMIT_MAX = 50;
 
 type SubscriptionChannelDetail = {
   channelId: string;
@@ -45,6 +49,46 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isFreshChannelMeta(updatedAt: number, now = nowUnix()): boolean {
+  return now - updatedAt < CHANNEL_META_TTL_SEC;
+}
+
+function readChannelMetaByIds(
+  db: AppDb,
+  channelIds: string[],
+): Map<string, { channelName: string; avatarUrl: string | null }> {
+  const out = new Map<string, { channelName: string; avatarUrl: string | null }>();
+  if (channelIds.length === 0) return out;
+  let rows: {
+    channelId: string;
+    channelName: string;
+    avatarUrl: string | null;
+  }[] = [];
+  try {
+    rows = db
+      .select({
+        channelId: channelMeta.channelId,
+        channelName: channelMeta.channelName,
+        avatarUrl: channelMeta.avatarUrl,
+      })
+      .from(channelMeta)
+      .where(inArray(channelMeta.channelId, channelIds))
+      .all();
+  } catch (error) {
+    if (isMissingChannelMetaTableError(error)) return out;
+    throw error;
+  }
+  for (const r of rows) {
+    const name = r.channelName?.trim();
+    if (!name) continue;
+    out.set(r.channelId, {
+      channelName: name,
+      avatarUrl: r.avatarUrl ?? null,
+    });
+  }
+  return out;
+}
+
 async function fetchSubscriptionChannelDetail(
   db: AppDb,
   channelId: string,
@@ -52,6 +96,14 @@ async function fetchSubscriptionChannelDetail(
   overrides: ProxySourceOverrides | undefined,
 ): Promise<SubscriptionChannelDetail> {
   const cachedMeta = readChannelMetaRow(db, channelId);
+  if (cachedMeta && isFreshChannelMeta(cachedMeta.updatedAt)) {
+    return {
+      channelId,
+      subscribedAt,
+      channelName: cachedMeta.channelName,
+      avatarUrl: cachedMeta.avatarUrl,
+    };
+  }
   const fallback = {
     channelId,
     subscribedAt,
@@ -180,11 +232,13 @@ function readChannelMetaRow(
 ): {
   channelName: string;
   avatarUrl: string | null;
+  updatedAt: number;
 } | null {
   let row:
     | {
         channelName: string;
         avatarUrl: string | null;
+        updatedAt: number;
       }
     | undefined;
   try {
@@ -192,6 +246,7 @@ function readChannelMetaRow(
       .select({
         channelName: channelMeta.channelName,
         avatarUrl: channelMeta.avatarUrl,
+        updatedAt: channelMeta.updatedAt,
       })
       .from(channelMeta)
       .where(eq(channelMeta.channelId, channelId))
@@ -205,6 +260,7 @@ function readChannelMetaRow(
   return {
     channelName: row.channelName,
     avatarUrl: row.avatarUrl ?? null,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -326,7 +382,7 @@ async function fetchRssEntriesFromChannel(
         title,
         channelId,
         channelName,
-        thumbnailUrl: `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`,
+        thumbnailUrl: `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/maxresdefault.jpg`,
         publishedAt,
         publishedText: publishedRaw?.trim(),
       });
@@ -668,6 +724,48 @@ export const subscriptionsRouter = router({
         typeof limit === "number" ? base.limit(limit).all() : base.all();
 
       return listDetailedChannelRows(ctx.db, subs, overrides);
+    }),
+
+  /** Sidebar only — SQLite + `channel_meta`, no upstream (keeps home feed batch fast). */
+  listSidebar: protectedProcedure
+    .input(
+      z
+        .object({
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(SIDEBAR_SUBSCRIPTION_LIMIT_MAX)
+            .default(SIDEBAR_SUBSCRIPTION_LIMIT_DEFAULT),
+        })
+        .optional(),
+    )
+    .query(async ({ ctx, input }) => {
+      const limit = input?.limit ?? SIDEBAR_SUBSCRIPTION_LIMIT_DEFAULT;
+      reconcileSubscriptionChannelIdsForUser(ctx.db, ctx.userId);
+      const subs = ctx.db
+        .select({
+          channelId: subscriptions.channelId,
+          subscribedAt: subscriptions.subscribedAt,
+        })
+        .from(subscriptions)
+        .where(eq(subscriptions.userId, ctx.userId))
+        .orderBy(desc(subscriptions.subscribedAt))
+        .limit(limit)
+        .all();
+      const metaById = readChannelMetaByIds(
+        ctx.db,
+        subs.map((s) => s.channelId),
+      );
+      return subs.map((s) => {
+        const meta = metaById.get(s.channelId);
+        return {
+          channelId: s.channelId,
+          subscribedAt: s.subscribedAt,
+          channelName: meta?.channelName ?? s.channelId,
+          avatarUrl: meta?.avatarUrl ?? null,
+        };
+      });
     }),
 
   status: publicProcedure

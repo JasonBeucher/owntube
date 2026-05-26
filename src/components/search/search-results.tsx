@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { ChannelAvatarCircle } from "@/components/videos/channel-avatar-circle";
 import { VideoCard } from "@/components/videos/video-card";
+import { auth } from "@/server/auth";
 import { getDb } from "@/server/db/client";
 import { UpstreamUnavailableError } from "@/server/errors/upstream-unavailable";
 import { searchVideos } from "@/server/services/proxy";
+import { getUserProxyOverrides } from "@/server/settings/profile";
 import {
   type SearchVideosResult,
   searchVideosInputSchema,
@@ -72,9 +74,17 @@ export async function SearchResults({ query, sort }: SearchResultsProps) {
     q: query,
     limit: 20,
   });
+  const db = getDb();
+  const session = await auth();
+  const userId = session?.user?.id ? Number.parseInt(session.user.id, 10) : NaN;
+  const overrides = getUserProxyOverrides(
+    db,
+    Number.isFinite(userId) ? userId : null,
+  );
+
   let result: SearchVideosResult;
   try {
-    result = await searchVideos(getDb(), input);
+    result = await searchVideos(db, input, overrides);
   } catch (error) {
     if (error instanceof UpstreamUnavailableError) {
       return (
@@ -221,7 +231,7 @@ export async function SearchResults({ query, sort }: SearchResultsProps) {
       {visibleVideos.length > 0 ? (
         <section className="space-y-3">
           <h2 className="text-lg font-semibold tracking-tight">Videos</h2>
-          <ul className="grid grid-cols-1 gap-5 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3">
+          <ul className="ot-video-grid">
             {visibleVideos.map((v) => (
               <li key={v.videoId} className="h-full">
                 <VideoCard

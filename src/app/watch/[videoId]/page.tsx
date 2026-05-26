@@ -8,6 +8,8 @@ import { WatchTracker } from "@/components/player/watch-tracker";
 import { WatchCinemaProvider } from "@/components/watch/watch-cinema-context";
 import { WatchPageGrid } from "@/components/watch/watch-page-grid";
 import { ChannelAvatarCircle } from "@/components/videos/channel-avatar-circle";
+import { WatchChaptersSection } from "@/components/watch/watch-chapters-section";
+import { WatchCommentsSection } from "@/components/watch/watch-comments-section";
 import { WatchDescription } from "@/components/watch/watch-description";
 import { VideoCardCompact } from "@/components/videos/video-card";
 import {
@@ -17,16 +19,23 @@ import {
   toProxiedOrDirectVariants,
 } from "@/lib/invidious-proxy";
 import { buildWatchPlayback } from "@/lib/pick-playback";
+import { scrubPreviewStreamFromDetail } from "@/lib/scrub-preview-stream";
 import { stripRestrictedListVideos } from "@/lib/feed-exclude-restricted";
-import { formatPublishedLabel, formatViews } from "@/lib/video-display";
+import {
+  formatPublishedLabel,
+  formatSubscribersLabel,
+  formatViews,
+} from "@/lib/video-display";
 import { parseChaptersFromDescription } from "@/lib/video-chapters";
 import { auth } from "@/server/auth";
 import { getDb } from "@/server/db/client";
 import { getRecommendations } from "@/server/recommendation/engine";
 import {
+  fetchRelatedVideos,
   fetchTrendingVideos,
   fetchVideoDetail,
 } from "@/server/services/proxy";
+import type { UnifiedVideo } from "@/server/services/proxy.types";
 import { videoDetailInputSchema } from "@/server/services/proxy.types";
 import {
   getUserProxyOverrides,
@@ -38,29 +47,6 @@ type WatchPageProps = {
   params: Promise<{ videoId: string }>;
   searchParams: Promise<{ t?: string | string[] }>;
 };
-
-function formatChapterClock(totalSeconds: number): string {
-  const s = Math.max(0, Math.floor(totalSeconds));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-  return `${m}:${String(sec).padStart(2, "0")}`;
-}
-
-function chapterPreviewUrl(
-  videoId: string,
-  startSeconds: number,
-  durationSeconds: number | undefined,
-): string {
-  const duration =
-    typeof durationSeconds === "number" && Number.isFinite(durationSeconds)
-      ? Math.max(1, durationSeconds)
-      : 1;
-  const ratio = Math.min(1, Math.max(0, startSeconds / duration));
-  const frame = Math.min(3, Math.max(0, Math.round(ratio * 3)));
-  return `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/${frame}.jpg`;
-}
 
 export default async function WatchPage({ params, searchParams }: WatchPageProps) {
   noStore();
@@ -83,34 +69,54 @@ export default async function WatchPage({ params, searchParams }: WatchPageProps
     h.get("x-forwarded-host")?.split(",")[0]?.trim() ?? h.get("host") ?? "";
   const appOrigin = getAppOriginFromRequestHeaders(h);
   const isAuthed = Boolean(session?.user?.id);
+  const userSettings =
+    Number.isFinite(userId) && userId > 0 ? getUserSettings(db, userId) : null;
   const feedRegion =
     Number.isFinite(userId) && userId > 0
       ? normalizeTrendingRegionStored(getUserSettings(db, userId).trendingRegion)
       : "US";
-  const userSettings =
-    Number.isFinite(userId) && userId > 0 ? getUserSettings(db, userId) : null;
-  const [detail, feedVideosRaw] = await Promise.all([
-    fetchVideoDetail(db, input, overrides, { bypassDetailCache: true }),
-    isAuthed
-      ? getRecommendations(db, userId, {
-          page: 1,
-          pageSize: 28,
-          region: feedRegion,
-          overrides,
-        }).then((rec) => rec.videos)
-      : fetchTrendingVideos(
-          db,
-          { region: feedRegion, limit: 28 },
-          overrides,
-        ).then((r) => r.videos),
-  ]);
-  const feedVideosVisible =
+  const detail = await fetchVideoDetail(db, input, overrides, {
+    bypassDetailCache: true,
+  });
+  const relatedResult = await fetchRelatedVideos(db, input, 24, overrides).catch(
+    () => null,
+  );
+
+  const applyRestrictedFilter = (videos: UnifiedVideo[]) =>
     userSettings?.hideRestrictedVideos === false
-      ? feedVideosRaw
-      : stripRestrictedListVideos(feedVideosRaw);
-  const feedVideos = feedVideosVisible
-    .filter((video) => video.videoId !== videoId)
-    .slice(0, 20);
+      ? videos
+      : stripRestrictedListVideos(videos);
+
+  const relatedMerged = new Map<string, UnifiedVideo>();
+  for (const v of [
+    ...(detail.relatedVideos ?? []),
+    ...(relatedResult?.videos ?? []),
+  ]) {
+    if (v.videoId !== videoId) relatedMerged.set(v.videoId, v);
+  }
+  let sidebarVideos = applyRestrictedFilter([...relatedMerged.values()]).slice(
+    0,
+    20,
+  );
+
+  let sidebarFromFeedFallback = false;
+  if (sidebarVideos.length === 0) {
+    const feedVideosRaw = isAuthed
+      ? (
+          await getRecommendations(db, userId, {
+            page: 1,
+            pageSize: 28,
+            region: feedRegion,
+            overrides,
+          })
+        ).videos
+      : (await fetchTrendingVideos(db, { region: feedRegion, limit: 28 }, overrides))
+          .videos;
+    sidebarVideos = applyRestrictedFilter(feedVideosRaw)
+      .filter((v) => v.videoId !== videoId)
+      .slice(0, 20);
+    sidebarFromFeedFallback = sidebarVideos.length > 0;
+  }
   const rawPlayback = buildWatchPlayback(detail);
   const onlyDashOrUnsupported =
     rawPlayback.kind === "none" && rawPlayback.onlyDashOrUnsupported;
@@ -146,9 +152,15 @@ export default async function WatchPage({ params, searchParams }: WatchPageProps
     detail.description,
     detail.durationSeconds,
   );
-  const publishedLabel = formatPublishedLabel(detail.publishedText);
+  const publishedLabel = formatPublishedLabel(
+    detail.publishedText,
+    detail.publishedAt,
+  );
   const viewsLabel = formatViews(detail.viewCount);
   const channelLabel = detail.channelName ?? "Unknown channel";
+  const subscribersLabel = formatSubscribersLabel(detail.channelSubscriberCount);
+  const scrubPreviewStreamSrc =
+    scrubPreviewStreamFromDetail(detail, appOrigin, requestHost) ?? undefined;
 
   return (
     <WatchCinemaProvider initialCinemaMode={Boolean(userSettings?.defaultCinemaMode)}>
@@ -164,6 +176,12 @@ export default async function WatchPage({ params, searchParams }: WatchPageProps
                 poster={poster}
                 chapters={chapters}
                 startAtSeconds={startAtSeconds}
+                defaultPlaybackQuality={
+                  userSettings?.defaultPlaybackQuality ?? "1080p"
+                }
+                durationSeconds={detail.durationSeconds}
+                storyboard={detail.storyboard}
+                scrubPreviewStreamSrc={scrubPreviewStreamSrc}
               />
             ) : (
               <div className="rounded-xl border bg-[hsl(var(--muted))] p-6 text-sm text-[hsl(var(--muted-foreground))]">
@@ -222,7 +240,7 @@ export default async function WatchPage({ params, searchParams }: WatchPageProps
                       </p>
                     )}
                     <p className="text-xs text-[hsl(var(--muted-foreground))]">
-                      {publishedLabel ? `Published ${publishedLabel}` : "Channel"}
+                      {subscribersLabel ?? "Channel"}
                     </p>
                   </div>
                 </div>
@@ -258,60 +276,34 @@ export default async function WatchPage({ params, searchParams }: WatchPageProps
                 description={detail.description}
               />
             </div>
+
+            <WatchCommentsSection videoId={detail.videoId} />
           </>
         }
         sidebar={
           <>
-            {chapters.length > 1 ? (
-              <details
-                open
-                className="group rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]"
-              >
-                <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2.5">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))]">
-                    Chapters ({chapters.length})
-                  </span>
-                  <span className="text-xs text-[hsl(var(--muted-foreground))] transition group-open:rotate-180">
-                    ▼
-                  </span>
-                </summary>
-                <ul className="max-h-80 space-y-1 overflow-y-auto border-t border-[hsl(var(--border))] p-2">
-                  {chapters.map((chapter) => (
-                    <li key={`${chapter.startSeconds}-${chapter.title}`}>
-                      <Link
-                        href={`/watch/${encodeURIComponent(detail.videoId)}?t=${chapter.startSeconds}`}
-                        className="flex items-center gap-3 rounded-lg px-2 py-1.5 transition hover:bg-[hsl(var(--muted)_/_0.4)]"
-                      >
-                        <div className="relative aspect-video w-28 shrink-0 overflow-hidden rounded-md bg-[hsl(var(--muted))]">
-                          {
-                            // biome-ignore lint/performance/noImgElement: chapter preview image from YouTube static frames
-                            <img
-                              src={chapterPreviewUrl(
-                                detail.videoId,
-                                chapter.startSeconds,
-                                detail.durationSeconds,
-                              )}
-                              alt=""
-                              className="h-full w-full object-cover"
-                              loading="lazy"
-                            />
-                          }
-                          <span className="absolute bottom-1 right-1 rounded bg-black/75 px-1.5 py-0.5 font-mono text-[10px] text-white">
-                            {formatChapterClock(chapter.startSeconds)}
-                          </span>
-                        </div>
-                        <span className="line-clamp-2 text-sm text-[hsl(var(--foreground))]">
-                          {chapter.title}
-                        </span>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              </details>
+            <WatchChaptersSection
+              videoId={detail.videoId}
+              chapters={chapters}
+              durationSeconds={detail.durationSeconds}
+              storyboard={detail.storyboard}
+              scrubPreviewStreamSrc={scrubPreviewStreamSrc}
+            />
+            <h2 className="text-lg font-bold tracking-tight">
+              {sidebarFromFeedFallback
+                ? "From your feed"
+                : sidebarVideos.length > 0
+                  ? "Related"
+                  : "More to watch"}
+            </h2>
+            {sidebarVideos.length === 0 ? (
+              <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                No related videos are available right now. Check your Piped
+                instance or try again later.
+              </p>
             ) : null}
-            <h2 className="text-lg font-bold tracking-tight">From your feed</h2>
             <ul className="space-y-3">
-              {feedVideos.map((video) => (
+              {sidebarVideos.map((video) => (
                 <li key={video.videoId}>
                   <VideoCardCompact
                     href={`/watch/${encodeURIComponent(video.videoId)}`}

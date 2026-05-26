@@ -6,7 +6,9 @@ export type TRPCContext = {
   userId: number | null;
 };
 
-export async function createTRPCContext(): Promise<TRPCContext> {
+export async function createTRPCContext(_opts?: {
+  req?: Request;
+}): Promise<TRPCContext> {
   const session = await auth();
   const parsedId = session?.user?.id
     ? Number.parseInt(session.user.id, 10)

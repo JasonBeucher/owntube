@@ -123,15 +123,41 @@ Both should return valid JSON (not HTML, not 403).
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
+| `Upstream rate limit reached for this process` | OwnTube’s **process** limiter (~60 req/min default) and both configured upstreams were throttled in the same request | Raise `UPSTREAM_RATE_LIMIT_MAX_REQUESTS`; with Piped + Invidious set, the second source is tried automatically before this error |
+| Feed looks like regional trending | `PIPED_BASE_URL` points at the web UI, or Piped `/channel/…` returns no `relatedStreams` and Invidious was not configured as fallback | API on **8091** (not 8090); keep a working `INVIDIOUS_BASE_URL` for channel upload lists used by recommendations. OwnTube also tries Piped search + Invidious RSS when native channel video lists are empty or parse-error. |
+| `Invalid JSON (upstream returned HTML)` on Piped | `PIPED_BASE_URL` points at the **frontend** (e.g. port 8090), not the API backend | Use the Piped **backend** URL from [self-hosting docs](https://docs.piped.video/docs/self-hosting/), or `PIPED_BASE_URL=disabled` and Invidious only |
 | "Search temporarily unavailable" | Both Piped & Invidious unreachable | Check URLs, add `https://`, run setup script |
 | Thumbnails 404 | Invidious URL missing protocol | Ensure `INVIDIOUS_BASE_URL` starts with `https://` or `http://` |
 | "Could not load this video — HTTP 403" | Invidious instance blocks API | Switch to a different instance or self-host |
 | "Could not load this video — HTTP 502" | Piped instance is down | Set `PIPED_BASE_URL=disabled` and use Invidious only |
+| Playback or hover preview broken in Docker | Server builds media URLs with `Host: 0.0.0.0:3000` instead of the LAN URL you use in the browser | Set `APP_BASE_URL=http://192.168.1.14:3000` (your real OwnTube URL), rebuild/restart |
 | `the --mount option requires BuildKit` | Old flow built Invidious from source | Run `bash scripts/setup-invidious.sh` again (uses pre-built images; no BuildKit) |
 | Next logs `GET /api/v1/search … 404` while search fails | OwnTube and Invidious share the same host **port** (e.g. both on 3001). Server `fetch` hits Next itself. | Run Invidious on **3001** and OwnTube on **3000** (default `pnpm dev`), or change one of the ports. |
 | Invidious / companion `Restarting`, logs: `invidious_companion_key` needs 16 characters | Companion secret must be **exactly 16 characters** | Re-run `bash scripts/setup-invidious.sh` from OwnTube (fixed generator), then `docker compose -f docker-compose.owntube-local.yml up -d` in the Invidious clone. |
 | OwnTube watch: `Invalid JSON` / `empty body` / `Unexpected end of JSON input` | Invidious answered before **companion** was ready, or non-JSON error page | Re-run `bash scripts/setup-invidious.sh` (compose now waits for companion **healthy** before starting Invidious), then `docker compose ... down && up -d`. Wait ~20 s after `up` before testing. |
 | Invidious first boot slow | DB migration running | Wait ~2 min, watch logs |
+
+---
+
+## Home feed warm-up (Docker / cron)
+
+The first home page load after a cold start may wait on upstream trending. To
+keep the SQLite cache warm, run the warm-up script on a schedule (host cron or
+inside the container):
+
+```bash
+# Every 20 minutes (host cron; adjust path and region)
+*/20 * * * * cd /path/to/OwnTube && OWNTUBE_WARM_REGION=US pnpm warm:feed >> /var/log/owntube-warm.log 2>&1
+```
+
+Inside Docker (one-shot after deploy, or from host against the volume):
+
+```bash
+docker compose exec app pnpm warm:feed
+```
+
+Optional env: `OWNTUBE_WARM_REGION` (default `US`), `OWNTUBE_WARM_LIMIT` (default
+`48`), `DATABASE_PATH` (same as the app).
 
 ---
 

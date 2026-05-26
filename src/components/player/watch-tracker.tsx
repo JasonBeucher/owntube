@@ -7,17 +7,22 @@ type WatchTrackerProps = {
   videoId: string;
   channelId?: string;
   durationSeconds?: number;
+  /** Called after the final watch event is persisted (e.g. leave slide / unmount). */
+  onWatched?: (videoId: string) => void;
 };
 
 export function WatchTracker({
   videoId,
   channelId = "unknown",
   durationSeconds = 0,
+  onWatched,
 }: WatchTrackerProps) {
   const { mutate } = trpc.history.upsertEvent.useMutation();
   /** tRPC’s mutation return object is not referentially stable; do not list it in effect deps. */
   const mutateRef = useRef(mutate);
   mutateRef.current = mutate;
+  const onWatchedRef = useRef(onWatched);
+  onWatchedRef.current = onWatched;
 
   useEffect(() => {
     const m = mutateRef.current;
@@ -37,12 +42,17 @@ export function WatchTracker({
     }, 20_000);
     return () => {
       window.clearInterval(interval);
-      m({
-        videoId,
-        channelId,
-        durationWatched: durationSeconds,
-        completed: true,
-      });
+      m(
+        {
+          videoId,
+          channelId,
+          durationWatched: durationSeconds,
+          completed: true,
+        },
+        {
+          onSuccess: () => onWatchedRef.current?.(videoId),
+        },
+      );
     };
   }, [channelId, durationSeconds, videoId]);
 

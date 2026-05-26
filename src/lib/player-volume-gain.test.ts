@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { gainToUiVolume, uiVolumeToGain } from "@/lib/player-volume-gain";
+import {
+  gainToUiVolume,
+  playbackRateVolumeAttenuation,
+  uiVolumeToGain,
+} from "@/lib/player-volume-gain";
 
 describe("player-volume-gain", () => {
   it("round-trips UI → gain → UI", () => {
@@ -13,5 +17,11 @@ describe("player-volume-gain", () => {
   it("softens mid-range vs linear", () => {
     expect(uiVolumeToGain(0.5)).toBeLessThan(0.5);
     expect(uiVolumeToGain(1)).toBe(1);
+  });
+
+  it("attenuates gain only above 1×", () => {
+    expect(playbackRateVolumeAttenuation(1)).toBe(1);
+    expect(playbackRateVolumeAttenuation(0.75)).toBe(1);
+    expect(playbackRateVolumeAttenuation(2)).toBeCloseTo(1 / Math.sqrt(2), 5);
   });
 });

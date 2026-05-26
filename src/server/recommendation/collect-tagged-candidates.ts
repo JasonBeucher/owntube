@@ -1,4 +1,5 @@
 import { desc, eq } from "drizzle-orm";
+import { takeNewestVideos } from "@/lib/published-sort-key";
 import type { AppDb } from "@/server/db/client";
 import { subscriptions } from "@/server/db/schema";
 import { useColdStartBlend } from "@/server/recommendation/coldstart";
@@ -15,6 +16,8 @@ const MAX_HISTORY_CHANNEL_FETCHES = 32;
 const VIDEOS_PER_HISTORY_CHANNEL = 12;
 const MIN_UNIQUE_CANDIDATES_HISTORY_ONLY = 14;
 const CHANNEL_FETCH_CONCURRENCY = 6;
+/** When trending supplies a channel we did not page yet, fetch latest uploads so recs prefer newer unwatched videos. */
+const MAX_TRENDING_ONLY_CHANNEL_HEAD_FETCHES = 12;
 
 export type TaggedVideoCandidate = { video: UnifiedVideo; source: string };
 
@@ -29,6 +32,10 @@ function withChannelAvatarFallback(
 /**
  * Fetches recent uploads from history channels, subscriptions (cold start), and
  * blends regional trending — same sources as the home recommendation pool.
+ * After a trending blend, loads the channel “videos” tab for trending-only
+ * channels so newer unwatched uploads can replace stale trending rows.
+ * Channel pages use the SQLite cache (10 min TTL) to avoid bursting the
+ * process upstream rate limiter on every home feed load.
  */
 export async function collectTaggedVideoCandidates(
   db: AppDb,
@@ -48,9 +55,11 @@ export async function collectTaggedVideoCandidates(
   trendingWarning?: string;
 }> {
   const { region, overrides, signals } = args;
+  const nowSec = Math.floor(Date.now() / 1000);
   const coldStart = useColdStartBlend(signals.totalWatches);
   const taggedCandidates: TaggedVideoCandidate[] = [];
   const recentCoverageByChannel = new Map<string, number>();
+  const channelsWithDedicatedPage = new Set<string>();
 
   const canBuildFromHistory =
     signals.totalWatches >= MIN_WATCH_ROWS_FOR_HISTORY_POOL &&
@@ -73,13 +82,18 @@ export async function collectTaggedVideoCandidates(
           return {
             channelId,
             channelAvatarUrl: ch.avatarUrl ?? undefined,
-            page: ch.videos.slice(0, VIDEOS_PER_HISTORY_CHANNEL),
+            page: takeNewestVideos(
+              ch.videos,
+              VIDEOS_PER_HISTORY_CHANNEL,
+              nowSec,
+            ),
           };
         }),
       );
       for (const item of settled) {
         if (item.status !== "fulfilled") continue;
         const { channelId, channelAvatarUrl, page } = item.value;
+        channelsWithDedicatedPage.add(channelId);
         for (const v of page) {
           taggedCandidates.push({
             video: withChannelAvatarFallback(v, channelAvatarUrl),
@@ -163,7 +177,58 @@ export async function collectTaggedVideoCandidates(
           return {
             channelId: s.channelId,
             channelAvatarUrl: ch.avatarUrl ?? undefined,
-            page: ch.videos.slice(0, 10),
+            page: takeNewestVideos(ch.videos, 10, nowSec),
+          };
+        }),
+      );
+      for (const item of settled) {
+        if (item.status !== "fulfilled") continue;
+        const { channelId, channelAvatarUrl, page } = item.value;
+        channelsWithDedicatedPage.add(channelId);
+        for (const v of page) {
+          taggedCandidates.push({
+            video: withChannelAvatarFallback(v, channelAvatarUrl),
+            source: `subscription:${channelId}`,
+          });
+        }
+        const pageIds = page
+          .map((v) => v.videoId)
+          .filter((id) => id.length > 0);
+        if (pageIds.length > 0) {
+          let hit = 0;
+          for (const id of pageIds) {
+            if (signals.watchedVideoIds.has(id)) hit += 1;
+          }
+          recentCoverageByChannel.set(channelId, hit / pageIds.length);
+        }
+      }
+    }
+  }
+
+  if (needTrendingBlend) {
+    const trendingOnlyChannelIds = new Set<string>();
+    for (const { video: v, source } of taggedCandidates) {
+      if (source !== "trending") continue;
+      const cid = v.channelId?.trim();
+      if (!cid || channelsWithDedicatedPage.has(cid)) continue;
+      trendingOnlyChannelIds.add(cid);
+    }
+    const toFetch = [...trendingOnlyChannelIds]
+      .sort()
+      .slice(0, MAX_TRENDING_ONLY_CHANNEL_HEAD_FETCHES);
+    for (let i = 0; i < toFetch.length; i += CHANNEL_FETCH_CONCURRENCY) {
+      const batch = toFetch.slice(i, i + CHANNEL_FETCH_CONCURRENCY);
+      const settled = await Promise.allSettled(
+        batch.map(async (channelId) => {
+          const ch = await fetchChannelPage(db, { channelId }, overrides);
+          return {
+            channelId,
+            channelAvatarUrl: ch.avatarUrl ?? undefined,
+            page: takeNewestVideos(
+              ch.videos,
+              VIDEOS_PER_HISTORY_CHANNEL,
+              nowSec,
+            ),
           };
         }),
       );
@@ -173,7 +238,7 @@ export async function collectTaggedVideoCandidates(
         for (const v of page) {
           taggedCandidates.push({
             video: withChannelAvatarFallback(v, channelAvatarUrl),
-            source: `subscription:${channelId}`,
+            source: `trending_channel_head:${channelId}`,
           });
         }
         const pageIds = page

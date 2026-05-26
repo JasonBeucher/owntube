@@ -8,7 +8,7 @@ export default function SearchLoading() {
         <h1 className="text-2xl font-bold tracking-tight">Search</h1>
         <SearchForm />
       </header>
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3">
+      <div className="ot-video-grid">
         {(["a", "b", "c", "d", "e", "f"] as const).map((id) => (
           <div
             key={id}

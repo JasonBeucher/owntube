@@ -3,6 +3,7 @@ import {
   languageFirstAudioMenuLabel,
   streamLooksLikeOriginalAudio,
 } from "@/lib/audio-track-label";
+import { reorderVariantsForDefaultQuality } from "@/lib/default-playback-quality";
 import type { VideoDetail } from "@/server/services/proxy.types";
 
 type VideoStreamSource = VideoDetail["videoSources"][number];
@@ -36,6 +37,20 @@ function mimeVideoTypeWithoutAudioCodecs(mime: string | undefined): boolean {
   return hasVideo && !hasAudio;
 }
 
+function streamIsVideoOnly(s: VideoStreamSource): boolean {
+  if (s.videoOnly === true) return true;
+  return mimeVideoTypeWithoutAudioCodecs(s.mimeType);
+}
+
+function scoreNativeVideoCodec(s: VideoStreamSource): number {
+  const blob = `${s.mimeType ?? ""} ${s.url ?? ""}`.toLowerCase();
+  if (/avc1|avc3|h264/.test(blob)) return 100;
+  if (/video\/mp4/.test(blob) && !/av01|av1|vp9|webm/.test(blob)) return 80;
+  if (/vp9|video\/webm/.test(blob)) return 50;
+  if (/av01|av1/.test(blob)) return 10;
+  return 40;
+}
+
 /**
  * Rows we can offer as a &lt;video&gt; source: drop pure audio MIME, height 0,
  * and mis-tagged video/* streams whose codecs are audio-only.
@@ -48,6 +63,12 @@ function sourceLooksLikeVideoPane(s: VideoStreamSource): boolean {
     Number.isFinite(s.height) &&
     s.height <= 0
   ) {
+    // Piped legacy muxed itag 18 often reports height: 0 — still has video.
+    if (!streamIsVideoOnly(s)) {
+      if (mt.startsWith("video/") || (s.quality && !/audio/i.test(s.quality))) {
+        return true;
+      }
+    }
     return false;
   }
   if (mimeVideoTypeButAudioOnlyCodecs(s.mimeType)) return false;
@@ -288,7 +309,7 @@ function buildAllSplitVariants(
       ({ s }) =>
         keep(s) &&
         s.url &&
-        s.videoOnly &&
+        streamIsVideoOnly(s) &&
         !isDashPath(s.url) &&
         !isHlsPath(s.url),
     );
@@ -299,10 +320,13 @@ function buildAllSplitVariants(
     dedupeAudioOptionsByLanguage(audios);
   if (!defaultAudioUrl) return [];
 
-  videoCandidates.sort(
-    (a, b) =>
-      scoreQualityLabel(b.s.quality, b.i) - scoreQualityLabel(a.s.quality, a.i),
-  );
+  videoCandidates.sort((a, b) => {
+    const byQ =
+      scoreQualityLabel(b.s.quality, b.i) -
+      scoreQualityLabel(a.s.quality, a.i);
+    if (byQ !== 0) return byQ;
+    return scoreNativeVideoCodec(b.s) - scoreNativeVideoCodec(a.s);
+  });
 
   return videoCandidates.map(({ s, i }) => ({
     t: "split" as const,
@@ -338,6 +362,7 @@ function collectMuxed(
       const u = s.url;
       if (!u || isDashPath(u) || isHlsPath(u)) return null;
       if (s.videoOnly) return null;
+      if (streamIsVideoOnly(s)) return null;
       if (!keep(s)) return null;
       const mt = s.mimeType?.toLowerCase() ?? "";
       if (mt.startsWith("audio/") && !mt.includes("video")) return null;
@@ -377,8 +402,12 @@ function parseRungHeight(label: string): number | null {
 function dropMuxedWhenSplitMatchesResolution(
   muxed: MuxedVariant[],
   splits: SplitVariant[],
+  detail?: VideoDetail,
 ): MuxedVariant[] {
   if (muxed.length === 0 || splits.length === 0) return muxed;
+  if (detail?.sourceUsed === "piped" || detail?.sourceUsed === "cache") {
+    return muxed;
+  }
   const splitRungs = new Set<string>();
   for (const s of splits) splitRungs.add(qualityMenuRungKey(s));
   // Prefer split for low rungs where muxed often maps to legacy/broken assets.
@@ -389,6 +418,13 @@ function dropMuxedWhenSplitMatchesResolution(
     if (h === null) return true;
     return h > 480;
   });
+}
+
+/** Start on the configured default rung (1080p by default). */
+function preferPlaybackDefault(
+  variants: PlayableVariant[],
+): PlayableVariant[] {
+  return reorderVariantsForDefaultQuality(variants);
 }
 
 function sortPlayable(a: PlayableWithRank, b: PlayableWithRank): number {
@@ -435,15 +471,47 @@ function hasUsableProgressiveVideoPane(detail: VideoDetail): boolean {
   });
 }
 
-export function buildWatchPlayback(detail: VideoDetail): WatchPlayback {
+export function buildWatchPlayback(
+  detail: VideoDetail,
+  options?: { shorts?: boolean },
+): WatchPlayback {
+  const isPipedLike = detail.sourceUsed === "piped";
+
   const buildMerged = (keep: (s: VideoStreamSource) => boolean) => {
     let muxed = collectMuxed(detail, keep);
     const splits = buildAllSplitVariants(detail, keep);
-    muxed = dropMuxedWhenSplitMatchesResolution(muxed, splits);
+    muxed = dropMuxedWhenSplitMatchesResolution(muxed, splits, detail);
     const ranked: PlayableWithRank[] = [...muxed, ...splits];
     ranked.sort(sortPlayable);
     return dedupeOneVariantPerQualityRung(ranked);
   };
+
+  if (options?.shorts) {
+    let merged = buildMerged(sourceLooksLikeVideoPane);
+    if (merged.length === 0) {
+      merged = buildMerged(() => true);
+    }
+    if (merged.length > 0) {
+      return {
+        kind: "progressive",
+        variants: preferPlaybackDefault(buildFullQualitySelectorList(merged)),
+        onlyDashOrUnsupported: false,
+      };
+    }
+    if (detail.hlsUrl) {
+      return { kind: "hls", url: detail.hlsUrl, onlyDashOrUnsupported: false };
+    }
+    for (const s of detail.videoSources) {
+      const u = s.url;
+      if (u && isHlsPath(u)) {
+        return { kind: "hls", url: u, onlyDashOrUnsupported: false };
+      }
+    }
+    if (detail.dashUrl) {
+      return { kind: "none", onlyDashOrUnsupported: true };
+    }
+    return { kind: "none", onlyDashOrUnsupported: false };
+  }
 
   // Prefer progressive (split) over HLS when Invidious exposes ≥2 audio
   // languages: HLS manifests routinely lose `LANGUAGE="..."` on EXT-X-MEDIA
@@ -451,12 +519,9 @@ export function buildWatchPlayback(detail: VideoDetail): WatchPlayback {
   // we actually have a video-only progressive pane to pair with the audio
   // tracks, otherwise the player has nothing useful to render.
   const preferSplitForLanguages =
+    !options?.shorts &&
     countDistinctAudioLanguages(detail) >= 2 &&
     hasUsableProgressiveVideoPane(detail);
-
-  if (detail.hlsUrl && !preferSplitForLanguages) {
-    return { kind: "hls", url: detail.hlsUrl, onlyDashOrUnsupported: false };
-  }
 
   // Drop sources that are clearly audio-only / no video plane; if that
   // removes everything, fall back to the unfiltered list (rare bad metadata).
@@ -465,10 +530,27 @@ export function buildWatchPlayback(detail: VideoDetail): WatchPlayback {
     merged = buildMerged(() => true);
   }
 
-  if (merged.length > 0) {
+  // Piped progressive URLs are known at page load. HLS tiers only appear after
+  // hls.js parses the manifest (often post-play), which made the quality menu
+  // look stuck on 360p when opened before playback.
+  if (isPipedLike && merged.length > 0) {
+    const variants = preferPlaybackDefault(buildFullQualitySelectorList(merged));
     return {
       kind: "progressive",
-      variants: buildFullQualitySelectorList(merged),
+      variants,
+      onlyDashOrUnsupported: false,
+    };
+  }
+
+  if (detail.hlsUrl && !preferSplitForLanguages) {
+    return { kind: "hls", url: detail.hlsUrl, onlyDashOrUnsupported: false };
+  }
+
+  if (merged.length > 0) {
+    const variants = preferPlaybackDefault(buildFullQualitySelectorList(merged));
+    return {
+      kind: "progressive",
+      variants,
       onlyDashOrUnsupported: false,
     };
   }

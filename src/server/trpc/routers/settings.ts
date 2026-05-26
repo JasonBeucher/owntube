@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
+import { defaultPlaybackQualitySchema } from "@/lib/default-playback-quality";
 import {
   interactions,
   subscriptions,
@@ -8,11 +9,16 @@ import {
 } from "@/server/db/schema";
 import {
   appSettingsSchema,
+  getUserProxyOverrides,
   getUserSettings,
   upsertUserSettings,
 } from "@/server/settings/profile";
 import { clearRecommendationCachesForUser } from "@/server/recommendation/engine";
-import { clearProxyCaches } from "@/server/services/proxy";
+import {
+  clearProxyCaches,
+  getInstanceSourceInfo,
+  resolveEffectiveProxyBases,
+} from "@/server/services/proxy";
 import { protectedProcedure, router } from "@/server/trpc/init";
 
 const settingsPatchSchema = z.object({
@@ -23,6 +29,7 @@ const settingsPatchSchema = z.object({
   hideRestrictedVideos: z.boolean().optional(),
   defaultCinemaMode: z.boolean().optional(),
   enableMiniPlayer: z.boolean().optional(),
+  defaultPlaybackQuality: defaultPlaybackQualitySchema.optional(),
 });
 
 const healthCheckInputSchema = z.object({
@@ -75,9 +82,13 @@ async function checkUrl(url: string): Promise<boolean> {
 }
 
 export const settingsRouter = router({
-  get: protectedProcedure.query(({ ctx }) =>
-    getUserSettings(ctx.db, ctx.userId),
-  ),
+  get: protectedProcedure.query(({ ctx }) => {
+    const settings = getUserSettings(ctx.db, ctx.userId);
+    return {
+      ...settings,
+      instanceSources: getInstanceSourceInfo(settings),
+    };
+  }),
 
   update: protectedProcedure
     .input(settingsPatchSchema)
@@ -89,15 +100,20 @@ export const settingsRouter = router({
     .input(healthCheckInputSchema.optional())
     .query(async ({ ctx, input }) => {
       const current = getUserSettings(ctx.db, ctx.userId);
-      const pipedBase =
-        input?.pipedBaseUrl?.trim() || current.pipedBaseUrl || "";
-      const invidiousBase =
-        input?.invidiousBaseUrl?.trim() || current.invidiousBaseUrl || "";
+      const overrides =
+        input?.pipedBaseUrl !== undefined ||
+        input?.invidiousBaseUrl !== undefined
+          ? {
+              pipedBaseUrl: input.pipedBaseUrl ?? current.pipedBaseUrl,
+              invidiousBaseUrl: input.invidiousBaseUrl ?? current.invidiousBaseUrl,
+            }
+          : getUserProxyOverrides(ctx.db, ctx.userId);
+      const { pipedBase, invidiousBase } = resolveEffectiveProxyBases(overrides);
       const pipedOk = pipedBase
-        ? await checkUrl(`${pipedBase.replace(/\/+$/, "")}/trending?region=US`)
+        ? await checkUrl(`${pipedBase}/trending?region=US`)
         : null;
       const invidiousOk = invidiousBase
-        ? await checkUrl(`${invidiousBase.replace(/\/+$/, "")}/api/v1/stats`)
+        ? await checkUrl(`${invidiousBase}/api/v1/stats`)
         : null;
       return {
         pipedOk,

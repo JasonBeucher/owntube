@@ -9,9 +9,13 @@ type Props = {
 };
 
 export function SidebarSubscriptions({ enabled }: Props) {
-  const { data, isLoading } = trpc.subscriptions.listDetailed.useQuery(
-    { limit: 80 },
-    { enabled },
+  const { data, isLoading } = trpc.subscriptions.listSidebar.useQuery(
+    { limit: 24 },
+    {
+      enabled,
+      staleTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
+    },
   );
 
   if (!enabled) return null;

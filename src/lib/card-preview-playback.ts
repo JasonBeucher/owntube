@@ -25,9 +25,92 @@ function heightFromQualityLabel(label: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function streamHeightPx(
+  s: VideoDetail["videoSources"][number],
+): number | null {
+  if (typeof s.height === "number" && s.height > 0) return s.height;
+  if (s.quality) return heightFromQualityLabel(s.quality);
+  return null;
+}
+
+function isDashOrHlsUrl(url: string): boolean {
+  const l = url.toLowerCase();
+  return (
+    l.includes(".m3u8") ||
+    l.includes("/manifest/hls/") ||
+    l.includes(".mpd") ||
+    l.includes("/manifest/dash/") ||
+    l.includes("/api/manifest/dash")
+  );
+}
+
+function qualityLooksHighRes(quality: string | undefined): boolean {
+  const q = (quality ?? "").toLowerCase();
+  return /2160|1440|1080|720|480|4k|uhd|hd1080|hd720|hd1440|hd2160/.test(q);
+}
+
+function isProgressiveMuxed(s: VideoDetail["videoSources"][number]): boolean {
+  if (!s.url || isDashOrHlsUrl(s.url)) return false;
+  if (s.videoOnly === true) return false;
+  const mt = (s.mimeType ?? "").toLowerCase();
+  if (mt.startsWith("audio/")) return false;
+  return true;
+}
+
+function isLikelyPreviewMuxed(s: VideoDetail["videoSources"][number]): boolean {
+  if (!isProgressiveMuxed(s)) return false;
+  const height = streamHeightPx(s);
+  if (height !== null) return height <= PREVIEW_MAX_HEIGHT_PX;
+  return !qualityLooksHighRes(s.quality);
+}
+
+/**
+ * Hover preview needs a single progressive URL when possible. Watch playback
+ * may drop low-rung muxed rows when split exists; raw `videoSources` still
+ * expose the legacy combined itag (often 360p) that previews prefer.
+ */
+function findPreviewMuxedUrl(detail: VideoDetail): string | null {
+  let best: { url: string; score: number } | null = null;
+  for (const s of detail.videoSources) {
+    if (!isLikelyPreviewMuxed(s)) continue;
+    const height = streamHeightPx(s) ?? PREVIEW_MAX_HEIGHT_PX;
+    const br =
+      typeof s.bitrate === "number" && Number.isFinite(s.bitrate)
+        ? s.bitrate
+        : height * 500_000;
+    const score = height * 10_000 + br;
+    if (!best || score < best.score) {
+      best = { url: s.url!, score };
+    }
+  }
+  return best?.url ?? null;
+}
+
+/** Silent video-only preview when no muxed row exists (muted card hover). */
+function findPreviewVideoOnlyUrl(detail: VideoDetail): string | null {
+  let best: { url: string; score: number } | null = null;
+  for (const s of detail.videoSources) {
+    if (!s.url || s.videoOnly !== true || isDashOrHlsUrl(s.url)) continue;
+    const mt = (s.mimeType ?? "").toLowerCase();
+    if (mt.startsWith("audio/")) continue;
+    const height = streamHeightPx(s);
+    if (height !== null && height > PREVIEW_MAX_HEIGHT_PX) continue;
+    if (height === null && qualityLooksHighRes(s.quality)) continue;
+    const br =
+      typeof s.bitrate === "number" && Number.isFinite(s.bitrate)
+        ? s.bitrate
+        : (height ?? PREVIEW_MAX_HEIGHT_PX) * 500_000;
+    const score = (height ?? PREVIEW_MAX_HEIGHT_PX) * 10_000 + br;
+    if (!best || score < best.score) {
+      best = { url: s.url, score };
+    }
+  }
+  return best?.url ?? null;
+}
+
 /**
  * Prefer muxed (one URL = video+audio in sync) when possible, then any rung
- * ≤360p, then lowest muxed, then lowest overall.
+ * ≤360p (lowest first for faster start), then lowest muxed, then lowest overall.
  */
 function pickPreviewProxiedVariant(
   variants: ProxiedPlayableVariant[],
@@ -40,7 +123,9 @@ function pickPreviewProxiedVariant(
       return v;
     }
   }
-  for (const v of variants) {
+  for (let i = variants.length - 1; i >= 0; i--) {
+    const v = variants[i];
+    if (!v) continue;
     const h = heightFromQualityLabel(v.label);
     if (h !== null && h <= PREVIEW_MAX_HEIGHT_PX) return v;
   }
@@ -61,6 +146,28 @@ export function cardPreviewPlaybackFromDetail(
   appOrigin: string,
   requestHost: string,
 ): CardPreviewPlayback | null {
+  const directMuxed = findPreviewMuxedUrl(detail);
+  if (directMuxed) {
+    const src = toProxiedOrDirectPlayback(
+      directMuxed,
+      appOrigin,
+      requestHost,
+      detail,
+    );
+    return { kind: "muxed", src };
+  }
+
+  const silentVideo = findPreviewVideoOnlyUrl(detail);
+  if (silentVideo) {
+    const src = toProxiedOrDirectPlayback(
+      silentVideo,
+      appOrigin,
+      requestHost,
+      detail,
+    );
+    return { kind: "muxed", src };
+  }
+
   const raw = buildWatchPlayback(detail);
   if (raw.kind === "none") return null;
   if (raw.kind === "hls") {

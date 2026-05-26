@@ -1,7 +1,7 @@
 import { unstable_noStore as noStore } from "next/cache";
 import { ChannelSubscribeButton } from "@/components/channel/channel-subscribe-button";
+import { ChannelVideosSection } from "@/components/channel/channel-videos-section";
 import { ChannelAvatarCircle } from "@/components/videos/channel-avatar-circle";
-import { VideoGrid } from "@/components/videos/video-grid";
 import { auth } from "@/server/auth";
 import { channelPageInputSchema } from "@/server/services/proxy.types";
 import { createCaller } from "@/server/trpc/caller";
@@ -87,27 +87,13 @@ export default async function ChannelPage({ params }: ChannelPageProps) {
         </section>
       ) : null}
 
-      <section className="space-y-4">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight">Videos</h2>
-            <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-              {page.videos.length} result{page.videos.length === 1 ? "" : "s"}
-            </p>
-          </div>
-          <p className="rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-1.5 font-mono text-xs text-[hsl(var(--muted-foreground))]">
-            {page.sourceUsed}
-            {page.stale ? " · stale cache" : ""}
-          </p>
-        </div>
-        <VideoGrid videos={page.videos} size="large" />
-      </section>
-
-      {page.continuation ? (
-        <p className="text-sm text-[hsl(var(--muted-foreground))]">
-          More videos available — pagination UI can be added next.
-        </p>
-      ) : null}
+      <ChannelVideosSection
+        channelId={page.channelId}
+        initialVideos={page.videos}
+        initialContinuation={page.continuation}
+        sourceUsed={page.sourceUsed}
+        stale={page.stale}
+      />
     </main>
   );
 }

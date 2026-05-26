@@ -114,6 +114,54 @@ export function keepCandidateForPersonalizedFeed(
   return tag >= 0.04 || ch >= 0.03;
 }
 
+/** Gate regional shorts_discovery rows — always on for discovery source, softer when history is thin. */
+export function keepShortsDiscoveryCandidate(
+  video: UnifiedVideo,
+  signals: UserSignals,
+  corpusTitles: string[],
+  interestChannelIds: ReadonlySet<string>,
+): boolean {
+  if (video.channelId && interestChannelIds.has(video.channelId)) {
+    return true;
+  }
+  const tag =
+    corpusTitles.length > 0
+      ? titleTfidfSimilarity(video.title, corpusTitles)
+      : 0;
+  if (signals.totalWatches < 14) {
+    return tag >= 0.028 || (video.channelId != null && signals.channelWeights.has(video.channelId));
+  }
+  return keepCandidateForPersonalizedFeed(
+    video,
+    signals,
+    corpusTitles,
+    interestChannelIds,
+  );
+}
+
+/** Down-rank generic regional discovery that does not match taste. */
+export function shortsDiscoveryScorePenalty(
+  video: UnifiedVideo,
+  signals: UserSignals,
+  corpusTitles: string[],
+  candidateSource: string | undefined,
+  interestChannelIds: ReadonlySet<string>,
+): number {
+  if (candidateSource !== "shorts_discovery") return 0;
+  if (video.channelId && interestChannelIds.has(video.channelId)) return 0;
+  const tag =
+    corpusTitles.length > 0
+      ? titleTfidfSimilarity(video.title, corpusTitles)
+      : 0;
+  if (tag >= 0.05) return 0;
+  const ch = video.channelId
+    ? (signals.channelWeights.get(video.channelId) ?? 0) /
+      Math.max(1, ...signals.channelWeights.values())
+    : 0;
+  if (ch >= 0.04) return 0;
+  return 0.35;
+}
+
 /** Weighted pieces of `scoreCandidate`; they sum to the base score (within float noise). */
 export type RecommendationScoreBreakdown = {
   components: {

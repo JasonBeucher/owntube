@@ -122,6 +122,24 @@ export const playlistItems = sqliteTable(
   ],
 );
 
+/** Shorts the user scrolled past in the vertical feed (lifetime, separate from long-form history). */
+export const shortsSeen = sqliteTable(
+  "shorts_seen",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    videoId: text("video_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    seenAt: integer("seen_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("shorts_seen_user_video_uidx").on(t.userId, t.videoId),
+    index("shorts_seen_user_seen_idx").on(t.userId, t.seenAt),
+  ],
+);
+
 export const videoCache = sqliteTable(
   "video_cache",
   {

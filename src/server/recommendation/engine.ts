@@ -1,14 +1,20 @@
 import { and, eq } from "drizzle-orm";
 import { stripRestrictedListVideos } from "@/lib/feed-exclude-restricted";
 import { logger } from "@/lib/logger";
-import { pickNewestVideoPerChannel } from "@/lib/published-sort-key";
+import {
+  mergeVideosByIdPreferNewer,
+  pickNewestVideoPerChannel,
+} from "@/lib/published-sort-key";
 import type { AppDb } from "@/server/db/client";
 import { channelMeta, watchHistory } from "@/server/db/schema";
+import {
+  expandScoredPoolWithRelatedCandidates,
+  HOME_RELATED_LIMITS,
+} from "@/server/recommendation/collect-related-candidates";
 import { collectTaggedVideoCandidates } from "@/server/recommendation/collect-tagged-candidates";
 import {
   appendRecommendationDebugLog,
   recommendationDebugEnabled,
-  recommendationDebugLogFilePath,
 } from "@/server/recommendation/debug-file-log";
 import { maximalMarginalRelevance } from "@/server/recommendation/diversity";
 import {
@@ -16,6 +22,7 @@ import {
   type RecommendationScoreContext,
   scoreCandidateDetail,
 } from "@/server/recommendation/scoring";
+import { clearShortsRecommendationCacheForUser } from "@/server/recommendation/shorts-recommendation-pool";
 import { collectUserSignals } from "@/server/recommendation/signals";
 import { readCachedDetailTitlesForVideos } from "@/server/recommendation/taste-corpus";
 import type { ScoredVideo } from "@/server/recommendation/types";
@@ -27,6 +34,8 @@ export type RecommendationResult = {
   videos: UnifiedVideo[];
   coldStart: boolean;
   hasMore: boolean;
+  /** Pages available from the personalized pool (for trending tail pagination). */
+  personalizedPageCount: number;
 };
 
 type RecommendationPoolCacheEntry = {
@@ -72,6 +81,22 @@ function recommendationPoolCacheKey(
   return `${userId}|${region}|${opts.pageSize}|${piped}|${invidious}`;
 }
 
+function diversifiedRowToVideo(row: ScoredVideo): UnifiedVideo {
+  const {
+    rawScore: _r,
+    preMmrRawScore: _p,
+    scoreBreakdown: _b,
+    candidateSource: _c,
+    coldStartJitter: _j,
+    ...video
+  } = row;
+  return video;
+}
+
+function diversifiedToVideos(entry: RecommendationPoolCacheEntry): UnifiedVideo[] {
+  return stripRestrictedListVideos(entry.diversified.map(diversifiedRowToVideo));
+}
+
 function sliceRecommendationPool(
   entry: RecommendationPoolCacheEntry,
   page: number,
@@ -81,22 +106,17 @@ function sliceRecommendationPool(
   const pageRows = entry.diversified.slice(start, start + pageSize);
   const hasMore = start + pageRows.length < entry.diversified.length;
   const videos: UnifiedVideo[] = stripRestrictedListVideos(
-    pageRows.map((row) => {
-      const {
-        rawScore: _r,
-        preMmrRawScore: _p,
-        scoreBreakdown: _b,
-        candidateSource: _c,
-        coldStartJitter: _j,
-        ...video
-      } = row;
-      return video;
-    }),
+    pageRows.map(diversifiedRowToVideo),
+  );
+  const personalizedPageCount = Math.max(
+    1,
+    Math.ceil(entry.diversified.length / pageSize),
   );
   return {
     videos,
     coldStart: entry.coldStart,
     hasMore,
+    personalizedPageCount,
   };
 }
 
@@ -156,6 +176,7 @@ export function enrichVideosWithStoredChannelAvatars(
 }
 
 export function clearRecommendationCachesForUser(userId?: number): void {
+  clearShortsRecommendationCacheForUser(userId);
   if (typeof userId !== "number" || !Number.isFinite(userId) || userId <= 0) {
     recommendationPoolCache.clear();
     recommendationPoolInFlight.clear();
@@ -170,28 +191,43 @@ export function clearRecommendationCachesForUser(userId?: number): void {
   }
 }
 
-export async function getRecommendations(
+export async function getPersonalizedFeedVideos(
   db: AppDb,
   userId: number,
   opts: {
-    page: number;
     pageSize: number;
     region?: string;
     overrides?: ProxySourceOverrides;
   },
-): Promise<RecommendationResult> {
+): Promise<{ videos: UnifiedVideo[]; coldStart: boolean }> {
+  const entry = await ensureRecommendationPool(db, userId, opts);
+  return {
+    videos: diversifiedToVideos(entry),
+    coldStart: entry.coldStart,
+  };
+}
+
+async function ensureRecommendationPool(
+  db: AppDb,
+  userId: number,
+  opts: {
+    pageSize: number;
+    region?: string;
+    overrides?: ProxySourceOverrides;
+  },
+): Promise<RecommendationPoolCacheEntry> {
   const cacheKey = recommendationPoolCacheKey(userId, opts);
   const now = Date.now();
   const cached = recommendationPoolCache.get(cacheKey);
   if (cached && cached.expiresAt > now) {
-    return sliceRecommendationPool(cached, opts.page, opts.pageSize);
+    return cached;
   }
 
   const inFlight = recommendationPoolInFlight.get(cacheKey);
   if (inFlight) {
     const pool = await inFlight;
     if (pool.expiresAt > Date.now()) {
-      return sliceRecommendationPool(pool, opts.page, opts.pageSize);
+      return pool;
     }
   }
 
@@ -215,9 +251,6 @@ export async function getRecommendations(
       tagged: taggedCandidates,
       recentCoverageByChannel,
       coldStart,
-      needTrendingBlend,
-      canBuildFromHistory,
-      historyOnlyUnique,
     } = await collectTaggedVideoCandidates(db, userId, {
       region,
       overrides: opts.overrides,
@@ -228,27 +261,31 @@ export async function getRecommendations(
       recentCoverageByChannel,
     };
 
-    const byId = new Map<string, UnifiedVideo>();
-    const sourceByVideoId = new Map<string, string>();
-    for (const { video: v, source } of taggedCandidates) {
-      if (!byId.has(v.videoId)) {
-        byId.set(v.videoId, v);
-        sourceByVideoId.set(v.videoId, source);
-      }
-    }
     const nowSec = Math.floor(Date.now() / 1000);
+    const userSettings = getUserSettings(db, userId);
+    const blockedRecommendationChannels = new Set(
+      userSettings.blockedRecommendationChannels,
+    );
+    const { byId, sourceByVideoId } = mergeVideosByIdPreferNewer(
+      taggedCandidates,
+      nowSec,
+    );
+    /** One unwatched “head” per channel so TF-IDF cannot bury a newer upload under an older highlights row. */
     const uniqueRaw = pickNewestVideoPerChannel(
       stripRestrictedListVideos(
-        [...byId.values()].filter((v) => !watchedEver.has(v.videoId)),
+        [...byId.values()].filter(
+          (v) =>
+            !watchedEver.has(v.videoId) &&
+            !(v.channelId && blockedRecommendationChannels.has(v.channelId)),
+        ),
       ),
-      { nowSec, maxPerChannel: 12 },
+      { nowSec, maxPerChannel: 1 },
     );
     const unique = enrichVideosWithStoredChannelAvatars(db, uniqueRaw);
     const tasteVideoIds = Array.from(
       new Set([...signals.likedVideoIds, ...signals.savedVideoIds]),
     );
     const tasteTitles = readCachedDetailTitlesForVideos(db, tasteVideoIds, 72);
-    const userSettings = getUserSettings(db, userId);
     const keywordCorpus: string[] = [];
     for (const kw of userSettings.tasteKeywords) {
       const k = kw.trim();
@@ -302,6 +339,21 @@ export async function getRecommendations(
       scored.sort((a, b) => b.rawScore - a.rawScore);
     }
 
+    const { scored: expandedScored } =
+      await expandScoredPoolWithRelatedCandidates({
+        db,
+        scored,
+        coldStart,
+        limits: HOME_RELATED_LIMITS,
+        overrides: opts.overrides,
+        excludeVideoIds: watchedEver,
+        signals,
+        corpusTitles,
+        maxCh,
+        scoreContext,
+      });
+    scored = expandedScored;
+
     if (!coldStart) {
       const filtered = scored.filter((row) =>
         keepCandidateForPersonalizedFeed(
@@ -322,53 +374,6 @@ export async function getRecommendations(
       scored.slice(0, poolSize),
       poolSize,
     );
-    const start = (opts.page - 1) * opts.pageSize;
-    const pageRows = diversified.slice(start, start + opts.pageSize);
-
-    if (recommendationDebugEnabled()) {
-      const items = pageRows.map((row, i) => {
-        const passedTopicGate =
-          coldStart ||
-          keepCandidateForPersonalizedFeed(
-            row,
-            signals,
-            corpusTitles,
-            interestChannelIds,
-          );
-        return {
-          feedRank: start + i,
-          mmrPoolIndex: diversified.indexOf(row),
-          videoId: row.videoId,
-          title: clipTitle(row.title),
-          channelId: row.channelId ?? null,
-          candidateSource: row.candidateSource ?? null,
-          rankScore: row.preMmrRawScore ?? row.rawScore,
-          mmrNormalizedRelevance: row.rawScore,
-          coldStartJitter: row.coldStartJitter ?? 0,
-          passedTopicGate,
-          score: row.scoreBreakdown?.components ?? null,
-          inputs: row.scoreBreakdown?.inputs ?? null,
-        };
-      });
-      const payload = {
-        msg: "recommendation.debug_page",
-        userId,
-        page: opts.page,
-        pageSize: opts.pageSize,
-        region,
-        coldStart,
-        needTrendingBlend,
-        canBuildFromHistory,
-        historyOnlyUnique,
-        poolSize,
-        totalCandidatesUnique: unique.length,
-        totalWatches: signals.totalWatches,
-        logFile: recommendationDebugLogFilePath(),
-        items,
-      };
-      logger.info("recommendation.debug_page", payload);
-      await appendRecommendationDebugLog(payload);
-    }
 
     return {
       expiresAt: Date.now() + RECOMMENDATION_POOL_CACHE_TTL_MS,
@@ -380,8 +385,51 @@ export async function getRecommendations(
   try {
     const pool = await task;
     recommendationPoolCache.set(cacheKey, pool);
-    return sliceRecommendationPool(pool, opts.page, opts.pageSize);
+    return pool;
   } finally {
     recommendationPoolInFlight.delete(cacheKey);
   }
+}
+
+export async function getRecommendations(
+  db: AppDb,
+  userId: number,
+  opts: {
+    page: number;
+    pageSize: number;
+    region?: string;
+    overrides?: ProxySourceOverrides;
+  },
+): Promise<RecommendationResult> {
+  const entry = await ensureRecommendationPool(db, userId, opts);
+  const result = sliceRecommendationPool(entry, opts.page, opts.pageSize);
+
+  if (recommendationDebugEnabled()) {
+    const start = (opts.page - 1) * opts.pageSize;
+    const pageRows = entry.diversified.slice(start, start + opts.pageSize);
+    const items = pageRows.map((row, i) => ({
+      feedRank: start + i,
+      mmrPoolIndex: entry.diversified.indexOf(row),
+      videoId: row.videoId,
+      title: clipTitle(row.title),
+      channelId: row.channelId ?? null,
+      candidateSource: row.candidateSource ?? null,
+      rankScore: row.preMmrRawScore ?? row.rawScore,
+      mmrNormalizedRelevance: row.rawScore,
+      coldStartJitter: row.coldStartJitter ?? 0,
+      score: row.scoreBreakdown?.components ?? null,
+      inputs: row.scoreBreakdown?.inputs ?? null,
+    }));
+    const payload = {
+      msg: "recommendation.debug_page",
+      userId,
+      page: opts.page,
+      pageSize: opts.pageSize,
+      items,
+    };
+    logger.info("recommendation.debug_page", payload);
+    await appendRecommendationDebugLog(payload);
+  }
+
+  return result;
 }

@@ -29,6 +29,12 @@ describe("settingsRouter", () => {
     const fetched = await caller.settings.get();
     expect(fetched.theme).toBe("dark");
     expect(fetched.invidiousBaseUrl).toBe("https://inv.example");
+    expect(fetched.instanceSources.invidious.profileOverride).toBe(
+      "https://inv.example",
+    );
+    expect(fetched.instanceSources.invidious.effectiveUrl).toBe(
+      "https://inv.example",
+    );
 
     const cleared = await caller.settings.clearCaches();
     expect(cleared.ok).toBe(true);

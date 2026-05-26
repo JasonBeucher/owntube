@@ -7,6 +7,10 @@ import {
   type CardPreviewPlayback,
   cardPreviewPlaybackFromDetail,
 } from "@/lib/card-preview-playback";
+import {
+  applyVideoThumbnailImgError,
+  preferHighResVideoThumbnailUrl,
+} from "@/lib/video-thumbnail-url";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/trpc/react";
 
@@ -92,6 +96,11 @@ export function VideoCardThumbnailInteractive({
     return () => window.clearTimeout(t);
   }, [pointerInside]);
 
+  const displayThumbnailUrl = useMemo(
+    () => preferHighResVideoThumbnailUrl(thumbnailUrl, videoId),
+    [thumbnailUrl, videoId],
+  );
+
   const queryEnabled = pointerInside && dwellOk && videoId.length >= 11;
 
   const detailQuery = trpc.video.detail.useQuery(
@@ -128,7 +137,7 @@ export function VideoCardThumbnailInteractive({
     void (async () => {
       if (!v) return;
       v.playsInline = true;
-      v.preload = "auto";
+      v.preload = "metadata";
       v.volume = PREVIEW_VOLUME;
 
       if (playback.kind === "muxed") {
@@ -163,11 +172,12 @@ export function VideoCardThumbnailInteractive({
         };
         /** `play` fires before frames; only start companion audio once video paints. */
         const onVideoPlaying = () => {
+          if (previewMutedRef.current) return;
           align();
           void a.play().catch(() => {});
         };
         const onTime = () => {
-          if (v.paused) return;
+          if (v.paused || previewMutedRef.current) return;
           const drift = Math.abs(a.currentTime - v.currentTime);
           if (drift > 0.35) a.currentTime = v.currentTime;
         };
@@ -183,6 +193,12 @@ export function VideoCardThumbnailInteractive({
         };
         try {
           await v.play();
+          if (previewMutedRef.current) {
+            if (!cancelled && pointerInsideRef.current) {
+              previewActiveRef.current = true;
+            }
+            return;
+          }
           await waitForVideoPaint(v, 5000);
           if (cancelled) return;
           align();
@@ -275,7 +291,11 @@ export function VideoCardThumbnailInteractive({
       if (!previewMuted) v.volume = PREVIEW_VOLUME;
     } else if (playback.kind === "split" && a) {
       a.muted = previewMuted;
-      if (!previewMuted) a.volume = PREVIEW_VOLUME;
+      if (!previewMuted) {
+        a.volume = PREVIEW_VOLUME;
+        a.currentTime = v.currentTime;
+        if (!v.paused) void a.play().catch(() => {});
+      }
     }
   }, [previewMuted, playback]);
 
@@ -313,13 +333,14 @@ export function VideoCardThumbnailInteractive({
         className="relative block h-full w-full min-h-0"
         onClick={onThumbClick}
       >
-        {thumbnailUrl ? (
+        {displayThumbnailUrl ? (
           // biome-ignore lint/performance/noImgElement: third-party instance thumbnails
           <img
-            src={thumbnailUrl}
+            src={displayThumbnailUrl}
             alt=""
             className={cn(imgClassName, playback ? "opacity-0" : "opacity-100")}
             loading="lazy"
+            onError={(e) => applyVideoThumbnailImgError(e.currentTarget)}
           />
         ) : null}
         {/* biome-ignore lint/a11y/useMediaCaption: silent card preview */}

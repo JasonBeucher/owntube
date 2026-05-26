@@ -3,9 +3,13 @@ import type { UnifiedVideo } from "@/server/services/proxy.types";
 import {
   coercePublishedSecondsFromUpstream,
   compareSubscriptionHeads,
+  mergeVideosByIdPreferNewer,
+  mergeVideosNewestFirst,
   parseRelativePublishedToUnix,
   pickNewestVideoPerChannel,
   publishedSortKey,
+  sortVideosNewestFirst,
+  takeNewestVideos,
 } from "./published-sort-key";
 
 describe("parseRelativePublishedToUnix", () => {
@@ -50,6 +54,100 @@ describe("publishedSortKey", () => {
 describe("coercePublishedSecondsFromUpstream", () => {
   it("rejects tiny numeric values that are not plausible unix timestamps", () => {
     expect(coercePublishedSecondsFromUpstream(3_600)).toBeUndefined();
+  });
+});
+
+describe("takeNewestVideos", () => {
+  it("returns the newest rows by publishedSortKey, not upstream order", () => {
+    const now = 1_700_000_000;
+    const rows: UnifiedVideo[] = [
+      { videoId: "old", title: "old", publishedText: "30 days ago" },
+      { videoId: "mid", title: "mid", publishedText: "5 days ago" },
+      { videoId: "new", title: "new", publishedText: "2 hours ago" },
+    ];
+    expect(takeNewestVideos(rows, 2, now).map((v) => v.videoId)).toEqual([
+      "new",
+      "mid",
+    ]);
+  });
+});
+
+describe("sortVideosNewestFirst", () => {
+  it("orders by release date descending", () => {
+    const now = 1_700_000_000;
+    const rows: UnifiedVideo[] = [
+      { videoId: "b", title: "b", publishedText: "10 days ago" },
+      { videoId: "a", title: "a", publishedText: "1 hour ago" },
+      { videoId: "c", title: "c", publishedAt: now - 86400 },
+    ];
+    expect(sortVideosNewestFirst(rows, now).map((v) => v.videoId)).toEqual([
+      "a",
+      "c",
+      "b",
+    ]);
+  });
+});
+
+describe("mergeVideosNewestFirst", () => {
+  it("dedupes pages and sorts newest first", () => {
+    const now = 1_700_000_000;
+    const page1: UnifiedVideo[] = [
+      { videoId: "x", title: "x", publishedText: "2 days ago" },
+      { videoId: "y", title: "y", publishedText: "1 week ago" },
+    ];
+    const page2: UnifiedVideo[] = [
+      { videoId: "z", title: "z", publishedText: "3 hours ago" },
+      { videoId: "x", title: "x newer", publishedText: "1 hour ago" },
+    ];
+    expect(
+      mergeVideosNewestFirst([page1, page2], now).map((v) => v.videoId),
+    ).toEqual(["x", "z", "y"]);
+  });
+});
+
+describe("mergeVideosByIdPreferNewer", () => {
+  it("keeps the row with a higher publishedSortKey on duplicate videoId", () => {
+    const now = 1_700_000_000;
+    const stale: UnifiedVideo = {
+      videoId: "dup",
+      title: "stale",
+      publishedText: "1 year ago",
+    };
+    const fresh: UnifiedVideo = {
+      videoId: "dup",
+      title: "fresh",
+      publishedAt: now - 3600,
+    };
+    const { byId } = mergeVideosByIdPreferNewer(
+      [
+        { video: stale, source: "trending" },
+        { video: fresh, source: "history_channel:UCx" },
+      ],
+      now,
+    );
+    expect(byId.get("dup")?.title).toBe("fresh");
+  });
+
+  it("on equal dates prefers channel-page source over trending", () => {
+    const now = 1_700_000_000;
+    const trendingRow: UnifiedVideo = {
+      videoId: "dup",
+      title: "from trending",
+      publishedText: "1 day ago",
+    };
+    const channelRow: UnifiedVideo = {
+      videoId: "dup",
+      title: "from channel page",
+      publishedText: "1 day ago",
+    };
+    const { byId } = mergeVideosByIdPreferNewer(
+      [
+        { video: trendingRow, source: "trending" },
+        { video: channelRow, source: "history_channel:UCy" },
+      ],
+      now,
+    );
+    expect(byId.get("dup")?.title).toBe("from channel page");
   });
 });
 

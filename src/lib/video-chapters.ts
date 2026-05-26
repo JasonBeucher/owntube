@@ -1,10 +1,19 @@
+import {
+  looksLikeHtmlDescription,
+  normalizePipedDescription,
+} from "@/lib/normalize-video-description";
+
 export type VideoChapter = {
   startSeconds: number;
   title: string;
 };
 
 const CHAPTER_LINE_REGEX =
-  /(?:^|\s)(\d{1,2}):([0-5]\d)(?::([0-5]\d))?\s+(.+?)\s*$/;
+  /(?:^|\s)(\d{1,2}):([0-5]\d)(?::([0-5]\d))?(?:\s*[-–—]\s*|\s+)(.+?)\s*$/;
+
+function normalizeChapterLine(line: string): string {
+  return line.replace(/^[-•*▪►]\s+/, "").trim();
+}
 
 function parseTimestampToSeconds(match: RegExpMatchArray): number {
   const hourOrMinute = Number.parseInt(match[1] ?? "0", 10);
@@ -22,9 +31,13 @@ export function parseChaptersFromDescription(
 ): VideoChapter[] {
   if (!description) return [];
 
-  const lines = description
+  const plain = looksLikeHtmlDescription(description)
+    ? normalizePipedDescription(description)
+    : description;
+
+  const lines = plain
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map((line) => normalizeChapterLine(line.trim()))
     .filter((line) => line.length > 0);
   if (lines.length === 0) return [];
 

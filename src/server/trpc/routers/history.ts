@@ -1,6 +1,8 @@
 import { and, desc, eq, like, or } from "drizzle-orm";
 import { z } from "zod";
 import { watchHistory } from "@/server/db/schema";
+import { clearRecommendationCachesForUser } from "@/server/recommendation/engine";
+import { loadWatchedVideoIdsForRecommendations } from "@/server/recommendation/watched-videos";
 import { fetchVideoDetail } from "@/server/services/proxy";
 import { getUserProxyOverrides } from "@/server/settings/profile";
 import { protectedProcedure, router } from "@/server/trpc/init";
@@ -28,6 +30,9 @@ function nowUnix(): number {
 }
 
 export const historyRouter = router({
+  watchedVideoIds: protectedProcedure.query(({ ctx }) => {
+    return [...loadWatchedVideoIdsForRecommendations(ctx.db, ctx.userId)];
+  }),
   upsertEvent: protectedProcedure
     .input(historyEventInputSchema)
     .mutation(async ({ ctx, input }) => {
@@ -61,6 +66,9 @@ export const historyRouter = router({
           })
           .where(eq(watchHistory.id, recent.id))
           .run();
+        if (input.completed) {
+          clearRecommendationCachesForUser(ctx.userId);
+        }
         return { id: recent.id, updated: true };
       }
 
@@ -78,6 +86,9 @@ export const historyRouter = router({
         })
         .returning({ id: watchHistory.id })
         .get();
+      if (input.completed) {
+        clearRecommendationCachesForUser(ctx.userId);
+      }
       return { id: inserted.id, updated: false };
     }),
   list: protectedProcedure
