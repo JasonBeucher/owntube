@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { PageHeader } from "@/components/layout/page-header";
 import { SubscriptionUnfollowButton } from "@/components/subscriptions/subscription-unfollow-button";
-import { gradientForChannelId, initialsFromLabel } from "@/lib/channel-avatar";
+import { ChannelAvatarCircle } from "@/components/videos/channel-avatar-circle";
 import { auth } from "@/server/auth";
 import { createCaller } from "@/server/trpc/caller";
 
@@ -43,26 +43,11 @@ export default async function SubscriptionChannelsPage() {
                     href={`/channel/${encodeURIComponent(c.channelId)}`}
                     className="flex min-w-0 flex-1 items-center gap-3"
                   >
-                    {c.avatarUrl ? (
-                      <span className="relative h-10 w-10 shrink-0 overflow-hidden rounded-full bg-[hsl(var(--muted))]">
-                        {/* biome-ignore lint/performance/noImgElement: remote avatar URL */}
-                        <img
-                          src={c.avatarUrl}
-                          alt=""
-                          className="h-full w-full object-cover"
-                          loading="lazy"
-                        />
-                      </span>
-                    ) : (
-                      <span
-                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
-                        style={{
-                          background: gradientForChannelId(c.channelId),
-                        }}
-                      >
-                        {initialsFromLabel(label)}
-                      </span>
-                    )}
+                    <ChannelAvatarCircle
+                      imageUrl={c.avatarUrl ?? undefined}
+                      label={label}
+                      size="lg"
+                    />
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-semibold text-[hsl(var(--foreground))] group-hover:text-[hsl(var(--primary))]">
                         {label}

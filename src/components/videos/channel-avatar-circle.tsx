@@ -4,14 +4,14 @@ import { useEffect, useState } from "react";
 import {
   gradientForChannelId,
   initialsFromLabel,
-  resolveChannelAvatarUrl,
 } from "@/lib/channel-avatar";
+import { toBrowserChannelAvatarUrl } from "@/lib/channel-avatar-proxy";
 
 type ChannelAvatarCircleProps = {
   imageUrl?: string;
   /** Used for initials and gradient when there is no image or it fails to load. */
   label: string;
-  size?: "md" | "sm";
+  size?: "sm" | "md" | "lg";
 };
 
 export function ChannelAvatarCircle({
@@ -20,13 +20,18 @@ export function ChannelAvatarCircle({
   size = "md",
 }: ChannelAvatarCircleProps) {
   const [failed, setFailed] = useState(false);
-  const resolvedImageUrl = resolveChannelAvatarUrl(imageUrl);
+  const resolvedImageUrl = toBrowserChannelAvatarUrl(imageUrl);
   useEffect(() => {
     setFailed(false);
   }, [resolvedImageUrl]);
   const initials = initialsFromLabel(label);
   const avatarBg = gradientForChannelId(label);
-  const sizeClass = size === "sm" ? "h-6 w-6 text-[10px]" : "h-9 w-9 text-xs";
+  const sizeClass =
+    size === "sm"
+      ? "h-6 w-6 text-[10px]"
+      : size === "lg"
+        ? "h-10 w-10 text-sm"
+        : "h-9 w-9 text-xs";
   const showImg = Boolean(resolvedImageUrl) && !failed;
 
   return (
