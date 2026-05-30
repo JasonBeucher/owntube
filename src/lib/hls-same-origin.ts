@@ -156,7 +156,6 @@ export function buildHlsSameOriginConfig(
     maxBufferLength: 12,
     maxMaxBufferLength: 30,
     maxBufferHole: 0.5,
-    maxInitialBitrate: 1_500_000,
     xhrSetup(xhr, url) {
       const proxied = rewrite(url);
       if (proxied !== url) {

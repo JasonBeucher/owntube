@@ -42,6 +42,7 @@ import {
   companionAudioSyncThresholds,
 } from "@/lib/companion-audio-sync";
 import {
+  DEFAULT_PLAYBACK_QUALITY,
   type DefaultPlaybackQuality,
   readDefaultPlaybackQuality,
   variantIndexForDefaultQuality,
