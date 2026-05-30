@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   isActiveLiveVideo,
+  markUnifiedVideoAsActiveLive,
+  mergeActiveLiveVideosFirst,
   normalizeDurationForLive,
   pickLiveFlagsFromUpstream,
 } from "@/lib/live-video";
@@ -31,6 +33,20 @@ describe("pickLiveFlagsFromUpstream", () => {
     });
   });
 
+  it("reads Piped isLive alias", () => {
+    expect(pickLiveFlagsFromUpstream({ isLive: true })).toEqual({
+      isLive: true,
+      isUpcoming: false,
+    });
+  });
+
+  it("infers Piped list live from stream type and zero duration", () => {
+    expect(pickLiveFlagsFromUpstream({ type: "stream", duration: 0 })).toEqual({
+      isLive: true,
+      isUpcoming: false,
+    });
+  });
+
   it("reads Invidious liveNow and isUpcoming", () => {
     expect(pickLiveFlagsFromUpstream({ liveNow: true })).toEqual({
       isLive: true,
@@ -42,5 +58,61 @@ describe("pickLiveFlagsFromUpstream", () => {
       isLive: false,
       isUpcoming: true,
     });
+  });
+});
+
+describe("mergeActiveLiveVideosFirst", () => {
+  it("prepends live-only rows and tags duplicates", () => {
+    const merged = mergeActiveLiveVideosFirst(
+      [
+        {
+          videoId: "upload1",
+          title: "Upload",
+          durationSeconds: 600,
+        },
+        {
+          videoId: "live1",
+          title: "Live duplicate",
+          durationSeconds: 0,
+        },
+      ],
+      [
+        {
+          videoId: "live1",
+          title: "Live now",
+          durationSeconds: 0,
+        },
+        {
+          videoId: "live2",
+          title: "Other live",
+          durationSeconds: 0,
+        },
+      ],
+    );
+    expect(merged.map((v) => v.videoId)).toEqual(["live2", "upload1", "live1"]);
+    expect(merged.find((v) => v.videoId === "live1")?.isLive).toBe(true);
+    expect(merged.find((v) => v.videoId === "live1")?.durationSeconds).toBe(
+      undefined,
+    );
+  });
+
+  it("marks channel-tab live rows even without upstream flags", () => {
+    const merged = mergeActiveLiveVideosFirst(
+      [],
+      [{ videoId: "liveOnly", title: "Live", durationSeconds: 0 }],
+    );
+    expect(merged[0]?.isLive).toBe(true);
+    expect(merged[0]?.durationSeconds).toBeUndefined();
+  });
+});
+
+describe("markUnifiedVideoAsActiveLive", () => {
+  it("skips upcoming premieres", () => {
+    const row = markUnifiedVideoAsActiveLive({
+      videoId: "x",
+      isUpcoming: true,
+      durationSeconds: 0,
+    });
+    expect(row.isLive).toBeUndefined();
   });
 });

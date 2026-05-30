@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   collectAllowedChannelAvatarOrigins,
   invidiousAvatarProxyPath,
+  invidiousUpstreamProxyPath,
   isAllowedChannelAvatarFetchTarget,
   isYoutubeAvatarCdn,
   toBrowserChannelAvatarUrl,
+  toBrowserUpstreamImageUrl,
 } from "@/lib/channel-avatar-proxy";
 
 describe("isYoutubeAvatarCdn", () => {
@@ -28,6 +30,7 @@ describe("toBrowserChannelAvatarUrl", () => {
   });
 
   it("routes Invidious /vi/ paths through /invidious", () => {
+    process.env.INVIDIOUS_BASE_URL = "http://192.168.1.11:3210";
     const url = "http://192.168.1.11:3210/vi/UCabc/hqdefault.jpg";
     expect(toBrowserChannelAvatarUrl(url)).toBe(
       "/invidious/vi/UCabc/hqdefault.jpg",
@@ -44,9 +47,10 @@ describe("toBrowserChannelAvatarUrl", () => {
 
   it("repairs broken host-less URLs then proxies when needed", () => {
     process.env.INVIDIOUS_BASE_URL = "http://192.168.1.11:3210";
+    const repaired = "https://127.0.0.1:3210/vi/UCabc/hqdefault.jpg";
     expect(
       toBrowserChannelAvatarUrl("http://:3210/vi/UCabc/hqdefault.jpg"),
-    ).toBe("/invidious/vi/UCabc/hqdefault.jpg");
+    ).toBe(`/channel-avatar?url=${encodeURIComponent(repaired)}`);
   });
 });
 
@@ -81,8 +85,52 @@ describe("isAllowedChannelAvatarFetchTarget", () => {
   });
 });
 
-describe("invidiousAvatarProxyPath", () => {
-  it("returns null for non-invidious paths", () => {
+describe("toBrowserUpstreamImageUrl", () => {
+  afterEach(() => {
+    delete process.env.PIPED_BASE_URL;
+    delete process.env.PIPED_PROXY_BASE_URL;
+    delete process.env.INVIDIOUS_BASE_URL;
+  });
+
+  it("keeps HTTPS ytimg URLs direct", () => {
+    const url = "https://i.ytimg.com/vi/abc123/hqdefault.jpg";
+    expect(toBrowserUpstreamImageUrl(url)).toBe(url);
+  });
+
+  it("routes Invidious /vi/ through /invidious when origin matches", () => {
+    process.env.INVIDIOUS_BASE_URL = "http://192.168.1.11:3210";
+    const url = "http://192.168.1.11:3210/vi/abc123/hq720.jpg";
+    expect(toBrowserUpstreamImageUrl(url)).toBe(
+      "/invidious/vi/abc123/hq720.jpg",
+    );
+  });
+
+  it("proxies Piped proxy /vi/ via channel-avatar (not Invidious)", () => {
+    process.env.INVIDIOUS_BASE_URL = "http://192.168.1.11:3210";
+    process.env.PIPED_PROXY_BASE_URL = "http://192.168.1.11:8092";
+    const url =
+      "http://192.168.1.11:8092/vi/abc123/hq720.jpg?host=i.ytimg.com&rs=sig";
+    expect(toBrowserUpstreamImageUrl(url)).toBe(
+      `/channel-avatar?url=${encodeURIComponent(url)}`,
+    );
+  });
+});
+
+describe("invidiousUpstreamProxyPath", () => {
+  afterEach(() => {
+    delete process.env.INVIDIOUS_BASE_URL;
+  });
+
+  it("returns null for Piped proxy /vi/ on a different origin", () => {
+    process.env.INVIDIOUS_BASE_URL = "http://192.168.1.11:3210";
+    expect(
+      invidiousUpstreamProxyPath(
+        "http://192.168.1.11:8092/vi/abc123/hqdefault.jpg",
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null for non-/vi/ paths", () => {
     expect(
       invidiousAvatarProxyPath("http://192.168.1.11:8092/cache/x.jpg"),
     ).toBeNull();

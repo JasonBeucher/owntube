@@ -386,8 +386,9 @@ export function SettingsPanel({
               ))}
             </select>
             <p className="text-xs text-[hsl(var(--muted-foreground))]">
-              Used when a video opens. 360p muxed starts faster on Piped; 1080p
-              uses separate video and audio streams.
+              Used when a video opens. 720p or 360p muxed start faster; 1080p
+              uses separate video and audio streams (slower start, more
+              sensitive at 2× speed).
             </p>
           </div>
         </div>

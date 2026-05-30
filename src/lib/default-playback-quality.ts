@@ -19,8 +19,8 @@ export const DEFAULT_PLAYBACK_QUALITY_SELECT_OPTIONS: {
   value: DefaultPlaybackQuality;
   label: string;
 }[] = [
-  { value: "1080p", label: "1080p (recommended)" },
-  { value: "720p", label: "720p" },
+  { value: "1080p", label: "1080p" },
+  { value: "720p", label: "720p — fast start (recommended)" },
   { value: "480p", label: "480p" },
   { value: "360p", label: "360p" },
   { value: "360p-muxed", label: "360p muxed — fastest start (Piped)" },

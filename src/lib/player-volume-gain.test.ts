@@ -22,6 +22,11 @@ describe("player-volume-gain", () => {
   it("attenuates gain only above 1×", () => {
     expect(playbackRateVolumeAttenuation(1)).toBe(1);
     expect(playbackRateVolumeAttenuation(0.75)).toBe(1);
-    expect(playbackRateVolumeAttenuation(2)).toBeCloseTo(1 / Math.sqrt(2), 5);
+    expect(playbackRateVolumeAttenuation(1.75)).toBeCloseTo(
+      1 / Math.sqrt(1.75),
+      5,
+    );
+    expect(playbackRateVolumeAttenuation(2)).toBeCloseTo(1 / (2 * 1.3), 5);
+    expect(playbackRateVolumeAttenuation(4)).toBeCloseTo(1 / (4 * 1.3), 5);
   });
 });

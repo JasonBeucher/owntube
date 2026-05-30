@@ -163,16 +163,14 @@ export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
       style={{ width: open ? SHELL_SIDEBAR_WIDTH_PX : 0 }}
       className={cn(
         "flex h-full shrink-0 flex-col overflow-hidden bg-[hsl(var(--sidebar))] transition-[width,border-color] duration-200 ease-out",
-        open
-          ? "border-r border-[hsl(var(--border))]"
-          : "border-r-0",
+        open ? "border-r border-[hsl(var(--border))]" : "border-r-0",
       )}
     >
       <div
         className="flex h-full min-h-0 flex-col"
         style={{ width: SHELL_SIDEBAR_WIDTH_PX }}
       >
-        <div className="flex shrink-0 items-center gap-1 bg-[hsl(var(--sidebar))] px-5 pb-4 pt-5">
+        <div className="flex min-w-0 shrink-0 items-center gap-1 bg-[hsl(var(--sidebar))] px-3 pb-4 pt-5">
           <button
             type="button"
             className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]"
@@ -194,102 +192,103 @@ export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
               <line x1="3" y1="18" x2="21" y2="18" />
             </svg>
           </button>
-          <BrandLogo />
+          <BrandLogo compact className="min-w-0 shrink" />
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden px-2.5 pb-4 pt-3">
-        <nav className="flex flex-col gap-0.5">
-          {NAV.map((n) => {
-            const active = activeForPath(pathname, n.href, n.key);
-            return (
-              <Link
-                key={n.key}
-                href={n.href}
-                className={cn(
-                  "ot-shell-nav-link",
-                  active && "ot-shell-nav-link--active",
-                )}
-              >
-                <span className="inline-flex h-5 w-5 shrink-0 [&_svg]:h-full [&_svg]:w-full">
-                  {n.icon}
-                </span>
-                <span className="ot-shell-nav-label">{n.label}</span>
-              </Link>
-            );
-          })}
-        </nav>
+          <nav className="flex flex-col gap-0.5">
+            {NAV.map((n) => {
+              const active = activeForPath(pathname, n.href, n.key);
+              return (
+                <Link
+                  key={n.key}
+                  href={n.href}
+                  className={cn(
+                    "ot-shell-nav-link",
+                    active && "ot-shell-nav-link--active",
+                  )}
+                >
+                  <span className="inline-flex h-5 w-5 shrink-0 [&_svg]:h-full [&_svg]:w-full">
+                    {n.icon}
+                  </span>
+                  <span className="ot-shell-nav-label">{n.label}</span>
+                </Link>
+              );
+            })}
+          </nav>
 
-        <div className="mx-2.5 my-3.5 h-px bg-[hsl(var(--border))]" />
+          <div className="mx-2.5 my-3.5 h-px bg-[hsl(var(--border))]" />
 
-        <div className="flex flex-col gap-0.5">
-          <Link
-            href="/playlists"
-            className={cn(
-              "ot-shell-nav-link",
-              pathname.startsWith("/playlists") && "ot-shell-nav-link--active",
-            )}
-          >
-            <span className="inline-flex h-5 w-5 shrink-0 text-current">
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                aria-hidden
-              >
-                <title>Playlists</title>
-                <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
-              </svg>
-            </span>
-            <span className="ot-shell-nav-label">Playlists</span>
-          </Link>
-          <Link
-            href="/settings"
-            className={cn(
-              "ot-shell-nav-link",
-              pathname.startsWith("/settings") && "ot-shell-nav-link--active",
-            )}
-          >
-            <span className="inline-flex h-5 w-5 shrink-0">
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                aria-hidden
-              >
-                <title>Settings</title>
-                <circle cx="12" cy="12" r="3" />
-                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
-              </svg>
-            </span>
-            <span className="ot-shell-nav-label">Settings</span>
-          </Link>
-        </div>
+          <div className="flex flex-col gap-0.5">
+            <Link
+              href="/playlists"
+              className={cn(
+                "ot-shell-nav-link",
+                pathname.startsWith("/playlists") &&
+                  "ot-shell-nav-link--active",
+              )}
+            >
+              <span className="inline-flex h-5 w-5 shrink-0 text-current">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  aria-hidden
+                >
+                  <title>Playlists</title>
+                  <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+                </svg>
+              </span>
+              <span className="ot-shell-nav-label">Playlists</span>
+            </Link>
+            <Link
+              href="/settings"
+              className={cn(
+                "ot-shell-nav-link",
+                pathname.startsWith("/settings") && "ot-shell-nav-link--active",
+              )}
+            >
+              <span className="inline-flex h-5 w-5 shrink-0">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  aria-hidden
+                >
+                  <title>Settings</title>
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                </svg>
+              </span>
+              <span className="ot-shell-nav-label">Settings</span>
+            </Link>
+          </div>
 
-        {isLoggedIn ? (
-          <>
-            <div className="mx-2.5 my-3.5 h-px bg-[hsl(var(--border))]" />
-            <div>
-              <div className="px-3 pb-2 text-[11px] font-bold uppercase tracking-widest text-[hsl(var(--muted-foreground))]">
-                Following
+          {isLoggedIn ? (
+            <>
+              <div className="mx-2.5 my-3.5 h-px bg-[hsl(var(--border))]" />
+              <div>
+                <div className="px-3 pb-2 text-[11px] font-bold uppercase tracking-widest text-[hsl(var(--muted-foreground))]">
+                  Following
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <SidebarSubscriptions enabled={isLoggedIn} />
+                </div>
               </div>
-              <div className="flex flex-col gap-0.5">
-                <SidebarSubscriptions enabled={isLoggedIn} />
-              </div>
+            </>
+          ) : null}
+
+          <div className="mt-auto border-t border-[hsl(var(--border))] px-3 pb-2 pt-4 text-xs text-[hsl(var(--muted-foreground))]">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" />
+              <span>Feed from your instance</span>
             </div>
-          </>
-        ) : null}
-
-        <div className="mt-auto border-t border-[hsl(var(--border))] px-3 pb-2 pt-4 text-xs text-[hsl(var(--muted-foreground))]">
-          <div className="flex items-center gap-2">
-            <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" />
-            <span>Feed from your instance</span>
+            <div className="ot-mono-data mt-1.5 text-[11px] text-[hsl(var(--muted-foreground))]">
+              owntube
+            </div>
           </div>
-          <div className="ot-mono-data mt-1.5 text-[11px] text-[hsl(var(--muted-foreground))]">
-            owntube
-          </div>
-        </div>
         </div>
       </div>
     </aside>

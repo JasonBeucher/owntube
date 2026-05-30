@@ -16,7 +16,8 @@ function invidiousMediaPath(pathname: string): boolean {
   return (
     pathname.startsWith("/api/v1/") ||
     pathname.startsWith("/api/manifest/") ||
-    pathname.startsWith("/vi/")
+    pathname.startsWith("/vi/") ||
+    pathname.startsWith("/videoplayback")
   );
 }
 
@@ -146,12 +147,16 @@ export function buildHlsSameOriginConfig(
   appOrigin: string = getClientAppOrigin(),
 ): Partial<HlsConfig> {
   const rewrite = (url: string) => proxyUrlForHlsFetch(url, appOrigin);
-  const BaseLoader =
-    typeof fetch === "function" ? FetchLoader : XhrLoader;
+  const BaseLoader = typeof fetch === "function" ? FetchLoader : XhrLoader;
   const ProxiedLoader = createProxiedLoaderClass(BaseLoader, appOrigin);
 
   return {
     loader: ProxiedLoader,
+    startFragPrefetch: true,
+    maxBufferLength: 12,
+    maxMaxBufferLength: 30,
+    maxBufferHole: 0.5,
+    maxInitialBitrate: 1_500_000,
     xhrSetup(xhr, url) {
       const proxied = rewrite(url);
       if (proxied !== url) {

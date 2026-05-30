@@ -7,6 +7,7 @@ import {
 } from "@/lib/feed-exclude-restricted";
 import { invidiousPortCollidesWithNextApp } from "@/lib/invidious-port-collision";
 import {
+  mergeActiveLiveVideosFirst,
   normalizeDurationForLive,
   pickLiveFlagsFromUpstream,
 } from "@/lib/live-video";
@@ -440,7 +441,7 @@ function channelCacheKey(input: ChannelPageInput): string {
   const h = createHash("sha256")
     .update(
       JSON.stringify({
-        v: 3,
+        v: 4,
         kind: "channel",
         channelId: input.channelId,
         tab: input.tab ?? "videos",
@@ -448,7 +449,7 @@ function channelCacheKey(input: ChannelPageInput): string {
       }),
     )
     .digest("hex");
-  return `channel:v3:${h}`;
+  return `channel:v4:${h}`;
 }
 
 function extractVideoIdFromUrl(url: string): string | undefined {
@@ -632,7 +633,12 @@ function mapPipedItem(raw: unknown, pipedBase = ""): UnifiedVideo | null {
   if (!videoId || !title) return null;
   if (isUpstreamMembersOrPaidOnly(o)) return null;
   if (titleSuggestsMembersOnlyOrSubscriberOnly(title)) return null;
-  const thumbnail = typeof o.thumbnail === "string" ? o.thumbnail : undefined;
+  const thumbnail =
+    typeof o.thumbnail === "string"
+      ? o.thumbnail
+      : pickVideoThumbnail(o.thumbnails, videoId, {
+          preferPortrait: pipedItemIsShort(o),
+        });
   const rawDuration =
     typeof o.duration === "number" &&
     Number.isFinite(o.duration) &&
@@ -731,8 +737,10 @@ function mapPipedChannelItem(
 function resolveInvidiousThumbnail(
   thumbs: unknown,
   baseUrl: string,
+  opts?: { preferPortrait?: boolean },
 ): string | undefined {
   if (!Array.isArray(thumbs)) return undefined;
+  const portraitPreferred = ["oar2", "oardefault", "oar1", "oar3"];
   const preferred = [
     "maxresdefault",
     "sddefault",
@@ -747,15 +755,19 @@ function resolveInvidiousThumbnail(
   ];
   const candidates = new Map<string, string>();
   let bestByWidth: { w: number; url: string } | undefined;
+  let bestPortrait: { score: number; url: string } | undefined;
   const base = normalizeBaseUrl(baseUrl);
   for (const thumb of thumbs) {
     if (!thumb || typeof thumb !== "object") continue;
     const t = thumb as Record<string, unknown>;
     const u = typeof t.url === "string" ? t.url : "";
-    const q = typeof t.quality === "string" ? t.quality : "";
+    const q = typeof t.quality === "string" ? t.quality.toLowerCase() : "";
     const wRaw = t.width;
+    const hRaw = t.height;
     const w =
       typeof wRaw === "number" && Number.isFinite(wRaw) && wRaw > 0 ? wRaw : 0;
+    const h =
+      typeof hRaw === "number" && Number.isFinite(hRaw) && hRaw > 0 ? hRaw : 0;
     if (!u) continue;
     const resolved = resolveInvidiousAbsoluteMediaUrl(u, base);
     if (!resolved?.startsWith("http")) continue;
@@ -763,6 +775,19 @@ function resolveInvidiousThumbnail(
     if (w > 0 && (!bestByWidth || w > bestByWidth.w)) {
       bestByWidth = { w, url: resolved };
     }
+    if (opts?.preferPortrait && h > w && h > 0) {
+      const score = h * w;
+      if (!bestPortrait || score > bestPortrait.score) {
+        bestPortrait = { score, url: resolved };
+      }
+    }
+  }
+  if (opts?.preferPortrait) {
+    for (const q of portraitPreferred) {
+      const hit = candidates.get(q);
+      if (hit) return hit;
+    }
+    if (bestPortrait) return bestPortrait.url;
   }
   if (bestByWidth && bestByWidth.w >= 48) return bestByWidth.url;
   for (const q of preferred) {
@@ -869,8 +894,11 @@ function mapInvidiousItem(raw: unknown, baseUrl = ""): UnifiedVideo | null {
   if (!videoId || !title) return null;
   if (isUpstreamMembersOrPaidOnly(o)) return null;
   if (titleSuggestsMembersOnlyOrSubscriberOnly(title)) return null;
+  const isShortItem = itemType === "shortVideo";
   const thumbnailUrl = preferHighResVideoThumbnailUrl(
-    resolveInvidiousThumbnail(o.videoThumbnails, baseUrl),
+    resolveInvidiousThumbnail(o.videoThumbnails, baseUrl, {
+      preferPortrait: isShortItem,
+    }),
     videoId,
   );
   const rawDuration =
@@ -1367,8 +1395,10 @@ export async function searchVideos(
 function pickVideoThumbnail(
   thumbnails: unknown,
   videoId?: string,
+  opts?: { preferPortrait?: boolean },
 ): string | undefined {
   if (!Array.isArray(thumbnails)) return undefined;
+  const portraitPreferred = ["oar2", "oardefault", "oar1", "oar3"];
   const preferred = [
     "maxresdefault",
     "maxres",
@@ -1380,19 +1410,36 @@ function pickVideoThumbnail(
   ];
   const byQuality = new Map<string, string>();
   let bestByWidth: { w: number; url: string } | undefined;
+  let bestPortrait: { score: number; url: string } | undefined;
   for (const item of thumbnails) {
     if (!item || typeof item !== "object") continue;
     const row = item as Record<string, unknown>;
     const url = typeof row.url === "string" ? row.url : "";
     if (!url.startsWith("http")) continue;
-    const q = typeof row.quality === "string" ? row.quality : "";
-    if (q) byQuality.set(q.toLowerCase(), url);
+    const q = typeof row.quality === "string" ? row.quality.toLowerCase() : "";
+    if (q) byQuality.set(q, url);
     const wRaw = row.width;
+    const hRaw = row.height;
     const w =
       typeof wRaw === "number" && Number.isFinite(wRaw) && wRaw > 0 ? wRaw : 0;
+    const h =
+      typeof hRaw === "number" && Number.isFinite(hRaw) && hRaw > 0 ? hRaw : 0;
     if (w > 0 && (!bestByWidth || w > bestByWidth.w)) {
       bestByWidth = { w, url };
     }
+    if (opts?.preferPortrait && h > w && h > 0) {
+      const score = h * w;
+      if (!bestPortrait || score > bestPortrait.score) {
+        bestPortrait = { score, url };
+      }
+    }
+  }
+  if (opts?.preferPortrait) {
+    for (const q of portraitPreferred) {
+      const hit = byQuality.get(q);
+      if (hit) return preferHighResVideoThumbnailUrl(hit, videoId);
+    }
+    if (bestPortrait) return bestPortrait.url;
   }
   if (bestByWidth && bestByWidth.w >= 480) {
     return preferHighResVideoThumbnailUrl(bestByWidth.url, videoId);
@@ -3268,6 +3315,127 @@ function buildInvidiousChannelShortsUrl(
   return u.toString();
 }
 
+function buildInvidiousChannelStreamsUrl(
+  base: string,
+  channelId: string,
+): string {
+  const u = new URL(
+    `/api/v1/channels/${encodeURIComponent(channelId)}/streams`,
+    `${normalizeBaseUrl(base)}/`,
+  );
+  u.searchParams.set("sort_by", "newest");
+  return u.toString();
+}
+
+const PIPED_CHANNEL_LIVE_TAB_NAMES = new Set([
+  "live",
+  "streams",
+  "livestreams",
+  "live streams",
+]);
+
+async function fetchPipedChannelLiveTabVideos(
+  pipedBase: string,
+  channelId: string,
+  channelPayload: unknown,
+): Promise<UnifiedVideo[]> {
+  if (!channelPayload || typeof channelPayload !== "object") return [];
+  const tabs = (channelPayload as Record<string, unknown>).tabs;
+  if (!Array.isArray(tabs)) return [];
+  const out: UnifiedVideo[] = [];
+  for (const tab of tabs) {
+    if (!tab || typeof tab !== "object") continue;
+    const t = tab as Record<string, unknown>;
+    const tabName = typeof t.name === "string" ? t.name.toLowerCase() : "";
+    if (!PIPED_CHANNEL_LIVE_TAB_NAMES.has(tabName)) continue;
+    const data = typeof t.data === "string" ? t.data : null;
+    if (!data) continue;
+    try {
+      acquireUpstreamSlot();
+      const json = await fetchJson(buildPipedChannelTabsUrl(pipedBase, data));
+      out.push(
+        ...videosFromPipedListItems(
+          pipedListItemsFromPayload(json),
+          pipedBase,
+          channelId,
+          { excludeShorts: true },
+        ),
+      );
+    } catch (e) {
+      logger.warn("proxy.piped.channel_live_tab_failed", {
+        channelId,
+        tab: tabName,
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  return out;
+}
+
+async function fetchInvidiousChannelLiveStreams(
+  invidiousBase: string,
+  channelId: string,
+): Promise<UnifiedVideo[]> {
+  try {
+    acquireUpstreamSlot();
+    const json = await fetchJson(
+      buildInvidiousChannelStreamsUrl(invidiousBase, channelId),
+    );
+    const parsed = parseInvidiousChannelVideosContinuation(
+      json,
+      channelId,
+      invidiousBase,
+    );
+    return parsed?.videos ?? [];
+  } catch (e) {
+    logger.warn("proxy.invidious.channel_streams_failed", {
+      channelId,
+      message: e instanceof Error ? e.message : String(e),
+    });
+    return [];
+  }
+}
+
+async function enrichChannelVideosWithLiveStreams(
+  videos: UnifiedVideo[],
+  channelId: string,
+  opts: {
+    pipedBase?: string;
+    invidiousBase?: string;
+    sourceUsed: ChannelPageResult["sourceUsed"];
+    pipedChannelPayload?: unknown;
+  },
+): Promise<UnifiedVideo[]> {
+  const { pipedBase, invidiousBase, sourceUsed, pipedChannelPayload } = opts;
+  if (sourceUsed === "cache") return videos;
+  let liveCandidates: UnifiedVideo[] = [];
+  if (sourceUsed === "piped" && pipedBase) {
+    try {
+      let payload = pipedChannelPayload;
+      if (!payload) {
+        acquireUpstreamSlot();
+        payload = await fetchJson(buildPipedChannelUrl(pipedBase, channelId));
+      }
+      liveCandidates = await fetchPipedChannelLiveTabVideos(
+        pipedBase,
+        channelId,
+        payload,
+      );
+    } catch (e) {
+      logger.warn("proxy.piped.channel_live_enrich_failed", {
+        channelId,
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  } else if (sourceUsed === "invidious" && invidiousBase) {
+    liveCandidates = await fetchInvidiousChannelLiveStreams(
+      invidiousBase,
+      channelId,
+    );
+  }
+  return mergeActiveLiveVideosFirst(videos, liveCandidates);
+}
+
 function buildPipedChannelVideosSearchUrl(base: string, query: string): string {
   const u = new URL("/search", `${normalizeBaseUrl(base)}/`);
   u.searchParams.set("q", query);
@@ -3948,6 +4116,7 @@ export async function fetchChannelPage(
     const tab = input.tab ?? "videos";
 
     let resolved: ChannelPageResult | null = null;
+    let pipedChannelPayload: unknown;
 
     if (tab === "shorts") {
       if (pipedBase) {
@@ -3995,6 +4164,7 @@ export async function fetchChannelPage(
             )
           : buildPipedChannelUrl(pipedBase, input.channelId);
         const json = await fetchJson(url);
+        if (!input.continuation) pipedChannelPayload = json;
         resolved = input.continuation
           ? parsePipedChannelContinuation(json, input.channelId, pipedBase)
           : parsePipedChannelPage(json, input.channelId, pipedBase);
@@ -4098,6 +4268,22 @@ export async function fetchChannelPage(
       const stale = readStaleChannelCache(db, key);
       if (stale) return stale;
       throwIfUpstreamFailed(errors, "channel unavailable");
+    }
+
+    if (tab === "videos" && !input.continuation) {
+      resolved = {
+        ...resolved,
+        videos: await enrichChannelVideosWithLiveStreams(
+          resolved.videos,
+          input.channelId,
+          {
+            pipedBase,
+            invidiousBase,
+            sourceUsed: resolved.sourceUsed,
+            pipedChannelPayload,
+          },
+        ),
+      };
     }
 
     const nowSec = Math.floor(Date.now() / 1000);

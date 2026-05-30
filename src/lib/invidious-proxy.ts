@@ -67,7 +67,8 @@ export function shouldUseInvidiousProxyForUrl(
     if (
       path.startsWith("/api/v1/") ||
       path.startsWith("/api/manifest/") ||
-      path.startsWith("/vi/")
+      path.startsWith("/vi/") ||
+      path.startsWith("/videoplayback")
     ) {
       return true;
     }
@@ -122,7 +123,10 @@ export function rewriteYouTubeUrlsInM3u8(
   });
 }
 
-function isOwnTubeInvidiousHopUrl(absoluteUrl: string, appOrigin: string): boolean {
+function isOwnTubeInvidiousHopUrl(
+  absoluteUrl: string,
+  appOrigin: string,
+): boolean {
   try {
     const u = new URL(absoluteUrl);
     const app = new URL(appOrigin);
@@ -223,6 +227,29 @@ export function rewriteHlsPlaylistMediaUrls(
   return out.join("\n");
 }
 
+/**
+ * Invidious `local=true` can emit `http://:3210/...` when domain is unset in config.
+ * Rewrite those to our same-origin `/invidious` hop before hls.js loads child playlists.
+ */
+function rewriteMalformedInvidiousPortUrls(
+  body: string,
+  invidiousBase: string,
+  proxyRoot: string,
+): string {
+  let port: string;
+  try {
+    port = new URL(invidiousBase).port;
+  } catch {
+    return body;
+  }
+  if (!port) return body;
+  return body
+    .split(`http://:${port}/`)
+    .join(`${proxyRoot}/`)
+    .split(`https://:${port}/`)
+    .join(`${proxyRoot}/`);
+}
+
 export function rewriteM3u8ForOwnTubeProxy(
   body: string,
   appOrigin: string,
@@ -252,7 +279,78 @@ export function rewriteM3u8ForOwnTubeProxy(
   for (const o of order) {
     t = t.split(o).join(proxyRoot);
   }
-  return t;
+  return rewriteMalformedInvidiousPortUrls(t, base, proxyRoot);
+}
+
+function isInvidiousLocalVideoplaybackReference(raw: string): boolean {
+  return /(?:^|\/)videoplayback\?/i.test(raw.trim());
+}
+
+/**
+ * Invidious `local=true` lists `/videoplayback?id=…&host=….c.youtube.com&…`.
+ * That hop 403s on many instances; rebuild a googlevideo URL for `/yt-hls`.
+ */
+export function googlevideoUrlFromInvidiousVideoplaybackReference(
+  raw: string,
+): string | null {
+  const trimmed = raw.trim();
+  if (!isInvidiousLocalVideoplaybackReference(trimmed)) return null;
+  try {
+    let parsed: URL;
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+      try {
+        parsed = new URL(trimmed);
+      } catch {
+        const q = trimmed.indexOf("?");
+        if (q < 0) return null;
+        parsed = new URL(`http://local.invalid/videoplayback${trimmed.slice(q)}`);
+      }
+    } else {
+      parsed = new URL(trimmed, "http://local.invalid");
+    }
+    if (!parsed.pathname.endsWith("/videoplayback")) return null;
+    const host =
+      parsed.searchParams.get("host") ??
+      parsed.searchParams.get("hls_chunk_host");
+    if (!host || !isYoutubeFamilyHostname(host)) return null;
+    const params = new URLSearchParams(parsed.search);
+    params.delete("host");
+    params.delete("hls_chunk_host");
+    return `https://${host}/videoplayback?${params.toString()}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Rewrite Invidious local segment lines to `/yt-hls` googlevideo hops. */
+export function rewriteInvidiousVideoplaybackLinesToYtHls(
+  body: string,
+  appOrigin: string,
+): string {
+  const lines = body.split(/\r?\n/);
+  const out: string[] = [];
+
+  for (const line of lines) {
+    let next = line.replace(/URI="([^"]+)"/gi, (_match, uri: string) => {
+      const googlevideo =
+        googlevideoUrlFromInvidiousVideoplaybackReference(uri);
+      if (!googlevideo) return `URI="${uri}"`;
+      return `URI="${toYouTubeHopProxyUrl(googlevideo, appOrigin)}"`;
+    });
+
+    const trimmed = next.trim();
+    if (trimmed && !trimmed.startsWith("#")) {
+      const googlevideo =
+        googlevideoUrlFromInvidiousVideoplaybackReference(trimmed);
+      if (googlevideo) {
+        next = toYouTubeHopProxyUrl(googlevideo, appOrigin);
+      }
+    }
+
+    out.push(next);
+  }
+
+  return out.join("\n");
 }
 
 /** Invidious base rewrite plus YouTube/googlevideo hop (for hls.js). */
@@ -269,6 +367,7 @@ export function rewriteM3u8AllProxies(
   if (manifestUrl) {
     t = rewriteHlsPlaylistMediaUrls(t, appOrigin, manifestUrl, inv);
   }
+  t = rewriteInvidiousVideoplaybackLinesToYtHls(t, appOrigin);
   t = rewriteYouTubeUrlsInM3u8(t, appOrigin);
   return t;
 }
@@ -320,13 +419,7 @@ export function toProxiedOrDirectPlayback(
   detail: VideoDetail,
 ): string {
   if (!rawPlayback) return rawPlayback;
-  let playback = rawPlayback;
-  if (
-    detail.sourceUsed === "invidious" &&
-    isInvidiousHlsManifestUrl(rawPlayback)
-  ) {
-    playback = withInvidiousLocalHlsParam(playback);
-  }
+  const playback = rawPlayback;
   if (shouldUseInvidiousProxyForUrl(detail, playback)) {
     return toInvidiousProxyUrl(playback, appOrigin);
   }

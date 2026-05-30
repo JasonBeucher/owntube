@@ -3,7 +3,9 @@ import {
   applyVideoThumbnailImgError,
   isLowerTierVideoThumbnailFilename,
   nextFallbackVideoThumbnailUrl,
+  preferHeroVideoThumbnailUrl,
   preferHighResVideoThumbnailUrl,
+  preferShortVideoThumbnailUrl,
 } from "@/lib/video-thumbnail-url";
 
 describe("video-thumbnail-url", () => {
@@ -84,6 +86,51 @@ describe("video-thumbnail-url", () => {
     const raw = "https://i.ytimg.com/vi/x/maxresdefault.webp";
     expect(nextFallbackVideoThumbnailUrl(raw)).toBe(
       "https://i.ytimg.com/vi/x/hqdefault.webp",
+    );
+  });
+
+  it("prefers maxres on YouTube CDN for hero when videoId is known", () => {
+    const piped =
+      "http://192.168.1.11:8092/vi/abc123/hq720.jpg?host=i.ytimg.com&rs=sig";
+    expect(preferHeroVideoThumbnailUrl(piped, "abc123")).toBe(
+      "https://i.ytimg.com/vi/abc123/maxresdefault.jpg",
+    );
+  });
+
+  it("hero falls back to hqdefault when videoId is missing", () => {
+    expect(
+      preferHeroVideoThumbnailUrl("https://i.ytimg.com/vi/x/hq720.jpg"),
+    ).toBe("https://i.ytimg.com/vi/x/maxresdefault.jpg");
+  });
+
+  it("prefers oar2 for Shorts when only videoId is known", () => {
+    expect(preferShortVideoThumbnailUrl(undefined, "abc123")).toBe(
+      "https://i.ytimg.com/vi/abc123/oar2.jpg",
+    );
+  });
+
+  it("keeps signed Piped Short thumbs unchanged", () => {
+    const raw =
+      "http://192.168.1.11:8092/vi/abc123/hq720.jpg?host=i.ytimg.com&rs=sig";
+    expect(preferShortVideoThumbnailUrl(raw, "abc123")).toBe(raw);
+  });
+
+  it("keeps same-origin proxied Short thumbs unchanged", () => {
+    const raw = "/invidious/vi/abc123/oar2.jpg";
+    expect(preferShortVideoThumbnailUrl(raw, "abc123")).toBe(raw);
+  });
+
+  it("falls back oar2 to oardefault for Short variant", () => {
+    const raw = "https://i.ytimg.com/vi/x/oar2.jpg";
+    expect(nextFallbackVideoThumbnailUrl(raw, { variant: "short" })).toBe(
+      "https://i.ytimg.com/vi/x/oardefault.jpg",
+    );
+  });
+
+  it("falls back oardefault to maxres for Short variant", () => {
+    const raw = "https://i.ytimg.com/vi/x/oardefault.jpg";
+    expect(nextFallbackVideoThumbnailUrl(raw, { variant: "short" })).toBe(
+      "https://i.ytimg.com/vi/x/maxresdefault.jpg",
     );
   });
 

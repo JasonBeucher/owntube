@@ -55,12 +55,8 @@ export function formatThumbnailBadge({
   isUpcoming,
 }: ThumbnailBadgeInput): string | null {
   if (isUpcoming) return "Upcoming";
-  if (isLive) return "LIVE";
+  if (isLive) return "Live";
   return formatDuration(durationSeconds);
-}
-
-export function thumbnailBadgeIsLiveAccent(label: string | null): boolean {
-  return label === "LIVE";
 }
 
 function formatRelativeFromNow(secondsSinceEpoch: number): string | null {

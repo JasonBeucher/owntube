@@ -52,6 +52,23 @@ async function fetchInvidiousUpstream(
   return r;
 }
 
+const INVIDIOUS_PROXY_PREFIX = "/invidious/";
+
+/** Next.js `[[...path]]` splits on commas; live HLS URLs embed raw `,` in signed paths. */
+export function subpathFromInvidiousProxyRequest(
+  requestUrl: string,
+): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(requestUrl).pathname;
+  } catch {
+    return null;
+  }
+  if (!pathname.startsWith(INVIDIOUS_PROXY_PREFIX)) return null;
+  const subpath = pathname.slice(INVIDIOUS_PROXY_PREFIX.length);
+  return subpath.length > 0 ? subpath : null;
+}
+
 /**
  * Stream Invidious media (HLS, segments, poster) with the same origin as
  * OwnTube so the browser and hls.js are not blocked by CORS. Playlists
@@ -69,8 +86,18 @@ export async function GET(
   }
 
   const { path: segs } = await context.params;
-  const subpath = (segs ?? []).join("/");
-  const search = new URL(request.url).search;
+  const subpathFromPath =
+    (segs ?? []).length > 0 ? (segs ?? []).join("/") : null;
+  const subpath =
+    subpathFromInvidiousProxyRequest(request.url) ?? subpathFromPath ?? "";
+  const upstreamSearch = new URL(request.url).searchParams;
+  // `local=true` makes Invidious emit broken `:port` URLs and 403 videoplayback hops.
+  if (subpath.includes("manifest/hls") || subpath.includes(".m3u8")) {
+    upstreamSearch.delete("local");
+  }
+  const search = upstreamSearch.toString()
+    ? `?${upstreamSearch.toString()}`
+    : "";
 
   const forwardHeaders: Record<string, string> = {
     "user-agent": "OwnTube/0.1",

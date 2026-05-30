@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  googlevideoUrlFromInvidiousVideoplaybackReference,
   isYoutubeFamilyHostname,
   rewriteHlsPlaylistMediaUrls,
+  rewriteInvidiousVideoplaybackLinesToYtHls,
   rewriteM3u8AllProxies,
   rewriteM3u8ForOwnTubeProxy,
   shouldUseInvidiousProxyForUrl,
@@ -19,7 +21,7 @@ describe("shouldUseInvidiousProxyForUrl", () => {
     expect(
       toProxiedOrDirectPlayback(url, "http://localhost:3000", "", detail),
     ).toBe(
-      "http://localhost:3000/invidious/api/manifest/hls_playlist/expire/1/id/x/playlist/index.m3u8?local=true",
+      "http://localhost:3000/invidious/api/manifest/hls_playlist/expire/1/id/x/playlist/index.m3u8",
     );
   });
 });
@@ -98,7 +100,55 @@ https://manifest.googlevideo.com/api/manifest/hls/id/xyz/playlist/index.m3u8
   });
 });
 
+describe("rewriteInvidiousVideoplaybackLinesToYtHls", () => {
+  it("rewrites Invidious local videoplayback segment lines to yt-hls", () => {
+    const body = `#EXTINF:5.0,
+http://localhost:3000/invidious/videoplayback?id=x&itag=91&host=rr1---sn-abc.c.youtube.com&file=seg.ts&expire=1`;
+    const out = rewriteInvidiousVideoplaybackLinesToYtHls(
+      body,
+      "http://localhost:3000",
+    );
+    expect(out).toContain("http://localhost:3000/yt-hls?url=");
+    expect(out).not.toContain("/invidious/videoplayback");
+    expect(
+      googlevideoUrlFromInvidiousVideoplaybackReference(
+        "http://:3210/videoplayback?id=x&host=rr1---sn-abc.c.youtube.com&file=seg.ts",
+      ),
+    ).toBe("https://rr1---sn-abc.c.youtube.com/videoplayback?id=x&file=seg.ts");
+  });
+});
+
 describe("rewriteM3u8ForOwnTubeProxy", () => {
+  it("rewrites Invidious videoplayback segment URLs with missing hostname", () => {
+    const body = `#EXTINF:5.0,
+http://:3210/videoplayback?id=x&file=seg.ts`;
+    expect(
+      rewriteM3u8ForOwnTubeProxy(
+        body,
+        "http://localhost:3000",
+        "localhost:3000",
+        "http://192.168.1.11:3210",
+      ),
+    ).toContain(
+      "http://localhost:3000/invidious/videoplayback?id=x&file=seg.ts",
+    );
+  });
+
+  it("rewrites Invidious local=true URLs with missing hostname", () => {
+    const body = `#EXTM3U
+http://:3210/api/manifest/hls_playlist/id/x/playlist/index.m3u8?local=true`;
+    expect(
+      rewriteM3u8ForOwnTubeProxy(
+        body,
+        "http://localhost:3000",
+        "localhost:3000",
+        "http://192.168.1.11:3210",
+      ),
+    ).toContain(
+      "http://localhost:3000/invidious/api/manifest/hls_playlist/id/x/playlist/index.m3u8?local=true",
+    );
+  });
+
   it("replaces 127.0.0.1 invidious origin with the proxy path", () => {
     const body = `#EXTM3U
 http://127.0.0.1:3001/api/v1/segment/abc`;

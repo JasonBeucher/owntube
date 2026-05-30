@@ -38,7 +38,10 @@ import {
   languageFirstAudioMenuLabel,
 } from "@/lib/audio-track-label";
 import {
-  DEFAULT_PLAYBACK_QUALITY,
+  applyCompanionAudioSync,
+  companionAudioSyncThresholds,
+} from "@/lib/companion-audio-sync";
+import {
   type DefaultPlaybackQuality,
   readDefaultPlaybackQuality,
   variantIndexForDefaultQuality,
@@ -55,7 +58,6 @@ import {
   writePlayerVolumeOnly,
 } from "@/lib/player-media-prefs";
 import {
-  gainToUiVolume,
   playbackRateVolumeAttenuation,
   uiVolumeToGain,
 } from "@/lib/player-volume-gain";
@@ -618,6 +620,21 @@ function useVidstackAdapter(
   const remote = useMediaRemote(
     playerRef as React.RefObject<EventTarget | null>,
   );
+  const [uiVolume, setUiVolume] = useState(1);
+
+  const pushElementVolume = useCallback(
+    (volUi: number, rate: number) => {
+      const gain = uiVolumeToGain(volUi) * playbackRateVolumeAttenuation(rate);
+      remote.changeVolume(Math.min(1, gain));
+    },
+    [remote],
+  );
+
+  useEffect(() => {
+    if (state.muted || uiVolume <= 0) return;
+    pushElementVolume(uiVolume, state.playbackRate);
+  }, [state.playbackRate, state.muted, uiVolume, pushElementVolume]);
+
   return {
     paused: state.paused,
     waiting: state.waiting,
@@ -625,7 +642,7 @@ function useVidstackAdapter(
     duration: Number.isFinite(state.duration) ? state.duration : 0,
     currentTime: state.currentTime,
     bufferedEnd: state.bufferedEnd ?? 0,
-    volume: state.muted ? 0 : gainToUiVolume(state.volume),
+    volume: state.muted ? 0 : uiVolume,
     muted: state.muted,
     playbackRate: state.playbackRate,
     play: () => {
@@ -646,15 +663,21 @@ function useVidstackAdapter(
     seek: (t) => remote.seek(t),
     seekPreview: (t) => remote.seeking(t),
     setVolume: (v) => {
+      setUiVolume(v);
       if (v > 0) {
         if (state.muted) remote.unmute();
-        remote.changeVolume(uiVolumeToGain(v));
+        pushElementVolume(v, state.playbackRate);
       } else {
         remote.mute();
       }
     },
     toggleMuted: () => (state.muted ? remote.unmute() : remote.mute()),
-    setPlaybackRate: (r) => remote.changePlaybackRate(r),
+    setPlaybackRate: (r) => {
+      remote.changePlaybackRate(r);
+      if (!state.muted && uiVolume > 0) {
+        pushElementVolume(uiVolume, r);
+      }
+    },
     canPictureInPicture: state.canPictureInPicture,
     pictureInPicture: state.pictureInPicture,
     togglePictureInPicture: () => {
@@ -703,10 +726,12 @@ function useNativeAdapter(opts: {
       if (!v) return;
       const m = overrides?.muted ?? muted;
       const volUi = overrides?.volumeUi ?? externalVolume;
+      const rate = v.playbackRate ?? 1;
+      const att = playbackRateVolumeAttenuation(rate);
       try {
         v.muted = m || volUi <= 0;
         if (!v.muted) {
-          v.volume = uiVolumeToGain(volUi);
+          v.volume = Math.min(1, uiVolumeToGain(volUi) * att);
         }
       } catch {
         /* ignore */
@@ -865,10 +890,21 @@ function useNativeAdapter(opts: {
     setPlaybackRate: (r) => {
       const v = videoRef.current;
       const a = audioRef.current;
-      if (v) v.playbackRate = r;
-      if (a) {
+      if (v && a) {
+        const resumeAudio = !v.paused && !a.paused;
+        if (resumeAudio) a.pause();
+        try {
+          a.currentTime = v.currentTime;
+        } catch {
+          /* ignore */
+        }
+        v.playbackRate = r;
         a.playbackRate = r;
         syncCompanionVolume();
+        if (resumeAudio) void a.play().catch(() => {});
+      } else if (v) {
+        v.playbackRate = r;
+        applyVideoElementVolume();
       }
     },
     canPictureInPicture:
@@ -2626,14 +2662,10 @@ function PlayerChrome({
   const levelUi = hydrated ? level : 1;
   const seekPos = scrub ?? adapter.currentTime;
   const duration = adapter.duration;
-  const liveClockOnly =
-    isLive && (!Number.isFinite(duration) || duration <= 0);
+  const liveClockOnly = isLive && (!Number.isFinite(duration) || duration <= 0);
   const liveWithDvr =
-    isLive &&
-    Number.isFinite(duration) &&
-    duration > LIVE_EDGE_SECONDS;
-  const behindLiveEdge =
-    liveWithDvr && seekPos < duration - LIVE_EDGE_SECONDS;
+    isLive && Number.isFinite(duration) && duration > LIVE_EDGE_SECONDS;
+  const behindLiveEdge = liveWithDvr && seekPos < duration - LIVE_EDGE_SECONDS;
   const chromeShown = (shortsMode || visible) && !hold2xUi;
   const currentChapterTitle =
     chapters.length > 1
@@ -3200,14 +3232,14 @@ function VidstackPlayerChrome({
     persistTimerRef.current = setTimeout(() => {
       persistTimerRef.current = null;
       writePlayerMediaPrefs({
-        volume: gainToUiVolume(persistStore.volume),
+        volume: adapter.volume,
         muted: persistStore.muted,
       });
     }, 200);
     return () => {
       if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
     };
-  }, [persistStore.volume, persistStore.muted, persistStore.canPlay]);
+  }, [persistStore.muted, persistStore.canPlay, adapter.volume]);
 
   const [mediaPrefs, setMediaPrefs] = useState({ volume: 1, muted: false });
   useEffect(() => {
@@ -3234,13 +3266,13 @@ function VidstackPlayerChrome({
         ? Math.min(1, Math.max(0, mediaPrefs.volume))
         : 1;
     const id = window.setTimeout(() => {
-      remote.changeVolume(uiVolumeToGain(vol));
+      adapter.setVolume(vol);
       if (mediaPrefs.muted || vol <= 0.001) remote.mute();
       else remote.unmute();
       initialMediaPrefsAppliedRef.current = true;
     }, 0);
     return () => window.clearTimeout(id);
-  }, [mediaPrefs, persistStore.canPlay, remote, shortsMode]);
+  }, [adapter, mediaPrefs, persistStore.canPlay, remote, shortsMode]);
 
   const quality: QualityModel = progressiveQualityMenu
     ? withProgressiveQualitySetter(
@@ -3440,7 +3472,10 @@ function LiveHlsDirectBlock({
   }, [volume]);
 
   useEffect(() => {
-    if (typeof restoredVolume !== "number" || !Number.isFinite(restoredVolume)) {
+    if (
+      typeof restoredVolume !== "number" ||
+      !Number.isFinite(restoredVolume)
+    ) {
       return;
     }
     setVolume(restoredVolume);
@@ -3736,7 +3771,10 @@ function NativeMuxedBlock({
         scrubPreview={
           isLive
             ? null
-            : (scrubPreview ?? { streamSrc: src, ...(poster ? { poster } : {}) })
+            : (scrubPreview ?? {
+                streamSrc: src,
+                ...(poster ? { poster } : {}),
+              })
         }
         nextUp={nextUp}
         queue={queue}
@@ -3904,13 +3942,16 @@ function SplitBlock({
   }, [video, activeAudioSrc]);
 
   useEffect(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    a.preservesPitch = true;
+    a.load();
+  }, [activeAudioSrc]);
+
+  useEffect(() => {
     const v = videoRef.current;
     const a = audioRef.current;
     if (!v || !a) return;
-
-    const SYNC_TOLERANCE = 0.16;
-    const DRIFT_HARD = 0.45;
-    const DRIFT_RECOVER = 0.28;
 
     const canDriveCompanionAudio = (): boolean => {
       if (videoStalledRef.current) return false;
@@ -3923,10 +3964,7 @@ function SplitBlock({
 
     const align = (force = false) => {
       if (!canDriveCompanionAudio()) return;
-      const drift = Math.abs(a.currentTime - v.currentTime);
-      if (force || drift > SYNC_TOLERANCE) {
-        a.currentTime = v.currentTime;
-      }
+      applyCompanionAudioSync(v, a, { force });
     };
 
     let waitingPauseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3943,17 +3981,17 @@ function SplitBlock({
     };
     const primeDriftRecovery = () => {
       clearDriftRecoveryTimer();
+      const { recoveryIntervalMs } = companionAudioSyncThresholds(
+        v.playbackRate,
+      );
       driftRecoveryTimer = setInterval(() => {
         if (!canDriveCompanionAudio()) return;
         if (a.paused) {
           void a.play().catch(() => {});
           return;
         }
-        const drift = Math.abs(a.currentTime - v.currentTime);
-        if (drift > DRIFT_RECOVER) {
-          a.currentTime = v.currentTime;
-        }
-      }, 350);
+        applyCompanionAudioSync(v, a);
+      }, recoveryIntervalMs);
     };
     const resumeCompanionAudio = () => {
       if (!canDriveCompanionAudio()) return;
@@ -3993,12 +4031,10 @@ function SplitBlock({
     };
     const onRate = () => {
       a.playbackRate = v.playbackRate;
-      if (canDriveCompanionAudio()) align(true);
-    };
-    const onTime = () => {
-      if (!canDriveCompanionAudio()) return;
-      const drift = Math.abs(a.currentTime - v.currentTime);
-      if (drift > DRIFT_HARD) a.currentTime = v.currentTime;
+      if (canDriveCompanionAudio()) {
+        align(true);
+        primeDriftRecovery();
+      }
     };
     const onTabResume = () => {
       if (document.visibilityState === "hidden") return;
@@ -4014,7 +4050,6 @@ function SplitBlock({
     v.addEventListener("seeking", alignSeek);
     v.addEventListener("seeked", alignSeek);
     v.addEventListener("ratechange", onRate);
-    v.addEventListener("timeupdate", onTime);
     v.addEventListener("ended", pauseAudio);
     document.addEventListener("visibilitychange", onTabResume);
     window.addEventListener("focus", onTabResume);
@@ -4033,7 +4068,6 @@ function SplitBlock({
       v.removeEventListener("seeking", alignSeek);
       v.removeEventListener("seeked", alignSeek);
       v.removeEventListener("ratechange", onRate);
-      v.removeEventListener("timeupdate", onTime);
       v.removeEventListener("ended", pauseAudio);
       document.removeEventListener("visibilitychange", onTabResume);
       window.removeEventListener("focus", onTabResume);

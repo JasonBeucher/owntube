@@ -37,13 +37,16 @@ export function useLiveHlsPlayback(
         return;
       }
 
+      const sameOrigin = buildHlsSameOriginConfig();
       hls = new HlsCtor({
         lowLatencyMode: true,
         backBufferLength: 8,
         maxBufferLength: 30,
         maxMaxBufferLength: 60,
         renderTextTracksNatively: false,
-        ...buildHlsSameOriginConfig(),
+        loader: sameOrigin.loader,
+        xhrSetup: sameOrigin.xhrSetup,
+        fetchSetup: sameOrigin.fetchSetup,
       });
       hlsRef.current = hls;
 

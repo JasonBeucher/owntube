@@ -8,6 +8,7 @@ import {
   type CardPreviewPlayback,
   cardPreviewPlaybackFromDetail,
 } from "@/lib/card-preview-playback";
+import { toBrowserUpstreamImageUrl } from "@/lib/channel-avatar-proxy";
 import { buildHlsSameOriginConfig } from "@/lib/hls-same-origin";
 import { cn } from "@/lib/utils";
 import {
@@ -106,7 +107,10 @@ export function VideoCardThumbnailInteractive({
   }, [pointerInside]);
 
   const displayThumbnailUrl = useMemo(
-    () => preferHighResVideoThumbnailUrl(thumbnailUrl, videoId),
+    () =>
+      toBrowserUpstreamImageUrl(
+        preferHighResVideoThumbnailUrl(thumbnailUrl, videoId),
+      ),
     [thumbnailUrl, videoId],
   );
 

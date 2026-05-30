@@ -261,6 +261,7 @@ export function VideoCardShort({
               <VideoCardThumbnailImg
                 url={thumbnailUrl}
                 videoId={videoId}
+                variant="short"
                 className="h-full w-full object-cover object-center transition duration-500 ease-out group-hover:scale-[1.03]"
               />
             ) : null}

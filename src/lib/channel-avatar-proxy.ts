@@ -22,6 +22,28 @@ export function isPrivateOrLanHost(hostname: string): boolean {
   return false;
 }
 
+/** Origins for configured Invidious instance (browser `/invidious/…` hop). */
+export function collectInvidiousOrigins(): string[] {
+  const out = new Set<string>();
+  const base = normalizeUpstreamBaseUrl(process.env.INVIDIOUS_BASE_URL);
+  if (!base) return [];
+  try {
+    const u = new URL(base);
+    out.add(u.origin);
+    if (u.hostname === "localhost") {
+      const port = u.port ? `:${u.port}` : "";
+      out.add(`${u.protocol}//127.0.0.1${port}`);
+    }
+    if (u.hostname === "127.0.0.1") {
+      const port = u.port ? `:${u.port}` : "";
+      out.add(`${u.protocol}//localhost${port}`);
+    }
+  } catch {
+    /* ignore malformed env */
+  }
+  return [...out];
+}
+
 /** Origins allowed for `/channel-avatar` upstream fetches (server-side). */
 export function collectAllowedChannelAvatarOrigins(): string[] {
   const out = new Set<string>();
@@ -61,14 +83,18 @@ export function isAllowedChannelAvatarFetchTarget(url: URL): boolean {
   return false;
 }
 
-/** Invidious media paths already served by `/invidious/…`. */
-export function invidiousAvatarProxyPath(resolvedUrl: string): string | null {
+/**
+ * Same-origin `/invidious/…` path only when the URL belongs to the configured
+ * Invidious instance (not Piped proxy `/vi/` on another origin).
+ */
+export function invidiousUpstreamProxyPath(resolvedUrl: string): string | null {
   let parsed: URL;
   try {
     parsed = new URL(resolvedUrl);
   } catch {
     return null;
   }
+  if (!collectInvidiousOrigins().includes(parsed.origin)) return null;
   const path = parsed.pathname;
   if (
     path.startsWith("/vi/") ||
@@ -80,6 +106,11 @@ export function invidiousAvatarProxyPath(resolvedUrl: string): string | null {
   return null;
 }
 
+/** @deprecated Use {@link invidiousUpstreamProxyPath} — kept for tests. */
+export function invidiousAvatarProxyPath(resolvedUrl: string): string | null {
+  return invidiousUpstreamProxyPath(resolvedUrl);
+}
+
 export function shouldProxyChannelAvatarUrl(url: URL): boolean {
   if (url.protocol === "http:") return true;
   const host = url.hostname.toLowerCase();
@@ -89,16 +120,10 @@ export function shouldProxyChannelAvatarUrl(url: URL): boolean {
   return false;
 }
 
-/**
- * Browser-ready avatar URL: same-origin hops for LAN/HTTP upstreams (mixed
- * content on HTTPS reverse proxies) and Invidious `/vi/` paths.
- */
-export function toBrowserChannelAvatarUrl(
-  raw: string | undefined | null,
-): string | undefined {
-  const resolved = resolveChannelAvatarUrl(raw ?? undefined);
-  if (!resolved) return undefined;
-  if (resolved.length > MAX_CHANNEL_AVATAR_URL_LEN) return undefined;
+const MAX_UPSTREAM_IMAGE_URL_LEN = MAX_CHANNEL_AVATAR_URL_LEN;
+
+function browserReadyUpstreamImageUrl(resolved: string): string | undefined {
+  if (resolved.length > MAX_UPSTREAM_IMAGE_URL_LEN) return undefined;
 
   let parsed: URL;
   try {
@@ -111,7 +136,7 @@ export function toBrowserChannelAvatarUrl(
     return resolved;
   }
 
-  const invidiousPath = invidiousAvatarProxyPath(resolved);
+  const invidiousPath = invidiousUpstreamProxyPath(resolved);
   if (invidiousPath) return invidiousPath;
 
   if (shouldProxyChannelAvatarUrl(parsed)) {
@@ -119,4 +144,28 @@ export function toBrowserChannelAvatarUrl(
   }
 
   return resolved;
+}
+
+/**
+ * Browser-ready image URL for upstream media (video thumbnails, etc.): same-origin
+ * hops for LAN/HTTP upstreams (mixed content on HTTPS) and Invidious `/vi/`.
+ */
+export function toBrowserUpstreamImageUrl(
+  raw: string | undefined | null,
+): string | undefined {
+  const resolved = resolveChannelAvatarUrl(raw ?? undefined);
+  if (!resolved) return undefined;
+  return browserReadyUpstreamImageUrl(resolved);
+}
+
+/**
+ * Browser-ready avatar URL: same-origin hops for LAN/HTTP upstreams (mixed
+ * content on HTTPS reverse proxies) and Invidious `/vi/` paths.
+ */
+export function toBrowserChannelAvatarUrl(
+  raw: string | undefined | null,
+): string | undefined {
+  const resolved = resolveChannelAvatarUrl(raw ?? undefined);
+  if (!resolved) return undefined;
+  return browserReadyUpstreamImageUrl(resolved);
 }

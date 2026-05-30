@@ -1067,6 +1067,127 @@ describe("fetchChannelPage", () => {
     sqlite.close();
   });
 
+  it("merges Piped channel live tab into the videos tab", async () => {
+    const { db, sqlite } = createTestDb();
+    process.env.PIPED_BASE_URL = "https://piped.test";
+    delete process.env.INVIDIOUS_BASE_URL;
+
+    vi.mocked(fetch).mockImplementation((input) => {
+      const u = String(input);
+      if (u.includes("piped.test/channel/UCchan")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "UCchan",
+              name: "Artist",
+              relatedStreams: [
+                {
+                  type: "stream",
+                  url: "/watch?v=uploadvid01",
+                  title: "Regular upload",
+                  uploaderUrl: "/channel/UCchan",
+                  duration: 600,
+                },
+              ],
+              tabs: [{ name: "live", data: "live-tab" }],
+            }),
+          ),
+        );
+      }
+      if (u.includes("piped.test/channels/tabs?") && u.includes("live-tab")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              relatedStreams: [
+                {
+                  type: "livestream",
+                  url: "/watch?v=livestream1",
+                  title: "Live now",
+                  uploaderUrl: "/channel/UCchan",
+                  livestream: true,
+                },
+              ],
+            }),
+          ),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${u}`));
+    });
+
+    const page = await fetchChannelPage(db, { channelId: "UCchan" });
+    expect(page.sourceUsed).toBe("piped");
+    expect(page.videos.map((v) => v.videoId)).toEqual([
+      "livestream1",
+      "uploadvid01",
+    ]);
+    expect(page.videos[0]?.isLive).toBe(true);
+    sqlite.close();
+  });
+
+  it("merges Invidious channel streams into the videos tab", async () => {
+    const { db, sqlite } = createTestDb();
+    delete process.env.PIPED_BASE_URL;
+    process.env.INVIDIOUS_BASE_URL = "https://inv.test";
+
+    vi.mocked(fetch).mockImplementation((input) => {
+      const u = String(input);
+      if (u.includes("inv.test/api/v1/channels/UCchan")) {
+        if (u.includes("/streams")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                videos: [
+                  {
+                    type: "livestream",
+                    videoId: "livestream1",
+                    title: "Live stream",
+                    authorId: "UCchan",
+                    author: "Artist",
+                    liveNow: true,
+                  },
+                ],
+              }),
+            ),
+          );
+        }
+        if (u.includes("/videos")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                videos: [
+                  {
+                    type: "video",
+                    videoId: "uploadvid01",
+                    title: "Upload",
+                    authorId: "UCchan",
+                    author: "Artist",
+                  },
+                ],
+              }),
+            ),
+          );
+        }
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              authorId: "UCchan",
+              author: "Artist",
+            }),
+          ),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${u}`));
+    });
+
+    const page = await fetchChannelPage(db, { channelId: "UCchan" });
+    expect(page.sourceUsed).toBe("invidious");
+    expect(page.videos.map((v) => v.videoId)).toContain("livestream1");
+    expect(page.videos.find((v) => v.videoId === "livestream1")?.isLive).toBe(
+      true,
+    );
+    sqlite.close();
+  });
+
   it("loads Piped channel shorts via the shorts tab", async () => {
     const { db, sqlite } = createTestDb();
     process.env.PIPED_BASE_URL = "https://piped.test";

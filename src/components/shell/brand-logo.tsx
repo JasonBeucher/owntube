@@ -30,7 +30,7 @@ export function BrandLogo({
       />
       {showText ? (
         <span
-          className={`font-extrabold tracking-tight text-[hsl(var(--foreground))] ${compact ? "text-base" : "text-lg"}`}
+          className={`truncate font-extrabold tracking-tight text-[hsl(var(--foreground))] ${compact ? "text-base" : "text-lg"}`}
         >
           owntube
         </span>

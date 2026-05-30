@@ -20,6 +20,7 @@ export function HomeHero({ video }: HomeHeroProps) {
         <VideoThumbnailImg
           url={video.thumbnailUrl}
           videoId={video.videoId}
+          variant="hero"
           className="absolute inset-0 h-full w-full object-cover object-top transition duration-500 group-hover:scale-[1.02]"
           loading="eager"
         />
