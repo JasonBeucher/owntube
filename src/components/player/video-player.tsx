@@ -3081,6 +3081,7 @@ type VidstackBlockProps = SponsorBlockChromeProps & {
   shortsMode?: boolean;
   miniStartPaused?: boolean;
   restoredVolume?: number;
+  restoredMuted?: boolean;
   onVideoIntrinsics?: (width: number, height: number) => void;
   isLive?: boolean;
 };
@@ -3118,6 +3119,7 @@ function VidstackPlayerChrome({
   shortsMode = false,
   miniStartPaused = false,
   restoredVolume,
+  restoredMuted,
   isLive = false,
 }: VidstackBlockProps & {
   playerRef: React.RefObject<MediaPlayerElement | null>;
@@ -3138,7 +3140,13 @@ function VidstackPlayerChrome({
   const miniAutoplayDoneRef = useRef(false);
   const miniShouldAutoplay = miniMode && !miniStartPaused;
 
-  useMiniPlayerMediaBootstrap(adapter, miniMode, shortsMode, restoredVolume);
+  useMiniPlayerMediaBootstrap(
+    adapter,
+    miniMode,
+    shortsMode,
+    restoredVolume,
+    restoredMuted,
+  );
 
   useEffect(() => {
     initialSeekAppliedRef.current = false;
@@ -3312,9 +3320,7 @@ function VidstackBlock(props: VidstackBlockProps) {
   const onVideoIntrinsics = props.onVideoIntrinsics;
   useEffect(() => {
     if (!onVideoIntrinsics) return;
-    const player = playerRef.current;
-    if (!player) return;
-    const video = player.querySelector("video");
+    const video = shellRef.current?.querySelector("video");
     if (!video) return;
     const report = () => {
       if (video.videoWidth > 0 && video.videoHeight > 0) {
@@ -3351,10 +3357,8 @@ function VidstackBlock(props: VidstackBlockProps) {
         playsInline
         autoPlay={shortsMode || miniShouldAutoplay}
         muted={shortsMode}
-        onProviderChange={(event) =>
-          applyHlsSameOriginToVidstackProvider(
-            (event as CustomEvent<MediaProvider | null>).detail,
-          )
+        onProviderChange={(event: CustomEvent<MediaProvider | null>) =>
+          applyHlsSameOriginToVidstackProvider(event.detail)
         }
         onError={emitPlaybackError}
         onEnded={onEnded}
@@ -3503,6 +3507,7 @@ function useMiniPlayerMediaBootstrap(
   miniMode: boolean,
   shortsMode: boolean,
   restoredVolume?: number,
+  restoredMuted?: boolean,
 ) {
   const appliedRef = useRef(false);
   useEffect(() => {
@@ -3515,8 +3520,17 @@ function useMiniPlayerMediaBootstrap(
         ? restoredVolume
         : prefs.volume;
     adapter.setVolume(vol);
-    if (prefs.muted !== adapter.muted) adapter.toggleMuted();
-  }, [adapter, adapter.canPlay, miniMode, restoredVolume, shortsMode]);
+    const muted =
+      typeof restoredMuted === "boolean" ? restoredMuted : prefs.muted;
+    if (muted !== adapter.muted) adapter.toggleMuted();
+  }, [
+    adapter,
+    adapter.canPlay,
+    miniMode,
+    restoredVolume,
+    restoredMuted,
+    shortsMode,
+  ]);
 }
 
 /** Autoplay for Shorts / mini on native <video> (muxed + split). */
@@ -3644,7 +3658,13 @@ function NativeMuxedBlock({
     reactKey,
     miniShouldAutoplay,
   );
-  useMiniPlayerMediaBootstrap(adapter, miniMode, shortsMode, restoredVolume);
+  useMiniPlayerMediaBootstrap(
+    adapter,
+    miniMode,
+    shortsMode,
+    restoredVolume,
+    restoredMuted,
+  );
 
   useEffect(() => {
     if (initialSeekAppliedRef.current) return;
@@ -4053,7 +4073,13 @@ function SplitBlock({
     video,
     miniShouldAutoplay,
   );
-  useMiniPlayerMediaBootstrap(adapter, miniMode, shortsMode, restoredVolume);
+  useMiniPlayerMediaBootstrap(
+    adapter,
+    miniMode,
+    shortsMode,
+    restoredVolume,
+    restoredMuted,
+  );
 
   useEffect(() => {
     const a = audioRef.current;
@@ -4647,6 +4673,7 @@ export function VideoPlayer({
             shortsMode={shortsMode}
             miniStartPaused={miniStartPaused}
             restoredVolume={restoredVolume}
+            restoredMuted={restoredMuted}
             onVideoIntrinsics={onVideoIntrinsics}
             isLive={isLive}
           />
@@ -4714,6 +4741,7 @@ export function VideoPlayer({
               shortsMode={shortsMode}
               miniStartPaused={miniStartPaused}
               restoredVolume={restoredVolume}
+              restoredMuted={restoredMuted}
               onVideoIntrinsics={onVideoIntrinsics}
               isLive={isLive}
             />

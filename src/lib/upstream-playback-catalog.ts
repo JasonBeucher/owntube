@@ -64,8 +64,10 @@ export function shouldPreferInvidiousOverPiped(
 /** Compare two upstream catalogs; higher max height wins (ties keep the incumbent). */
 export type UpstreamPlaybackSource = VideoDetail["sourceUsed"];
 
-function liveDetailHasHls(detail: VideoDetail): boolean {
-  return Boolean(detail.isLive && detail.hlsUrl?.trim());
+function liveDetailHasHls(
+  detail: VideoDetail | null | undefined,
+): detail is VideoDetail {
+  return Boolean(detail?.isLive && detail.hlsUrl?.trim());
 }
 
 /**

@@ -238,10 +238,14 @@ export function installSameOriginMediaFetchGuard(
     const raw = typeof url === "string" ? url : url.toString();
     const proxied = proxyUrlForHlsFetch(raw, appOrigin);
     const next = proxied !== raw ? proxied : url;
-    if (async === undefined) {
-      return nativeXhrOpen.call(this, method, next);
-    }
-    return nativeXhrOpen.call(this, method, next, async, user, password);
+    return nativeXhrOpen.call(
+      this,
+      method,
+      next,
+      async ?? true,
+      user,
+      password,
+    );
   };
 
   restoreFetchGuard = () => {
