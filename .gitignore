@@ -20,9 +20,11 @@
 # production
 /build
 
-# local planning / Cursor IDE config
+# local planning / IDE config
 TODO.md
 .cursor/
+.claude/
+CLAUDE.md
 
 # misc
 .DS_Store

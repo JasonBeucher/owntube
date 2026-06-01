@@ -17,7 +17,7 @@ import {
 } from "@/lib/video-thumbnail-url";
 import { trpc } from "@/trpc/react";
 
-const DWELL_MS = 1000;
+const DWELL_MS = 400;
 const PREVIEW_VOLUME = 0.42;
 
 type VideoCardThumbnailInteractiveProps = {
