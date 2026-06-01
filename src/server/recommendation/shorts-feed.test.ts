@@ -62,6 +62,54 @@ describe("buildShortsExclusionSet", () => {
   });
 });
 
+describe("fetchShortsFeedForViewer generic recycle", () => {
+  it("returns a recycle cursor when upstream runs out but shorts were found", async () => {
+    vi.spyOn(proxy, "fetchShortsFeed").mockResolvedValue({
+      videos: [
+        {
+          videoId: "genericShort1",
+          title: "Generic short",
+          channelId: "ch1",
+          channelName: "Channel",
+          durationSeconds: 30,
+        },
+      ],
+      continuation: undefined,
+      sourceUsed: "piped" as const,
+    });
+
+    const result = await fetchShortsFeedForViewer(
+      null as unknown as import("@/server/db/client").AppDb,
+      null,
+      { region: "FR", limit: 24 },
+    );
+
+    expect(result.videos).toHaveLength(1);
+    expect(result.continuation).toBe("shorts:refresh");
+
+    vi.restoreAllMocks();
+  });
+
+  it("stops (no cursor) when a recycle pass yields nothing new", async () => {
+    vi.spyOn(proxy, "fetchShortsFeed").mockResolvedValue({
+      videos: [],
+      continuation: undefined,
+      sourceUsed: "piped" as const,
+    });
+
+    const result = await fetchShortsFeedForViewer(
+      null as unknown as import("@/server/db/client").AppDb,
+      null,
+      { region: "FR", limit: 24, continuation: "shorts:refresh" },
+    );
+
+    expect(result.videos).toHaveLength(0);
+    expect(result.continuation).toBeUndefined();
+
+    vi.restoreAllMocks();
+  });
+});
+
 describe("fetchShortsFeedForViewer shelf purpose", () => {
   it("uses a single upstream fetch when the personalized pool is cold", async () => {
     vi.spyOn(shortsPool, "getShortsRecommendations").mockResolvedValue({

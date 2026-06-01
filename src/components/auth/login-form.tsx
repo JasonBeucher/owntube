@@ -27,7 +27,21 @@ export function LoginForm() {
         });
         setLoading(false);
         if (result?.ok) {
-          window.location.href = result.url ?? "/";
+          // Stay on the current origin. `result.url` is resolved against
+          // AUTH_URL and may point to a different host (e.g. the LAN IP), where
+          // the freshly-set session cookie does not exist — navigating there
+          // lands the user on the home page still logged out. Keep only the
+          // path so login works from localhost, the LAN IP, Tailscale, etc.
+          let dest = "/";
+          if (result.url) {
+            try {
+              const parsed = new URL(result.url);
+              dest = `${parsed.pathname}${parsed.search}` || "/";
+            } catch {
+              dest = "/";
+            }
+          }
+          window.location.href = dest;
           return;
         }
         setError("Invalid credentials.");

@@ -6,6 +6,7 @@ import {
   HOME_RELATED_LIMITS,
 } from "@/server/recommendation/collect-related-candidates";
 import type { UserSignals } from "@/server/recommendation/signals";
+import { buildTfidfModel } from "@/server/recommendation/tfidf";
 import type { ScoredVideo } from "@/server/recommendation/types";
 import * as proxy from "@/server/services/proxy";
 
@@ -129,7 +130,7 @@ describe("expandScoredPoolWithRelatedCandidates", () => {
       limits: HOME_RELATED_LIMITS,
       excludeVideoIds: new Set(),
       signals: emptySignals(),
-      corpusTitles: [],
+      tasteModel: buildTfidfModel([]),
       maxCh: 1,
       scoreContext: { recentCoverageByChannel: new Map() },
     });
@@ -159,7 +160,7 @@ describe("expandScoredPoolWithRelatedCandidates", () => {
       limits: { ...HOME_RELATED_LIMITS, maxSeeds: 1 },
       excludeVideoIds: new Set(),
       signals: emptySignals(),
-      corpusTitles: ["topic"],
+      tasteModel: buildTfidfModel(["topic"]),
       maxCh: 1,
       scoreContext: { recentCoverageByChannel: new Map() },
       minScoredForExpansion: 1,

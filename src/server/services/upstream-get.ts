@@ -7,6 +7,22 @@ const MAX_REDIRECTS = 5;
 
 const UA = "OwnTube/0.1 (+https://github.com/iv-org/invidious API client)";
 
+/**
+ * Keep-alive agents so repeated Piped/Invidious API calls reuse TCP+TLS
+ * connections instead of paying a fresh handshake (~100-300ms) per request.
+ * The whole feed/shorts/search/detail path funnels through here, so pooling
+ * is the single biggest latency win for upstream JSON fetches.
+ */
+const AGENT_OPTS = {
+  keepAlive: true,
+  keepAliveMsecs: 15_000,
+  maxSockets: 64,
+  maxFreeSockets: 16,
+  timeout: 30_000,
+};
+const httpAgent = new http.Agent(AGENT_OPTS);
+const httpsAgent = new https.Agent(AGENT_OPTS);
+
 function decodeResponseBody(
   buf: Buffer,
   contentEncoding: string | undefined,
@@ -63,13 +79,18 @@ export function upstreamGetText(
         return;
       }
 
-      const lib = parsed.protocol === "https:" ? https : http;
+      const isHttps = parsed.protocol === "https:";
+      const lib = isHttps ? https : http;
       const req = lib.request(
         parsed,
         {
           method: "GET",
+          agent: isHttps ? httpsAgent : httpAgent,
           headers: {
             Accept: "application/json",
+            // The decode path below already handles gzip/deflate/br; request it
+            // so large feed/search JSON transfers compressed instead of raw.
+            "Accept-Encoding": "gzip, deflate, br",
             "User-Agent": UA,
           },
         },

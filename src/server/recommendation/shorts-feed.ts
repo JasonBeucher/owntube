@@ -25,14 +25,22 @@ const SHORTS_PAGE_SIZE = 24;
 
 const SHORTS_DISCOVERY_FETCH_LIMIT = 36;
 
-const SHORTS_SHELF_MAX_LIMIT = 16;
+const SHORTS_SHELF_MAX_LIMIT = 20;
 
 /** Channel Shorts tab fetches when building the home shelf pool (cold). */
 const SHORTS_SHELF_MAX_CHANNELS = 6;
 
-const SHORTS_SHELF_DISCOVERY_PAGES = 2;
+const SHORTS_SHELF_DISCOVERY_PAGES = 3;
 
 const MAX_EMPTY_REC_PAGE_SKIPS = 10;
+
+/**
+ * Cursor that recycles the generic discovery feed: it restarts the upstream
+ * trending/discovery sweep so `/shorts` keeps scrolling once a single upstream
+ * continuation chain is exhausted (the client's `excludeVideoIds` prevents
+ * re-proposing shorts already seen). Treated like "no continuation" on input.
+ */
+const SHORTS_GENERIC_REFRESH_CURSOR = "shorts:refresh";
 
 export function parseShortsRecPage(continuation?: string): number | null {
   if (!continuation?.startsWith("rec:")) return null;
@@ -183,13 +191,17 @@ async function fetchUnwatchedGenericShorts(
   watchedEver: Set<string> | null,
   limit: number,
 ): Promise<ShortsFeedResult> {
-  let continuation = input.continuation;
+  let continuation =
+    input.continuation === SHORTS_GENERIC_REFRESH_CURSOR
+      ? undefined
+      : input.continuation;
   const merged: UnifiedVideo[] = [];
   const seen = new Set<string>();
   let sourceUsed: ShortsFeedResult["sourceUsed"] = "piped";
   let warning: string | undefined;
   let stale: boolean | undefined;
   let upstreamUnavailable: UpstreamUnavailableError | null = null;
+  let hadUpstreamContent = false;
 
   for (let attempt = 0; attempt < MAX_UNWATCHED_FETCH_ATTEMPTS; attempt++) {
     let page: ShortsFeedResult;
@@ -207,10 +219,9 @@ async function fetchUnwatchedGenericShorts(
     warning = page.warning;
     stale = page.stale;
 
-    const unwatched = filterUnwatchedShorts(
-      filterShortsFeedVideos(page.videos),
-      watchedEver,
-    );
+    const filtered = filterShortsFeedVideos(page.videos);
+    if (filtered.length > 0) hadUpstreamContent = true;
+    const unwatched = filterUnwatchedShorts(filtered, watchedEver);
     for (const video of unwatched) {
       if (seen.has(video.videoId)) continue;
       seen.add(video.videoId);
@@ -218,7 +229,9 @@ async function fetchUnwatchedGenericShorts(
       if (merged.length >= limit) {
         return {
           videos: merged.slice(0, limit),
-          continuation: page.continuation ?? undefined,
+          // Recycle discovery once the upstream chain ends so the feed keeps
+          // scrolling instead of dead-ending on a full page.
+          continuation: page.continuation ?? SHORTS_GENERIC_REFRESH_CURSOR,
           sourceUsed,
           warning,
           stale,
@@ -233,6 +246,19 @@ async function fetchUnwatchedGenericShorts(
     continuation = page.continuation;
   }
 
+  // Recycle fallback: upstream returned content but the seen filter blocked it
+  // all. Restart without the filter so the feed never dead-ends — the client's
+  // own duplicate guard (seen.has) prevents re-showing already-scrolled slides.
+  if (merged.length === 0 && hadUpstreamContent && watchedEver !== null) {
+    return fetchUnwatchedGenericShorts(
+      db,
+      { ...input, continuation: undefined },
+      overrides,
+      null,
+      limit,
+    );
+  }
+
   if (merged.length === 0 && upstreamUnavailable) {
     return {
       videos: [],
@@ -245,12 +271,39 @@ async function fetchUnwatchedGenericShorts(
 
   return {
     videos: merged,
-    continuation: continuation ?? undefined,
+    // While we still surfaced fresh shorts, keep the feed alive with a recycle
+    // cursor; only stop (undefined) once a pass yields nothing new to scroll.
+    continuation:
+      continuation ??
+      (merged.length > 0 ? SHORTS_GENERIC_REFRESH_CURSOR : undefined),
     sourceUsed,
     warning:
       merged.length === 0 ? (warning ?? ALL_SHORTS_SEEN_WARNING) : warning,
     stale,
   };
+}
+
+/**
+ * Taste-aware discovery top-up: fills a thin personalized page with regional /
+ * taste discovery shorts, filtered against the viewer's watch+seen set. Shared
+ * by every `fetchShortsFeedForViewer` branch that needs to round out a page.
+ */
+function fetchTasteDiscoveryShorts(
+  db: AppDb,
+  region: string,
+  discoveryQueries: string[],
+  overrides: ProxySourceOverrides | undefined,
+  watchedEver: Set<string> | null,
+  limit: number,
+  fetchLimit: number = SHORTS_DISCOVERY_FETCH_LIMIT,
+): Promise<ShortsFeedResult> {
+  return fetchUnwatchedGenericShorts(
+    db,
+    { region, limit: fetchLimit, discoveryQueries },
+    overrides,
+    watchedEver,
+    limit,
+  );
 }
 
 /**
@@ -309,7 +362,9 @@ async function fetchShortsShelfFeed(
         db,
         {
           region,
-          limit,
+          // Over-fetch: channel diversity (≤2/channel) and seen/watched filtering
+          // thin the result, so pull a wider pool to keep the row full.
+          limit: Math.min(40, limit * 2),
           continuation,
           purpose: "shelf",
           excludeVideoIds: input.excludeVideoIds,
@@ -330,6 +385,32 @@ async function fetchShortsShelfFeed(
         break;
       }
       continuation = page.continuation;
+    }
+
+    // Shelf fallback: when seen/watched filtering leaves nothing, serve the
+    // upstream pool without any exclusion so the home shelf never stays empty.
+    if (videos.length === 0) {
+      try {
+        const fallback = await fetchShortsFeed(
+          db,
+          { region, limit: Math.min(40, limit * 2), purpose: "shelf" },
+          overrides,
+        );
+        const fallbackVideos = filterShortsFeedVideos(fallback.videos).slice(
+          0,
+          limit,
+        );
+        if (fallbackVideos.length > 0) {
+          return {
+            videos: fallbackVideos,
+            sourceUsed: fallback.sourceUsed,
+            warning: fallback.warning,
+            stale: fallback.stale,
+          };
+        }
+      } catch (_) {
+        // Fallback failed silently — empty shelf is acceptable
+      }
     }
 
     return {
@@ -417,13 +498,10 @@ export async function fetchShortsFeedForViewer(
     // Top up a thin personalized page with regional/taste discovery shorts so
     // the caller gets close to `limit` items from varied channels, instead of
     // returning the few channel-clustered personalized results on their own.
-    const upstream = await fetchUnwatchedGenericShorts(
+    const upstream = await fetchTasteDiscoveryShorts(
       db,
-      {
-        region,
-        limit: SHORTS_DISCOVERY_FETCH_LIMIT,
-        discoveryQueries: tasteDiscoveryQueries,
-      },
+      region,
+      tasteDiscoveryQueries,
       overrides,
       watchedEver,
       limit,
@@ -435,7 +513,7 @@ export async function fetchShortsFeedForViewer(
     );
     const nextCursor =
       videos.length > 0
-        ? (nextRecCursor ?? upstream.continuation ?? undefined)
+        ? (nextRecCursor ?? upstream.continuation ?? "rec:refresh")
         : (upstream.continuation ?? nextRecCursor ?? undefined);
     return {
       videos,
@@ -482,13 +560,10 @@ export async function fetchShortsFeedForViewer(
       };
     }
 
-    const upstream = await fetchUnwatchedGenericShorts(
+    const upstream = await fetchTasteDiscoveryShorts(
       db,
-      {
-        region,
-        limit: SHORTS_DISCOVERY_FETCH_LIMIT,
-        discoveryQueries: tasteDiscoveryQueries,
-      },
+      region,
+      tasteDiscoveryQueries,
       overrides,
       watchedEver,
       limit,
@@ -502,7 +577,7 @@ export async function fetchShortsFeedForViewer(
       videos,
       continuation:
         upstream.continuation ??
-        (upstream.videos.length > 0 ? "rec:refresh" : undefined),
+        (videos.length > 0 ? "rec:refresh" : undefined),
       sourceUsed: upstream.sourceUsed,
       warning:
         videos.length === 0
@@ -543,16 +618,13 @@ export async function fetchShortsFeedForViewer(
     };
   }
 
-  return fetchUnwatchedGenericShorts(
+  return fetchTasteDiscoveryShorts(
     db,
-    {
-      region,
-      limit,
-      continuation: undefined,
-      discoveryQueries: tasteDiscoveryQueries,
-    },
+    region,
+    tasteDiscoveryQueries,
     overrides,
     watchedEver,
+    limit,
     limit,
   );
 }

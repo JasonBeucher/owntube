@@ -2924,9 +2924,11 @@ function invidiousShortsSearchPage(continuation: string | undefined): number {
 function nextInvidiousShortsContinuation(
   page: number,
   got: number,
-  limit: number,
 ): string | null {
-  return got >= limit ? `inv:page:${page + 1}` : null;
+  // Keep paginating as long as the page yielded any shorts: search pages often
+  // return fewer real shorts than the limit, and stopping there would end the
+  // /shorts feed prematurely instead of advancing to the next page.
+  return got > 0 ? `inv:page:${page + 1}` : null;
 }
 
 export async function fetchShortsFeed(
@@ -3013,11 +3015,7 @@ export async function fetchShortsFeed(
           if (videos.length > 0) {
             return shortsFeedResultSchema.parse({
               videos: videos.slice(0, limit),
-              continuation: nextInvidiousShortsContinuation(
-                1,
-                videos.length,
-                limit,
-              ),
+              continuation: nextInvidiousShortsContinuation(1, videos.length),
               sourceUsed: "invidious",
             });
           }
@@ -3037,11 +3035,7 @@ export async function fetchShortsFeed(
         if (videos.length === 0) return null;
         return shortsFeedResultSchema.parse({
           videos,
-          continuation: nextInvidiousShortsContinuation(
-            page,
-            videos.length,
-            limit,
-          ),
+          continuation: nextInvidiousShortsContinuation(page, videos.length),
           sourceUsed: "invidious",
         });
       } catch (e) {

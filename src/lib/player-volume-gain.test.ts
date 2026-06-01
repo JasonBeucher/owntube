@@ -3,6 +3,7 @@ import {
   gainToUiVolume,
   playbackRateVolumeAttenuation,
   uiVolumeToGain,
+  volumeGainFor,
 } from "@/lib/player-volume-gain";
 
 describe("player-volume-gain", () => {
@@ -28,5 +29,28 @@ describe("player-volume-gain", () => {
     );
     expect(playbackRateVolumeAttenuation(2)).toBeCloseTo(1 / (2 * 1.3), 5);
     expect(playbackRateVolumeAttenuation(4)).toBeCloseTo(1 / (4 * 1.3), 5);
+  });
+
+  describe("volumeGainFor", () => {
+    it("keeps full loudness at any speed when the limiter is active", () => {
+      expect(volumeGainFor(1, 2, true)).toBe(uiVolumeToGain(1));
+      expect(volumeGainFor(0.5, 4, true)).toBe(uiVolumeToGain(0.5));
+      expect(volumeGainFor(0.5, 1, true)).toBe(uiVolumeToGain(0.5));
+    });
+
+    it("falls back to rate attenuation when the limiter is inactive", () => {
+      expect(volumeGainFor(1, 2, false)).toBeCloseTo(
+        uiVolumeToGain(1) * playbackRateVolumeAttenuation(2),
+        5,
+      );
+      // At 1× the fallback equals the plain gain (attenuation is 1).
+      expect(volumeGainFor(0.5, 1, false)).toBeCloseTo(uiVolumeToGain(0.5), 5);
+    });
+
+    it("is louder at 2× with the limiter than without", () => {
+      expect(volumeGainFor(1, 2, true)).toBeGreaterThan(
+        volumeGainFor(1, 2, false),
+      );
+    });
   });
 });

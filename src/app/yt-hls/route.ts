@@ -1,3 +1,4 @@
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import {
   getAppOriginFromRequestHeaders,
   isYoutubeFamilyHostname,
@@ -42,24 +43,30 @@ export async function GET(request: Request) {
     targetHostname: target.hostname,
   });
 
-  let r = await fetch(target.toString(), {
-    headers: forwardHeaders,
-    cache: "no-store",
-  });
-
-  // Some googlevideo segment URLs return 403 when Origin/Referer are forwarded.
-  // Retry once with relaxed headers before giving up.
-  if (!r.ok && r.status === 403) {
-    const relaxedHeaders = headersForYoutubeUpstream({
-      range: request.headers.get("range"),
-      accept: request.headers.get("accept"),
-      targetHostname: target.hostname,
-      relaxed: true,
-    });
-    r = await fetch(target.toString(), {
-      headers: relaxedHeaders,
+  let r: Response;
+  try {
+    r = await fetchWithTimeout(target.toString(), {
+      headers: forwardHeaders,
       cache: "no-store",
     });
+
+    // Some googlevideo segment URLs return 403 when Origin/Referer are
+    // forwarded. Retry once with relaxed headers before giving up.
+    if (!r.ok && r.status === 403) {
+      const relaxedHeaders = headersForYoutubeUpstream({
+        range: request.headers.get("range"),
+        accept: request.headers.get("accept"),
+        targetHostname: target.hostname,
+        relaxed: true,
+      });
+      r = await fetchWithTimeout(target.toString(), {
+        headers: relaxedHeaders,
+        cache: "no-store",
+      });
+    }
+  } catch {
+    // Timeout or network failure: surface a gateway error so hls.js retries.
+    return new Response("upstream fetch failed", { status: 504 });
   }
 
   const appOrigin = getAppOriginFromRequestHeaders({

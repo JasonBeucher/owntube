@@ -1,3 +1,4 @@
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import {
   getAppOriginFromRequestHeaders,
   rewriteM3u8AllProxies,
@@ -25,7 +26,7 @@ async function fetchInvidiousUpstream(
 ): Promise<Response> {
   const base = `${inv}/`;
   const upstream = new URL(subpath + search, base);
-  const r = await fetch(upstream, {
+  const r = await fetchWithTimeout(upstream, {
     headers: forwardHeaders,
     cache: "no-store",
   });
@@ -39,7 +40,7 @@ async function fetchInvidiousUpstream(
     if (alt === current) continue;
     const u = new URL(`vi/${videoId}/${alt}`, base);
     u.search = new URL(subpath + search, base).search;
-    const r2 = await fetch(u.toString(), {
+    const r2 = await fetchWithTimeout(u.toString(), {
       headers: forwardHeaders,
       cache: "no-store",
     });
@@ -107,7 +108,13 @@ export async function GET(
   const accept = request.headers.get("accept");
   if (accept) forwardHeaders.accept = accept;
 
-  const r = await fetchInvidiousUpstream(inv, subpath, search, forwardHeaders);
+  let r: Response;
+  try {
+    r = await fetchInvidiousUpstream(inv, subpath, search, forwardHeaders);
+  } catch {
+    // Timeout or network failure: surface a gateway error so hls.js retries.
+    return new Response("upstream fetch failed", { status: 504 });
+  }
 
   const appOrigin = getAppOriginFromRequestHeaders({
     get: (n) => request.headers.get(n),

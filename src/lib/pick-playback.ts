@@ -550,10 +550,15 @@ export function buildWatchPlayback(
     merged = buildMerged(() => true);
   }
 
-  // Piped progressive URLs are known at page load. HLS tiers only appear after
-  // hls.js parses the manifest (often post-play), which made the quality menu
-  // look stuck on 360p when opened before playback.
+  // Single-language Piped: prefer HLS (one muxed stream) over progressive. The
+  // progressive list's HD rungs are video-only "split" variants paired with a
+  // separate <audio> element, which drift out of sync over time. HLS avoids the
+  // split path entirely. We only fall back to progressive when there are ≥2
+  // audio languages (HLS drops the language picker) or no HLS URL exists.
   if (isPipedLike && merged.length > 0) {
+    if (detail.hlsUrl && !preferSplitForLanguages) {
+      return { kind: "hls", url: detail.hlsUrl, onlyDashOrUnsupported: false };
+    }
     const variants = preferPlaybackDefault(
       buildFullQualitySelectorList(merged),
     );

@@ -1,6 +1,6 @@
 import { desc, eq } from "drizzle-orm";
-import { filterShortsFeedVideos } from "@/lib/short-video";
 import { takeNewestVideos } from "@/lib/published-sort-key";
+import { filterShortsFeedVideos } from "@/lib/short-video";
 import type { AppDb } from "@/server/db/client";
 import { subscriptions } from "@/server/db/schema";
 import { useColdStartBlend } from "@/server/recommendation/coldstart";

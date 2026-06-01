@@ -5,6 +5,10 @@ import {
   scoreCandidateDetail,
 } from "@/server/recommendation/scoring";
 import type { UserSignals } from "@/server/recommendation/signals";
+import {
+  type TfidfModel,
+  termFrequencyVector,
+} from "@/server/recommendation/tfidf";
 import type { ScoredVideo } from "@/server/recommendation/types";
 import {
   fetchRelatedVideos,
@@ -117,7 +121,8 @@ export type ExpandScoredPoolWithRelatedOpts = {
   overrides?: ProxySourceOverrides;
   excludeVideoIds: ReadonlySet<string>;
   signals: UserSignals;
-  corpusTitles: string[];
+  tasteModel: TfidfModel;
+  dislikeModel?: TfidfModel;
   maxCh: number;
   scoreContext: RecommendationScoreContext;
   minScoredForExpansion?: number;
@@ -139,7 +144,8 @@ export async function expandScoredPoolWithRelatedCandidates(
     overrides,
     excludeVideoIds,
     signals,
-    corpusTitles,
+    tasteModel,
+    dislikeModel,
     maxCh,
     scoreContext,
     minScoredForExpansion = 8,
@@ -182,9 +188,10 @@ export async function expandScoredPoolWithRelatedCandidates(
     const detail = scoreCandidateDetail(
       video,
       signals,
-      corpusTitles,
+      tasteModel,
       maxCh,
       scoreContext,
+      dislikeModel,
     );
     const boost = RELATED_SEED_SCORE_BOOST * (seedScore / maxSeedScore);
     newRows.push({
@@ -192,6 +199,7 @@ export async function expandScoredPoolWithRelatedCandidates(
       rawScore: detail.score + boost,
       scoreBreakdown: detail.breakdown,
       candidateSource: source,
+      titleVector: termFrequencyVector(video.title),
     });
   }
 

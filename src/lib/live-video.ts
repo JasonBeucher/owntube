@@ -22,15 +22,6 @@ export function normalizeDurationForLive(
   return durationSeconds;
 }
 
-function pipedZeroDurationHint(
-  raw: Record<string, unknown>,
-  type: string,
-): boolean {
-  if (type !== "stream") return false;
-  const duration = raw.duration;
-  return duration === 0 || duration === -1;
-}
-
 export function pickLiveFlagsFromUpstream(raw: Record<string, unknown>): {
   isLive: boolean;
   isUpcoming: boolean;
@@ -43,10 +34,7 @@ export function pickLiveFlagsFromUpstream(raw: Record<string, unknown>): {
     raw.live === true ||
     type === "livestream";
   const invidiousLive = raw.liveNow === true;
-  const pipedListLive =
-    !isUpcoming && pipedZeroDurationHint(raw, type) && !pipedExplicit;
-  const isLive =
-    !isUpcoming && (pipedExplicit || invidiousLive || pipedListLive);
+  const isLive = !isUpcoming && (pipedExplicit || invidiousLive);
   return { isLive, isUpcoming };
 }
 

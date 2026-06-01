@@ -40,9 +40,13 @@ describe("pickLiveFlagsFromUpstream", () => {
     });
   });
 
-  it("infers Piped list live from stream type and zero duration", () => {
+  it("does not infer live from Piped stream type with missing duration", () => {
     expect(pickLiveFlagsFromUpstream({ type: "stream", duration: 0 })).toEqual({
-      isLive: true,
+      isLive: false,
+      isUpcoming: false,
+    });
+    expect(pickLiveFlagsFromUpstream({ type: "stream", duration: -1 })).toEqual({
+      isLive: false,
       isUpcoming: false,
     });
   });

@@ -59,9 +59,13 @@ import {
   writePlayerVolumeOnly,
 } from "@/lib/player-media-prefs";
 import {
-  playbackRateVolumeAttenuation,
   uiVolumeToGain,
+  volumeGainFor,
 } from "@/lib/player-volume-gain";
+import {
+  attachPeakLimiter,
+  resumePeakLimiter,
+} from "@/lib/audio-peak-limiter";
 import {
   categoryLabel,
   type SponsorBlockSegment,
@@ -622,10 +626,25 @@ function useVidstackAdapter(
     playerRef as React.RefObject<EventTarget | null>,
   );
   const [uiVolume, setUiVolume] = useState(1);
+  const limiterActiveRef = useRef(false);
+  const activatedRef = useRef(false);
+
+  // Route the media element through the Web Audio peak limiter once the user
+  // has started playback (attaching while the AudioContext is suspended would
+  // silence audio). Falls back to volume attenuation when attach is unsafe.
+  const ensureLimiter = useCallback(() => {
+    if (!activatedRef.current) return;
+    if (!limiterActiveRef.current) {
+      const host = playerRef.current as unknown as HTMLElement | null;
+      const el = host?.querySelector("video") ?? null;
+      limiterActiveRef.current = attachPeakLimiter(el);
+    }
+    if (limiterActiveRef.current) resumePeakLimiter();
+  }, [playerRef]);
 
   const pushElementVolume = useCallback(
     (volUi: number, rate: number) => {
-      const gain = uiVolumeToGain(volUi) * playbackRateVolumeAttenuation(rate);
+      const gain = volumeGainFor(volUi, rate, limiterActiveRef.current);
       remote.changeVolume(Math.min(1, gain));
     },
     [remote],
@@ -635,6 +654,15 @@ function useVidstackAdapter(
     if (state.muted || uiVolume <= 0) return;
     pushElementVolume(uiVolume, state.playbackRate);
   }, [state.playbackRate, state.muted, uiVolume, pushElementVolume]);
+
+  // Attach the limiter as soon as playback starts (covers the case where the
+  // <video> src/blob was not ready during the initial play gesture).
+  useEffect(() => {
+    if (state.paused || !state.canPlay) return;
+    ensureLimiter();
+    pushElementVolume(uiVolume, state.playbackRate);
+    // Only re-run on transition into playable/playing.
+  }, [state.paused, state.canPlay, ensureLimiter, pushElementVolume, uiVolume, state.playbackRate]);
 
   return {
     paused: state.paused,
@@ -650,6 +678,8 @@ function useVidstackAdapter(
       // On mobile, user-triggered play should also clear accidental muted state
       // (sticky after autoplay-policy transitions/tab restores).
       if (state.muted && state.volume > 0.001) remote.unmute();
+      activatedRef.current = true;
+      ensureLimiter();
       remote.play();
     },
     pause: () => remote.pause(),
@@ -659,6 +689,8 @@ function useVidstackAdapter(
         return;
       }
       if (state.muted && state.volume > 0.001) remote.unmute();
+      activatedRef.current = true;
+      ensureLimiter();
       remote.play();
     },
     seek: (t) => remote.seek(t),
@@ -667,6 +699,8 @@ function useVidstackAdapter(
       setUiVolume(v);
       if (v > 0) {
         if (state.muted) remote.unmute();
+        activatedRef.current = true;
+        ensureLimiter();
         pushElementVolume(v, state.playbackRate);
       } else {
         remote.mute();
@@ -675,6 +709,8 @@ function useVidstackAdapter(
     toggleMuted: () => (state.muted ? remote.unmute() : remote.mute()),
     setPlaybackRate: (r) => {
       remote.changePlaybackRate(r);
+      activatedRef.current = true;
+      ensureLimiter();
       if (!state.muted && uiVolume > 0) {
         pushElementVolume(uiVolume, r);
       }
@@ -700,6 +736,20 @@ function useNativeAdapter(opts: {
   const bump = useCallback(() => force((x) => x + 1), []);
   const [muted, setMuted] = useState(false);
   const [pictureInPicture, setPictureInPicture] = useState(false);
+  const limiterActiveRef = useRef(false);
+  const activatedRef = useRef(false);
+
+  // The audible element is the companion <audio> when present (the <video> is
+  // muted in split mode), otherwise the muxed <video> itself. Attach the peak
+  // limiter to it once the user has activated playback.
+  const ensureLimiter = useCallback(() => {
+    if (!activatedRef.current) return;
+    if (!limiterActiveRef.current) {
+      const el = audioRef.current ?? videoRef.current;
+      limiterActiveRef.current = attachPeakLimiter(el);
+    }
+    if (limiterActiveRef.current) resumePeakLimiter();
+  }, [audioRef, videoRef]);
 
   const syncCompanionVolume = useCallback(
     (overrides?: { muted?: boolean; volumeUi?: number }) => {
@@ -709,11 +759,9 @@ function useNativeAdapter(opts: {
       const m = overrides?.muted ?? muted;
       const volUi = overrides?.volumeUi ?? externalVolume;
       const rate = v?.playbackRate ?? 1;
-      const base = m ? 0 : uiVolumeToGain(volUi);
-      const att = playbackRateVolumeAttenuation(rate);
       try {
         a.muted = m;
-        a.volume = Math.min(1, base * att);
+        a.volume = m ? 0 : Math.min(1, volumeGainFor(volUi, rate, limiterActiveRef.current));
       } catch {
         /* ignore */
       }
@@ -728,11 +776,10 @@ function useNativeAdapter(opts: {
       const m = overrides?.muted ?? muted;
       const volUi = overrides?.volumeUi ?? externalVolume;
       const rate = v.playbackRate ?? 1;
-      const att = playbackRateVolumeAttenuation(rate);
       try {
         v.muted = m || volUi <= 0;
         if (!v.muted) {
-          v.volume = Math.min(1, uiVolumeToGain(volUi) * att);
+          v.volume = Math.min(1, volumeGainFor(volUi, rate, limiterActiveRef.current));
         }
       } catch {
         /* ignore */
@@ -775,6 +822,25 @@ function useNativeAdapter(opts: {
     };
   }, [videoRef, bump]);
 
+  // Attach the limiter when playback actually starts (the element src/buffer
+  // may not have been ready during the initial play gesture).
+  useEffect(() => {
+    const v = videoRef.current;
+    const a = audioRef.current;
+    if (!v) return;
+    const onStart = () => {
+      ensureLimiter();
+      syncCompanionVolume();
+      if (!audioRef.current) applyVideoElementVolume();
+    };
+    v.addEventListener("playing", onStart);
+    a?.addEventListener("playing", onStart);
+    return () => {
+      v.removeEventListener("playing", onStart);
+      a?.removeEventListener("playing", onStart);
+    };
+  }, [videoRef, audioRef, ensureLimiter, syncCompanionVolume, applyVideoElementVolume]);
+
   useEffect(() => {
     const onPiPChange = () => {
       setPictureInPicture(Boolean(document.pictureInPictureElement));
@@ -814,6 +880,8 @@ function useNativeAdapter(opts: {
     play: () => {
       const v = videoRef.current;
       const a = audioRef.current;
+      activatedRef.current = true;
+      ensureLimiter();
       if (!muted && v && !a) {
         applyVideoElementVolume({ muted: false, volumeUi: externalVolume });
       }
@@ -834,6 +902,8 @@ function useNativeAdapter(opts: {
       if (!el) return;
       const a = audioRef.current;
       if (el.paused) {
+        activatedRef.current = true;
+        ensureLimiter();
         if (!muted && !a) {
           applyVideoElementVolume({ muted: false, volumeUi: externalVolume });
         }
@@ -863,6 +933,10 @@ function useNativeAdapter(opts: {
       setExternalVolume(n);
       const nextMuted = n === 0 ? true : n > 0 && muted ? false : muted;
       if (nextMuted !== muted) setMuted(nextMuted);
+      if (n > 0) {
+        activatedRef.current = true;
+        ensureLimiter();
+      }
       // Apply immediately so the change happens within the user gesture; the
       // effect above also keeps things in sync as React state catches up.
       const a = audioRef.current;
@@ -891,6 +965,8 @@ function useNativeAdapter(opts: {
     setPlaybackRate: (r) => {
       const v = videoRef.current;
       const a = audioRef.current;
+      activatedRef.current = true;
+      ensureLimiter();
       if (v && a) {
         const resumeAudio = !v.paused && !a.paused;
         if (resumeAudio) a.pause();
@@ -1689,6 +1765,20 @@ function ProgressBar({
   } | null>(null);
   const [dragging, setDragging] = useState(false);
   const draggingRef = useRef(false);
+  // Portal target must follow the fullscreen element: in fullscreen the player
+  // shell becomes its own stacking context, so anything left on `document.body`
+  // renders *behind* it (z-index is inert across stacking contexts).
+  const [fsEl, setFsEl] = useState<Element | null>(null);
+  useEffect(() => {
+    const onChange = () => setFsEl(document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onChange);
+    document.addEventListener("webkitfullscreenchange", onChange);
+    onChange();
+    return () => {
+      document.removeEventListener("fullscreenchange", onChange);
+      document.removeEventListener("webkitfullscreenchange", onChange);
+    };
+  }, []);
 
   const syncHoverAnchor = useCallback((clientX: number) => {
     const el = trackRef.current;
@@ -1923,7 +2013,7 @@ function ProgressBar({
                 {formatClock(hover)}
               </span>
             </div>,
-            document.body,
+            (fsEl as HTMLElement | null) ?? document.body,
           )
         : null}
       <div
@@ -4535,6 +4625,15 @@ export function VideoPlayer({
       }
     }
 
+    // A broken short must never reload the whole /shorts page: the full-page
+    // location.assign recovery would refetch the feed, drop scroll position and
+    // re-buffer (often re-failing into a reload loop). Skip the hard recovery
+    // and just advance to the next short, skipping the unplayable one.
+    if (shortsMode) {
+      onEndedExternal?.();
+      return;
+    }
+
     const candidates: string[] = [];
     if (active.kind === "hls" && active.src) {
       candidates.push(active.src);
@@ -4554,10 +4653,12 @@ export function VideoPlayer({
     active,
     effectivePayload.mode,
     isLive,
+    onEndedExternal,
     playbackSourceUsed,
     progressiveMobileSafe,
     qualityIndex,
     setQualityWithResume,
+    shortsMode,
     videoId,
   ]);
 

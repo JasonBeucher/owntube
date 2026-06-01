@@ -4,6 +4,7 @@ import {
   pickNewestVideoPerChannel,
 } from "@/lib/published-sort-key";
 import { isStrictShortVideo } from "@/lib/short-video";
+import { shortsSearchQueriesForTaste } from "@/lib/shorts-discovery-queries";
 import type { AppDb } from "@/server/db/client";
 import {
   expandScoredPoolWithRelatedCandidates,
@@ -11,7 +12,6 @@ import {
 } from "@/server/recommendation/collect-related-candidates";
 import { collectShortsCandidates } from "@/server/recommendation/collect-shorts-candidates";
 import { maximalMarginalRelevance } from "@/server/recommendation/diversity";
-import { shortsSearchQueriesForTaste } from "@/lib/shorts-discovery-queries";
 import {
   keepCandidateForPersonalizedFeed,
   keepShortsDiscoveryCandidate,
@@ -21,7 +21,14 @@ import {
 } from "@/server/recommendation/scoring";
 import { loadShortSeenVideoIds } from "@/server/recommendation/shorts-seen";
 import { collectUserSignals } from "@/server/recommendation/signals";
-import { readCachedDetailTitlesForVideos } from "@/server/recommendation/taste-corpus";
+import {
+  readCachedDetailTitlesForVideos,
+  readCachedDislikeTitlesOrdered,
+} from "@/server/recommendation/taste-corpus";
+import {
+  buildTfidfModel,
+  termFrequencyVector,
+} from "@/server/recommendation/tfidf";
 import type { ScoredVideo } from "@/server/recommendation/types";
 import { loadWatchedVideoIdsForRecommendations } from "@/server/recommendation/watched-videos";
 import type { ProxySourceOverrides } from "@/server/services/proxy";
@@ -57,11 +64,13 @@ function deterministicColdStartJitter(userId: number, videoId: string): number {
 function shortsPoolCacheKey(
   userId: number,
   opts: { pageSize: number; region: string; overrides?: ProxySourceOverrides },
-  shortsSeenCount: number,
 ): string {
   const piped = opts.overrides?.pipedBaseUrl?.trim() ?? "";
   const invidious = opts.overrides?.invidiousBaseUrl?.trim() ?? "";
-  return `shorts|${userId}|${opts.region}|${opts.pageSize}|${piped}|${invidious}|seen:${shortsSeenCount}`;
+  // `shorts seen` is deliberately NOT part of the key: it grows on every scroll
+  // and would bust the 90s cache (forcing a full channel-tab refetch) on each
+  // short. Seen filtering happens downstream (`fetchShortsFeedForViewer`).
+  return `shorts|${userId}|${opts.region}|${opts.pageSize}|${piped}|${invidious}`;
 }
 
 function sliceShortsPool(
@@ -80,6 +89,7 @@ function sliceShortsPool(
         scoreBreakdown: _b,
         candidateSource: _c,
         coldStartJitter: _j,
+        titleVector: _tv,
         ...video
       } = row;
       return video;
@@ -111,16 +121,11 @@ export async function getShortsRecommendations(
   },
 ): Promise<ShortsRecommendationResult> {
   const region = opts.region ?? "US";
-  const shortsSeenCount = loadShortSeenVideoIds(db, userId).size;
-  const cacheKey = shortsPoolCacheKey(
-    userId,
-    {
-      pageSize: opts.pageSize,
-      region,
-      overrides: opts.overrides,
-    },
-    shortsSeenCount,
-  );
+  const cacheKey = shortsPoolCacheKey(userId, {
+    pageSize: opts.pageSize,
+    region,
+    overrides: opts.overrides,
+  });
   const now = Date.now();
   if (opts.forcePoolRefresh) {
     shortsPoolCache.delete(cacheKey);
@@ -223,20 +228,27 @@ export async function getShortsRecommendations(
       ...signals.interactionInterestChannelIds,
     ]);
     const maxCh = Math.max(1, ...signals.channelWeights.values());
+    const tasteModel = buildTfidfModel(corpusTitles, {
+      groups: [keywordCorpus, tasteTitles],
+    });
+    const dislikeModel = buildTfidfModel(
+      readCachedDislikeTitlesOrdered(db, [...signals.dislikedVideoIds], 48),
+    );
 
     let scored: ScoredVideo[] = uniqueRaw.map((v) => {
       const source = sourceByVideoId.get(v.videoId);
       const detail = scoreCandidateDetail(
         v,
         signals,
-        corpusTitles,
+        tasteModel,
         maxCh,
         scoreContext,
+        dislikeModel,
       );
       const penalty = shortsDiscoveryScorePenalty(
         v,
         signals,
-        corpusTitles,
+        tasteModel,
         source,
         interestChannelIds,
       );
@@ -245,6 +257,7 @@ export async function getShortsRecommendations(
         rawScore: detail.score - penalty,
         scoreBreakdown: detail.breakdown,
         candidateSource: source,
+        titleVector: termFrequencyVector(v.title),
       };
     });
 
@@ -272,7 +285,8 @@ export async function getShortsRecommendations(
         overrides: opts.overrides,
         excludeVideoIds: watchedEver,
         signals,
-        corpusTitles,
+        tasteModel,
+        dislikeModel,
         maxCh,
         scoreContext,
         minScoredForExpansion: 6,
@@ -285,7 +299,7 @@ export async function getShortsRecommendations(
         return keepShortsDiscoveryCandidate(
           row,
           signals,
-          corpusTitles,
+          tasteModel,
           interestChannelIds,
         );
       }
@@ -293,7 +307,7 @@ export async function getShortsRecommendations(
       return keepCandidateForPersonalizedFeed(
         row,
         signals,
-        corpusTitles,
+        tasteModel,
         interestChannelIds,
       );
     });

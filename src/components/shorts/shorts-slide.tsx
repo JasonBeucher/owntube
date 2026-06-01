@@ -177,22 +177,22 @@ export function ShortsSlide({
 
   return (
     <section
-      className="relative flex h-full min-h-0 w-full items-center justify-center bg-black px-2 pb-2 pt-2 sm:px-4"
+      className="relative flex h-full min-h-0 w-full items-center justify-center bg-black px-0 pb-2 pt-0 sm:px-4 sm:pt-2"
       aria-label={video.title}
       data-short-active={active ? "true" : "false"}
     >
-      <div className="flex h-full max-h-full min-h-0 w-full max-w-4xl items-stretch justify-center gap-2 sm:gap-3">
+      <div className="relative flex h-full max-h-full min-h-0 w-full max-w-4xl items-stretch justify-center gap-2 sm:gap-3">
         <div
           className={cn(
             SHORT_FRAME_CLASS,
-            "overflow-hidden rounded-xl bg-black shadow-2xl ring-1 ring-white/10",
+            "overflow-hidden rounded-none bg-black ring-0 sm:rounded-xl sm:shadow-2xl sm:ring-1 sm:ring-white/10",
           )}
           style={{ aspectRatio: frameAspect }}
         >
           <div className="absolute inset-0">{body}</div>
 
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 rounded-b-xl bg-gradient-to-t from-black/90 via-black/45 to-transparent px-3 pb-5 pt-12">
-            <div className="pointer-events-auto min-w-0 pr-1">
+            <div className="pointer-events-auto min-w-0 pr-16 sm:pr-1">
               {video.channelId && video.channelName ? (
                 <Link
                   href={`/channel/${encodeURIComponent(video.channelId)}`}
@@ -216,7 +216,7 @@ export function ShortsSlide({
             videoId={video.videoId}
             channelId={video.channelId}
             channelName={video.channelName}
-            className="shrink-0 self-end pb-6"
+            className="absolute bottom-0 right-0 z-30 pr-2 sm:static sm:right-auto sm:bottom-auto sm:self-end sm:pr-0 sm:pb-6"
           />
         ) : null}
       </div>

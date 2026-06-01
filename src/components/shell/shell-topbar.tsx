@@ -3,12 +3,14 @@
 import type { ReactNode } from "react";
 import { BrandLogo } from "@/components/shell/brand-logo";
 import { TopbarSearch } from "@/components/shell/topbar-search";
+import { cn } from "@/lib/utils";
 
 type ShellTopbarProps = {
   sidebarOpen: boolean;
   onOpenMenu: () => void;
   onLogoClick?: () => void;
   topbarRight: ReactNode;
+  hiddenOnMobile?: boolean;
 };
 
 export function ShellTopbar({
@@ -16,14 +18,20 @@ export function ShellTopbar({
   onOpenMenu,
   onLogoClick,
   topbarRight,
+  hiddenOnMobile = false,
 }: ShellTopbarProps) {
   return (
-    <header className="sticky top-0 z-30 flex shrink-0 items-center gap-2 border-b border-[hsl(var(--border))] bg-[hsl(var(--background)_/_0.88)] px-3 py-2 backdrop-blur-xl backdrop-saturate-150 md:gap-3 md:px-4 dark:bg-[hsl(var(--background)_/_0.78)]">
+    <header
+      className={cn(
+        "sticky top-0 z-30 flex shrink-0 items-center gap-2 border-b border-[hsl(var(--border))] bg-[hsl(var(--background)_/_0.88)] px-3 py-2 backdrop-blur-xl backdrop-saturate-150 md:gap-3 md:px-4 dark:bg-[hsl(var(--background)_/_0.78)]",
+        hiddenOnMobile && "hidden min-[901px]:flex",
+      )}
+    >
       {!sidebarOpen ? (
         <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]"
+            className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))] min-[901px]:inline-flex"
             aria-label="Toggle menu"
             onClick={onOpenMenu}
           >
@@ -52,7 +60,7 @@ export function ShellTopbar({
         <TopbarSearch />
       </div>
 
-      <div className="flex shrink-0 items-center justify-end gap-1">
+      <div className="hidden shrink-0 items-center justify-end gap-1 min-[901px]:flex">
         {topbarRight}
       </div>
     </header>

@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import type { ReactNode } from "react";
 import { Providers } from "@/app/providers";
@@ -6,6 +6,7 @@ import { UserNav } from "@/components/auth/user-nav";
 import { SwRegister } from "@/components/pwa/sw-register";
 import { FaviconInitScript } from "@/components/settings/favicon-init-script";
 import { AppShell } from "@/components/shell/app-shell";
+import { MobileAccountMenu } from "@/components/shell/mobile-account-menu";
 import { UiScale } from "@/components/shell/ui-scale";
 import { FAVICON_VERSION } from "@/lib/favicon";
 import { auth } from "@/server/auth";
@@ -40,6 +41,10 @@ export const metadata: Metadata = {
   },
 };
 
+export const viewport: Viewport = {
+  viewportFit: "cover",
+};
+
 export default async function RootLayout({
   children,
 }: Readonly<{
@@ -59,7 +64,11 @@ export default async function RootLayout({
         <Providers>
           <UiScale />
           <SwRegister />
-          <AppShell isLoggedIn={isLoggedIn} topbarRight={<UserNav />}>
+          <AppShell
+            isLoggedIn={isLoggedIn}
+            topbarRight={<UserNav />}
+            bottomNavAccount={<MobileAccountMenu />}
+          >
             {children}
           </AppShell>
         </Providers>

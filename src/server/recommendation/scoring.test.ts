@@ -7,6 +7,7 @@ import {
   watchedRepeatPenalty,
 } from "@/server/recommendation/scoring";
 import type { UserSignals } from "@/server/recommendation/signals";
+import { buildTfidfModel } from "@/server/recommendation/tfidf";
 
 function emptySignals(overrides: Partial<UserSignals> = {}): UserSignals {
   return {
@@ -35,6 +36,73 @@ describe("scoring", () => {
     expect(publicationFreshnessScore("1 day ago")).toBeGreaterThan(
       publicationFreshnessScore("21 days ago"),
     );
+  });
+
+  it("prefers numeric publishedAt over publishedText when available", () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    // publishedText lies ("old"), but the numeric timestamp says ~1h old.
+    const recent = publicationFreshnessScore("3 years ago", nowSec - 3600);
+    const stale = publicationFreshnessScore(
+      "3 years ago",
+      nowSec - 200 * 24 * 3600,
+    );
+    expect(recent).toBeGreaterThan(stale);
+    // Localized/unparseable text falls back to the timestamp instead of default.
+    expect(
+      publicationFreshnessScore("il y a 1 heure", nowSec - 3600),
+    ).toBeGreaterThan(publicationFreshnessScore("il y a 1 heure"));
+  });
+
+  it("amplifies on-topic title similarity (content gain)", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const signals = emptySignals({ totalWatches: 20 });
+    const corpus = buildTfidfModel([
+      "rust async runtime tokio",
+      "rust ownership and borrowing",
+    ]);
+    const onTopic = scoreCandidateDetail(
+      { videoId: "a", title: "rust async runtime deep dive", viewCount: 100 },
+      signals,
+      corpus,
+      1,
+    );
+    const offTopic = scoreCandidateDetail(
+      { videoId: "b", title: "pasta carbonara recipe", viewCount: 100 },
+      signals,
+      corpus,
+      1,
+    );
+    expect(onTopic.breakdown.components.titleSimilarity).toBeGreaterThan(
+      offTopic.breakdown.components.titleSimilarity,
+    );
+    // Gain pushes a clear match toward the full title weight (0.42).
+    expect(onTopic.breakdown.components.titleSimilarity).toBeGreaterThan(0.2);
+  });
+
+  it("penalizes titles resembling disliked titles", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const signals = emptySignals({ totalWatches: 20 });
+    const taste = buildTfidfModel(["cooking pasta", "garden tips"]);
+    // TF-IDF needs ≥2 docs with distinguishing tokens to produce non-zero idf.
+    const dislike = buildTfidfModel([
+      "crypto pump and dump scam",
+      "crypto rug pull scam warning",
+    ]);
+    const video = {
+      videoId: "v",
+      title: "crypto pump and dump scam exposed",
+      viewCount: 100,
+    };
+    const withDislike = scoreCandidate(
+      video,
+      signals,
+      taste,
+      1,
+      undefined,
+      dislike,
+    );
+    const withoutDislike = scoreCandidate(video, signals, taste, 1);
+    expect(withDislike).toBeLessThan(withoutDislike);
   });
 
   it("detects likely shorts from duration or title", () => {
@@ -79,7 +147,7 @@ describe("scoring", () => {
       channelWeights: new Map([["UC1", 3]]),
       totalWatches: 20,
     });
-    const corpus = ["hello", "world"];
+    const corpus = buildTfidfModel(["hello", "world"]);
     const ctx = { recentCoverageByChannel: new Map([["UC1", 0.5]]) };
     const d = scoreCandidateDetail(video, signals, corpus, 3, ctx);
     const s = scoreCandidate(video, signals, corpus, 3, ctx);
@@ -90,6 +158,7 @@ describe("scoring", () => {
       d.breakdown.components.popularity +
       d.breakdown.components.freshness +
       d.breakdown.components.repeatPenalty +
+      d.breakdown.components.dislikePenalty +
       d.breakdown.components.formatBias +
       d.breakdown.components.explore +
       d.breakdown.components.shareFromChannel +
@@ -110,7 +179,7 @@ describe("scoring", () => {
     const signals = emptySignals({
       channelWeights: new Map([["UCsame", 5]]),
     });
-    const corpus = ["topic deep dive"];
+    const corpus = buildTfidfModel(["topic deep dive"]);
     const shortScore = scoreCandidate(
       { ...base, title: "Topic #shorts", durationSeconds: 30 },
       signals,
@@ -141,7 +210,7 @@ describe("scoring", () => {
       totalDistinctVideosWatched: 10,
       watchedVideoLastSeen: new Map(),
     });
-    const corpus = ["deadlock gameplay", "deadlock guide"];
+    const corpus = buildTfidfModel(["deadlock gameplay", "deadlock guide"]);
     const low = scoreCandidate(video, baseSignals, corpus, 2, {
       recentCoverageByChannel: new Map([["UCfan", 0.1]]),
     });

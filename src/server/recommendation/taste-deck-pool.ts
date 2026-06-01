@@ -23,6 +23,7 @@ import {
   readCachedDetailTitlesForVideos,
   readCachedDislikeTitlesOrdered,
 } from "@/server/recommendation/taste-corpus";
+import { buildTfidfModel } from "@/server/recommendation/tfidf";
 import {
   fetchTrendingVideos,
   type ProxySourceOverrides,
@@ -281,13 +282,16 @@ export async function buildTasteDeckVideos(
     recentCoverageByChannel,
   };
   const maxCh = Math.max(1, ...signals.channelWeights.values());
+  const tasteModel = buildTfidfModel(corpusTitles, {
+    groups: [keywordCorpus, tasteTitles],
+  });
 
   type Scored = UnifiedVideo & { rawScore: number };
   let scored: Scored[] = fresh.map((v) => {
     const detail = scoreCandidateDetail(
       v,
       signals,
-      corpusTitles,
+      tasteModel,
       maxCh,
       scoreContext,
     );

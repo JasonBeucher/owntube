@@ -24,7 +24,14 @@ import {
 } from "@/server/recommendation/scoring";
 import { clearShortsRecommendationCacheForUser } from "@/server/recommendation/shorts-recommendation-pool";
 import { collectUserSignals } from "@/server/recommendation/signals";
-import { readCachedDetailTitlesForVideos } from "@/server/recommendation/taste-corpus";
+import {
+  readCachedDetailTitlesForVideos,
+  readCachedDislikeTitlesOrdered,
+} from "@/server/recommendation/taste-corpus";
+import {
+  buildTfidfModel,
+  termFrequencyVector,
+} from "@/server/recommendation/tfidf";
 import type { ScoredVideo } from "@/server/recommendation/types";
 import type { ProxySourceOverrides } from "@/server/services/proxy";
 import type { UnifiedVideo } from "@/server/services/proxy.types";
@@ -88,6 +95,7 @@ function diversifiedRowToVideo(row: ScoredVideo): UnifiedVideo {
     scoreBreakdown: _b,
     candidateSource: _c,
     coldStartJitter: _j,
+    titleVector: _tv,
     ...video
   } = row;
   return video;
@@ -311,20 +319,30 @@ async function ensureRecommendationPool(
       ...signals.interactionInterestChannelIds,
     ]);
     const maxCh = Math.max(1, ...signals.channelWeights.values());
+    // Per-interest centroids (keywords / liked+saved titles) so a candidate
+    // matching one interest is not diluted by the user's other interests.
+    const tasteModel = buildTfidfModel(corpusTitles, {
+      groups: [keywordCorpus, tasteTitles],
+    });
+    const dislikeModel = buildTfidfModel(
+      readCachedDislikeTitlesOrdered(db, [...signals.dislikedVideoIds], 48),
+    );
 
     let scored: ScoredVideo[] = unique.map((v) => {
       const detail = scoreCandidateDetail(
         v,
         signals,
-        corpusTitles,
+        tasteModel,
         maxCh,
         scoreContext,
+        dislikeModel,
       );
       return {
         ...v,
         rawScore: detail.score,
         scoreBreakdown: detail.breakdown,
         candidateSource: sourceByVideoId.get(v.videoId),
+        titleVector: termFrequencyVector(v.title),
       };
     });
 
@@ -352,7 +370,8 @@ async function ensureRecommendationPool(
         overrides: opts.overrides,
         excludeVideoIds: watchedEver,
         signals,
-        corpusTitles,
+        tasteModel,
+        dislikeModel,
         maxCh,
         scoreContext,
       });
@@ -363,7 +382,7 @@ async function ensureRecommendationPool(
         keepCandidateForPersonalizedFeed(
           row,
           signals,
-          corpusTitles,
+          tasteModel,
           interestChannelIds,
         ),
       );

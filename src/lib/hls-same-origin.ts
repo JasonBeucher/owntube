@@ -153,8 +153,10 @@ export function buildHlsSameOriginConfig(
   return {
     loader: ProxiedLoader,
     startFragPrefetch: true,
-    maxBufferLength: 12,
-    maxMaxBufferLength: 30,
+    // Deeper buffer absorbs proxied-segment latency: fewer mid-playback stalls
+    // and snappier seeks. Live keeps its own low-latency config elsewhere.
+    maxBufferLength: 30,
+    maxMaxBufferLength: 60,
     maxBufferHole: 0.5,
     xhrSetup(xhr, url) {
       const proxied = rewrite(url);

@@ -665,6 +665,78 @@ describe("buildWatchPlayback", () => {
   });
 });
 
+describe("buildWatchPlayback — Piped split vs HLS", () => {
+  const pipedSplit = (over: Partial<VideoDetail>): VideoDetail =>
+    base({
+      sourceUsed: "piped",
+      videoSources: [
+        {
+          url: "https://piped.example/videoplayback?itag=137",
+          quality: "1080p",
+          videoOnly: true,
+          mimeType: "video/mp4",
+        },
+      ],
+      audioSources: [
+        {
+          url: "https://piped.example/videoplayback?itag=140&lang=en",
+          quality: "medium",
+          mimeType: "audio/mp4",
+          language: "en",
+          audioTrackDisplayName: "English",
+        },
+      ],
+      ...over,
+    });
+
+  it("prefers HLS over split for single-language Piped VOD (avoids A/V desync)", () => {
+    const w = buildWatchPlayback(
+      pipedSplit({ hlsUrl: "https://h.example/playlist.m3u8" }),
+    );
+    expect(w).toEqual({
+      kind: "hls",
+      url: "https://h.example/playlist.m3u8",
+      onlyDashOrUnsupported: false,
+    });
+  });
+
+  it("keeps progressive split for multi-language Piped VOD (HLS drops the picker)", () => {
+    const w = buildWatchPlayback(
+      pipedSplit({
+        hlsUrl: "https://h.example/playlist.m3u8",
+        audioSources: [
+          {
+            url: "https://piped.example/videoplayback?itag=140&lang=en",
+            quality: "medium",
+            mimeType: "audio/mp4",
+            language: "en",
+            audioTrackDisplayName: "English",
+          },
+          {
+            url: "https://piped.example/videoplayback?itag=140&lang=fr",
+            quality: "medium",
+            mimeType: "audio/mp4",
+            language: "fr",
+            audioTrackDisplayName: "French",
+          },
+        ],
+      }),
+    );
+    expect(w.kind).toBe("progressive");
+    if (w.kind === "progressive") {
+      expect(w.variants[0]?.t).toBe("split");
+    }
+  });
+
+  it("falls back to progressive split for Piped VOD without an HLS URL", () => {
+    const w = buildWatchPlayback(pipedSplit({}));
+    expect(w.kind).toBe("progressive");
+    if (w.kind === "progressive") {
+      expect(w.variants[0]?.t).toBe("split");
+    }
+  });
+});
+
 describe("pickPlaybackForVidstack (compat)", () => {
   it("returns first progressive url", () => {
     const r = pickPlaybackForVidstack(

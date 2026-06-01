@@ -24,6 +24,9 @@ type ShortsFeedClientProps = {
   signedIn?: boolean;
 };
 
+/** How many upcoming shorts to resolve stream URLs for ahead of the active one. */
+const SHORTS_DETAIL_PREFETCH_AHEAD = 2;
+
 function filterExcludedVideos(
   videos: UnifiedVideo[],
   excluded: Set<string>,
@@ -74,6 +77,8 @@ export function ShortsFeedClient({
   });
   const [activeIndex, setActiveIndex] = useState(0);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  const [recycleMode, setRecycleMode] = useState(false);
+  const recycleModeRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const loadingMoreRef = useRef(false);
   const loadMoreCooldownRef = useRef(0);
@@ -237,6 +242,9 @@ export function ShortsFeedClient({
 
   // Append new upstream pages only — never drop slides already in the feed (watching
   // marks them excluded for pagination, but removing them breaks scroll snap).
+  // In recycleMode the seen/recorded filters are relaxed so the feed never
+  // dead-ends when the upstream pool is exhausted: the seen.has() guard still
+  // prevents re-adding slides already visible in the current scroll list.
   useEffect(() => {
     if (!feed.isSuccess) return;
     const merged = mergeFeedPages(feed.data.pages);
@@ -249,10 +257,12 @@ export function ShortsFeedClient({
       const seen = new Set(prev.map((v) => v.videoId));
       const added: UnifiedVideo[] = [];
       for (const v of merged) {
+        if (seen.has(v.videoId)) continue;
+        // Outside recycle mode skip content the user has already seen; in
+        // recycle mode accept it (the feed must never show nothing).
         if (
-          seen.has(v.videoId) ||
-          excluded.has(v.videoId) ||
-          recorded.has(v.videoId)
+          !recycleMode &&
+          (excluded.has(v.videoId) || recorded.has(v.videoId))
         ) {
           continue;
         }
@@ -262,7 +272,7 @@ export function ShortsFeedClient({
       if (added.length === 0) return prev;
       return [...prev, ...added];
     });
-  }, [feed.data, feed.isSuccess]);
+  }, [feed.data, feed.isSuccess, recycleMode]);
 
   useEffect(() => {
     setActiveIndex((prev) => Math.min(prev, Math.max(0, items.length - 1)));
@@ -298,6 +308,12 @@ export function ShortsFeedClient({
     }
     if (stallRetriesRef.current >= 5) return;
     stallRetriesRef.current += 1;
+    // After 3 stall retries with no new items, switch to recycle mode so the
+    // items effect accepts server-recycled content and the feed keeps scrolling.
+    if (stallRetriesRef.current >= 3 && !recycleModeRef.current) {
+      recycleModeRef.current = true;
+      setRecycleMode(true);
+    }
     loadMore();
   }, [
     feed.hasNextPage,
@@ -351,7 +367,6 @@ export function ShortsFeedClient({
   }, [initialVideoId, items.length]);
 
   const activeVideoId = items[activeIndex]?.videoId;
-  const nextVideoId = items[activeIndex + 1]?.videoId;
 
   useEffect(() => {
     const currentVideo = items.find((v) => v.videoId === activeVideoId);
@@ -395,10 +410,17 @@ export function ShortsFeedClient({
     }
   }, [items.length, feed.hasNextPage, feed.isFetchingNextPage, loadMore]);
 
+  // Resolve stream URLs (the dominant per-short latency — an upstream
+  // Piped/Invidious resolve) for the next few shorts so scrolling forward,
+  // including a quick double-swipe past the immediate next slide, starts
+  // playback without waiting. Detail queries still fresh in cache are reused,
+  // so re-running this on every active-index change is cheap.
   useEffect(() => {
-    if (!nextVideoId) return;
-    void utils.video.detail.prefetch({ videoId: nextVideoId });
-  }, [nextVideoId, utils.video.detail]);
+    for (let offset = 1; offset <= SHORTS_DETAIL_PREFETCH_AHEAD; offset++) {
+      const id = items[activeIndex + offset]?.videoId;
+      if (id) void utils.video.detail.prefetch({ videoId: id });
+    }
+  }, [items, activeIndex, utils.video.detail]);
 
   const upstream = feed.data?.pages[feed.data.pages.length - 1]?.upstream ??
     initialUpstream ?? {
@@ -469,6 +491,12 @@ export function ShortsFeedClient({
     if (!feed.hasNextPage) return;
     if (emptyPageRetriesRef.current >= 5) return;
     emptyPageRetriesRef.current += 1;
+    // After 2 empty pages, switch to recycle mode: the server is recycling
+    // content and the items effect must accept it to fill the feed.
+    if (emptyPageRetriesRef.current >= 2 && !recycleModeRef.current) {
+      recycleModeRef.current = true;
+      setRecycleMode(true);
+    }
     loadMore();
   }, [
     feed.data,

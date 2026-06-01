@@ -8,4 +8,6 @@ export type ScoredVideo = UnifiedVideo & {
   scoreBreakdown?: RecommendationScoreBreakdown;
   candidateSource?: string;
   coldStartJitter?: number;
+  /** Term-frequency vector of the title, for MMR content diversity. */
+  titleVector?: Map<string, number>;
 };

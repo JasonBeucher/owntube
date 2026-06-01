@@ -95,15 +95,19 @@ describe("buildWatchPlayback piped adaptive", () => {
     expect(w.variants.map((v) => v.label)).toContain("1080p");
   });
 
-  it("prefers progressive over HLS when Piped exposes both", () => {
+  it("prefers HLS over split for single-language Piped (avoids A/V desync)", () => {
     const w = buildWatchPlayback(
       pipedDetail({
         hlsUrl: "https://piped.example/hls.m3u8",
       }),
     );
-    expect(w.kind).toBe("progressive");
-    if (w.kind !== "progressive") return;
-    expect(w.variants.length).toBeGreaterThan(1);
+    // Single audio language: HLS is one muxed stream, so it sidesteps the
+    // split <video>+<audio> path that drifts out of sync over time.
+    expect(w).toEqual({
+      kind: "hls",
+      url: "https://piped.example/hls.m3u8",
+      onlyDashOrUnsupported: false,
+    });
   });
 
   it("reorders Piped variants for 720p and 360p-muxed preferences", () => {

@@ -1,9 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useMemo } from "react";
 import { VideoCardShort } from "@/components/videos/video-card";
-import { readSeenShortIds } from "@/lib/shorts-seen-storage";
 import {
   computeHomeShortsShelfLayout,
   LARGE_VIDEO_GRID_COLUMN_GAP_PX,
@@ -11,7 +10,7 @@ import {
 import type { UnifiedVideo } from "@/server/services/proxy.types";
 import { trpc } from "@/trpc/react";
 
-const SHORTS_SHELF_FETCH_LIMIT = 14;
+const SHORTS_SHELF_FETCH_LIMIT = 18;
 const SHORTS_SHELF_STALE_MS = 5 * 60_000;
 const SKELETON_SLOT_KEYS = [
   "a",
@@ -105,22 +104,21 @@ export function HomeShortsShelf({
       ),
     [columnCount, columnWidthPx, containerWidthPx],
   );
-  const [seenShortIds, setSeenShortIds] = useState<readonly string[]>([]);
-  const [seenHydrated, setSeenHydrated] = useState(false);
-  useEffect(() => {
-    setSeenShortIds(readSeenShortIds());
-    setSeenHydrated(true);
-  }, []);
-
+  // The shelf only excludes home-feed video IDs (to avoid duplicates with
+  // long-form rows). Previously-seen shorts from /shorts are NOT excluded here:
+  // the shelf should always show available content rather than going empty.
   const excludeSet = useMemo(
-    () => new Set([...excludeVideoIds, ...seenShortIds]),
-    [excludeVideoIds, seenShortIds],
+    () => new Set([...excludeVideoIds]),
+    [excludeVideoIds],
   );
 
-  const serverExcludeVideoIds = useMemo(() => {
-    const merged = [...excludeVideoIds, ...seenShortIds];
-    return merged.length > 200 ? merged.slice(-200) : merged;
-  }, [excludeVideoIds, seenShortIds]);
+  const serverExcludeVideoIds = useMemo(
+    () =>
+      excludeVideoIds.length > 200
+        ? [...excludeVideoIds].slice(-200)
+        : excludeVideoIds,
+    [excludeVideoIds],
+  );
 
   const shortsQuery = trpc.shorts.feed.useQuery(
     {
@@ -128,10 +126,12 @@ export function HomeShortsShelf({
       limit: SHORTS_SHELF_FETCH_LIMIT,
       purpose: "shelf",
       excludeVideoIds:
-        serverExcludeVideoIds.length > 0 ? serverExcludeVideoIds : undefined,
+        serverExcludeVideoIds.length > 0
+          ? (serverExcludeVideoIds as string[])
+          : undefined,
     },
     {
-      enabled: seenHydrated,
+      enabled: true,
       staleTime: SHORTS_SHELF_STALE_MS,
       refetchOnWindowFocus: false,
       refetchOnMount: true,

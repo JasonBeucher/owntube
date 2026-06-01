@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { UserMenu } from "@/components/auth/user-menu";
 import { Button } from "@/components/ui/button";
 import { auth, signOut } from "@/server/auth";
 
@@ -40,31 +41,14 @@ export async function UserNav() {
   const initial = userInitial(session);
 
   return (
-    <div className="flex items-center gap-0.5">
-      <form
-        action={async () => {
-          "use server";
-          await signOut({ redirectTo: "/" });
-        }}
-        className="inline"
-      >
-        <Button
-          type="submit"
-          variant="ghost"
-          size="sm"
-          className="h-8 rounded-[10px] px-2 text-xs font-medium text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
-        >
-          Out
-        </Button>
-      </form>
-      <Link
-        href="/settings"
-        className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ot-brand-gradient text-sm font-bold text-white ot-brand-shadow transition hover:brightness-110"
-        title={session.user?.email ?? "Account"}
-        aria-label="Settings"
-      >
-        {initial}
-      </Link>
-    </div>
+    <UserMenu
+      initial={initial}
+      name={session.user?.name}
+      email={session.user?.email}
+      signOutAction={async () => {
+        "use server";
+        await signOut({ redirectTo: "/" });
+      }}
+    />
   );
 }
