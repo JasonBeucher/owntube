@@ -485,8 +485,47 @@ function CinemaIcon({ className }: { className?: string }) {
 
 /* ------------------------------ Fullscreen ------------------------------ */
 
+// CSS pseudo-fullscreen: pins the player shell to the viewport. Used on iOS
+// Safari, which exposes no element Fullscreen API and whose native
+// `webkitEnterFullscreen` both replaces our custom controls with Apple's player
+// and throws outright on MSE-backed (hls.js) video. Inline styles with
+// `important` priority beat the shell's Tailwind utilities (aspect-video,
+// rounded corners) and escape any parent `overflow: hidden`.
+const PSEUDO_FULLSCREEN_STYLES: ReadonlyArray<[string, string]> = [
+  ["position", "fixed"],
+  ["top", "0"],
+  ["right", "0"],
+  ["bottom", "0"],
+  ["left", "0"],
+  ["width", "100vw"],
+  ["max-width", "none"],
+  ["max-height", "none"],
+  ["margin", "0"],
+  ["border-radius", "0"],
+  ["z-index", "2147483646"],
+  ["background", "#000"],
+];
+
+function applyPseudoFullscreen(el: HTMLElement, on: boolean) {
+  if (on) {
+    for (const [prop, value] of PSEUDO_FULLSCREEN_STYLES) {
+      el.style.setProperty(prop, value, "important");
+    }
+    const dvhSupported = window.CSS?.supports?.("height", "100dvh") ?? false;
+    el.style.setProperty("height", dvhSupported ? "100dvh" : "100vh", "important");
+    document.documentElement.style.setProperty("overflow", "hidden");
+  } else {
+    for (const [prop] of PSEUDO_FULLSCREEN_STYLES) {
+      el.style.removeProperty(prop);
+    }
+    el.style.removeProperty("height");
+    document.documentElement.style.removeProperty("overflow");
+  }
+}
+
 function useFullscreenShell(shellRef: React.RefObject<HTMLElement | null>) {
   const [active, setActive] = useState(false);
+  const pseudoActiveRef = useRef(false);
   useEffect(() => {
     const onChange = () => {
       const video = shellRef.current?.querySelector("video") as
@@ -496,7 +535,7 @@ function useFullscreenShell(shellRef: React.RefObject<HTMLElement | null>) {
         | null;
       const standardActive = document.fullscreenElement === shellRef.current;
       const webkitActive = Boolean(video?.webkitDisplayingFullscreen);
-      setActive(standardActive || webkitActive);
+      setActive(standardActive || webkitActive || pseudoActiveRef.current);
     };
     document.addEventListener("fullscreenchange", onChange);
     const video = shellRef.current?.querySelector("video");
@@ -515,6 +554,24 @@ function useFullscreenShell(shellRef: React.RefObject<HTMLElement | null>) {
       );
     };
   }, [shellRef]);
+  // Drop the pinned viewport styles if the shell unmounts while pseudo-active.
+  useEffect(() => {
+    return () => {
+      if (pseudoActiveRef.current) {
+        document.documentElement.style.removeProperty("overflow");
+      }
+    };
+  }, []);
+  const setPseudo = useCallback(
+    (on: boolean) => {
+      const el = shellRef.current;
+      if (!el) return;
+      pseudoActiveRef.current = on;
+      applyPseudoFullscreen(el, on);
+      setActive(on || document.fullscreenElement === el);
+    },
+    [shellRef],
+  );
   const toggle = useCallback(async () => {
     const el = shellRef.current;
     if (!el) return;
@@ -533,6 +590,10 @@ function useFullscreenShell(shellRef: React.RefObject<HTMLElement | null>) {
         await document.exitFullscreen();
         return;
       }
+      if (pseudoActiveRef.current) {
+        setPseudo(false);
+        return;
+      }
       if (video?.webkitDisplayingFullscreen) {
         if (typeof video.webkitExitFullscreen === "function") {
           video.webkitExitFullscreen();
@@ -547,14 +608,14 @@ function useFullscreenShell(shellRef: React.RefObject<HTMLElement | null>) {
         await el.requestFullscreen();
         return;
       }
-      if (video && typeof video.webkitEnterFullscreen === "function") {
-        // iOS Safari fallback: native video fullscreen API.
-        video.webkitEnterFullscreen();
-      }
+      // iOS Safari: no element Fullscreen API. Pin the shell to the viewport so
+      // the custom controls stay usable instead of handing off to Apple's player.
+      setPseudo(true);
     } catch {
-      // Ignore unsupported/denied fullscreen.
+      // Standard request failed/denied — fall back to CSS pseudo-fullscreen.
+      setPseudo(true);
     }
-  }, [shellRef]);
+  }, [shellRef, setPseudo]);
   return { active, toggle };
 }
 
