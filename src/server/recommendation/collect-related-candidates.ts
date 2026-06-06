@@ -1,5 +1,6 @@
 import type { AppDb } from "@/server/db/client";
 import type { TaggedVideoCandidate } from "@/server/recommendation/collect-tagged-candidates";
+import { deriveRecommendationReason } from "@/server/recommendation/reason";
 import {
   type RecommendationScoreContext,
   scoreCandidateDetail,
@@ -196,6 +197,12 @@ export async function expandScoredPoolWithRelatedCandidates(
     const boost = RELATED_SEED_SCORE_BOOST * (seedScore / maxSeedScore);
     newRows.push({
       ...video,
+      recommendationReason: deriveRecommendationReason(
+        detail.breakdown,
+        video,
+        tasteModel,
+        source,
+      ),
       rawScore: detail.score + boost,
       scoreBreakdown: detail.breakdown,
       candidateSource: source,

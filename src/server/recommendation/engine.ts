@@ -17,8 +17,11 @@ import {
   recommendationDebugEnabled,
 } from "@/server/recommendation/debug-file-log";
 import { maximalMarginalRelevance } from "@/server/recommendation/diversity";
+import { deriveRecommendationReason } from "@/server/recommendation/reason";
 import {
+  isUnvettedKeywordSpam,
   keepCandidateForPersonalizedFeed,
+  keywordDiscoveryScorePenalty,
   type RecommendationScoreContext,
   scoreCandidateDetail,
 } from "@/server/recommendation/scoring";
@@ -219,6 +222,94 @@ export async function getPersonalizedFeedVideos(
   };
 }
 
+/** Maps a raw `candidateSource` (e.g. `history_channel:UC123`) to its broad kind. */
+function candidateSourceKind(source: string | undefined): string {
+  if (!source) return "other";
+  const i = source.indexOf(":");
+  const head = i === -1 ? source : source.slice(0, i);
+  if (head === "trending_channel_head") return "trending";
+  return head;
+}
+
+export type RecommendationInsights = {
+  coldStart: boolean;
+  poolSize: number;
+  /** Where the pooled candidates came from, most common first. */
+  sourceComposition: { kind: string; count: number }[];
+  /** Taste terms driving topic-matched rows, most frequent first. */
+  topTopics: { term: string; count: number }[];
+  /** Head of the diversified pool with its provenance and explanation. */
+  topVideos: {
+    videoId: string;
+    title: string;
+    channelName?: string;
+    channelId?: string;
+    sourceKind: string;
+    reason: ScoredVideo["recommendationReason"];
+  }[];
+};
+
+/**
+ * Read-only transparency view of the personalized pool: source mix, dominant
+ * taste topics, and the current head of the feed. Reuses the per-user pool
+ * cache (~90s), so it is cheap to call alongside the home feed.
+ */
+export async function getRecommendationInsights(
+  db: AppDb,
+  userId: number,
+  opts: {
+    region?: string;
+    overrides?: ProxySourceOverrides;
+    topVideoCount?: number;
+    topTopicCount?: number;
+  } = {},
+): Promise<RecommendationInsights> {
+  const entry = await ensureRecommendationPool(db, userId, {
+    pageSize: 24,
+    region: opts.region,
+    overrides: opts.overrides,
+  });
+  const pool = entry.diversified;
+
+  const sourceCounts = new Map<string, number>();
+  const topicCounts = new Map<string, number>();
+  for (const row of pool) {
+    const kind = candidateSourceKind(row.candidateSource);
+    sourceCounts.set(kind, (sourceCounts.get(kind) ?? 0) + 1);
+    const reason = row.recommendationReason;
+    if (reason?.kind === "topic" && reason.terms) {
+      for (const term of reason.terms) {
+        const t = term.trim().toLowerCase();
+        if (t) topicCounts.set(t, (topicCounts.get(t) ?? 0) + 1);
+      }
+    }
+  }
+
+  const sourceComposition = [...sourceCounts.entries()]
+    .map(([kind, count]) => ({ kind, count }))
+    .sort((a, b) => b.count - a.count);
+  const topTopics = [...topicCounts.entries()]
+    .map(([term, count]) => ({ term, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, opts.topTopicCount ?? 24);
+  const topVideos = pool.slice(0, opts.topVideoCount ?? 12).map((row) => ({
+    videoId: row.videoId,
+    title: row.title,
+    channelName: row.channelName,
+    channelId: row.channelId,
+    sourceKind: candidateSourceKind(row.candidateSource),
+    reason: row.recommendationReason,
+  }));
+
+  return {
+    coldStart: entry.coldStart,
+    poolSize: pool.length,
+    sourceComposition,
+    topTopics,
+    topVideos,
+  };
+}
+
 async function ensureRecommendationPool(
   db: AppDb,
   userId: number,
@@ -254,19 +345,25 @@ async function ensureRecommendationPool(
       .all();
     const watchedEver = new Set(watchedRows.map((r) => r.videoId));
 
-    const signals = collectUserSignals(db, userId);
+    const signals = collectUserSignals(db, userId, { excludeShorts: true });
     for (const id of signals.dislikedVideoIds) {
       watchedEver.add(id);
     }
     const region = opts.region ?? "US";
+    const userSettings = getUserSettings(db, userId);
     const {
       tagged: taggedCandidates,
       recentCoverageByChannel,
       coldStart,
+      needTrendingBlend,
+      canBuildFromHistory,
+      historyOnlyUnique,
+      trendingWarning,
     } = await collectTaggedVideoCandidates(db, userId, {
       region,
       overrides: opts.overrides,
       signals,
+      tasteKeywords: userSettings.tasteKeywords,
     });
 
     const scoreContext: RecommendationScoreContext = {
@@ -274,7 +371,6 @@ async function ensureRecommendationPool(
     };
 
     const nowSec = Math.floor(Date.now() / 1000);
-    const userSettings = getUserSettings(db, userId);
     const blockedRecommendationChannels = new Set(
       userSettings.blockedRecommendationChannels,
     );
@@ -328,7 +424,21 @@ async function ensureRecommendationPool(
       readCachedDislikeTitlesOrdered(db, [...signals.dislikedVideoIds], 48),
     );
 
-    let scored: ScoredVideo[] = unique.map((v) => {
+    // Drop clear keyword SEO spam (stuffed compilations from unknown channels)
+    // before scoring — a down-rank is not enough since deep pagination would
+    // still surface it.
+    const vetted = unique.filter(
+      (v) =>
+        !isUnvettedKeywordSpam(
+          v,
+          signals,
+          tasteModel,
+          sourceByVideoId.get(v.videoId),
+          interestChannelIds,
+        ),
+    );
+
+    let scored: ScoredVideo[] = vetted.map((v) => {
       const detail = scoreCandidateDetail(
         v,
         signals,
@@ -337,11 +447,25 @@ async function ensureRecommendationPool(
         scoreContext,
         dislikeModel,
       );
+      const candidateSource = sourceByVideoId.get(v.videoId);
+      const keywordPenalty = keywordDiscoveryScorePenalty(
+        v,
+        signals,
+        tasteModel,
+        candidateSource,
+        interestChannelIds,
+      );
       return {
         ...v,
-        rawScore: detail.score,
+        recommendationReason: deriveRecommendationReason(
+          detail.breakdown,
+          v,
+          tasteModel,
+          candidateSource,
+        ),
+        rawScore: detail.score - keywordPenalty,
         scoreBreakdown: detail.breakdown,
-        candidateSource: sourceByVideoId.get(v.videoId),
+        candidateSource,
         titleVector: termFrequencyVector(v.title),
       };
     });
@@ -397,6 +521,48 @@ async function ensureRecommendationPool(
       scored.slice(0, poolSize),
       poolSize,
     );
+
+    if (recommendationDebugEnabled()) {
+      const sourceKind = (s?: string): string => {
+        if (!s) return "unknown";
+        const i = s.indexOf(":");
+        return i === -1 ? s : s.slice(0, i);
+      };
+      const countBySource = (
+        rows: { candidateSource?: string }[],
+      ): Record<string, number> => {
+        const counts: Record<string, number> = {};
+        for (const row of rows) {
+          const key = sourceKind(row.candidateSource);
+          counts[key] = (counts[key] ?? 0) + 1;
+        }
+        return counts;
+      };
+      const payload = {
+        msg: "recommendation.home_pool",
+        userId,
+        region,
+        coldStart,
+        canBuildFromHistory,
+        historyOnlyUnique,
+        needTrendingBlend,
+        trendingWarning: trendingWarning ?? null,
+        scoredCount: scored.length,
+        diversifiedCount: diversified.length,
+        sourcesScored: countBySource(scored),
+        sourcesDiversified: countBySource(diversified),
+        top: diversified.slice(0, 24).map((row) => ({
+          videoId: row.videoId,
+          title: clipTitle(row.title),
+          channelName: row.channelName ?? null,
+          source: row.candidateSource ?? null,
+          rawScore: Number(row.rawScore.toFixed(4)),
+          reason: row.recommendationReason ?? null,
+        })),
+      };
+      logger.info("recommendation.home_pool", payload);
+      await appendRecommendationDebugLog(payload);
+    }
 
     return {
       expiresAt: Date.now() + RECOMMENDATION_POOL_CACHE_TTL_MS,

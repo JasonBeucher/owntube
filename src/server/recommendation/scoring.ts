@@ -199,6 +199,101 @@ export function shortsDiscoveryScorePenalty(
   return 0.35;
 }
 
+/**
+ * `keyword_search:` candidates are pulled in purely because their title contains
+ * a "Refine recommendations" keyword. A title that simply contains the keyword
+ * saturates the (capped) title gain, so SEO compilations / "Full Movie"
+ * aggregators score the full title weight despite zero relationship to the user.
+ */
+const KEYWORD_DISCOVERY_TITLE_TRUST = 0.4;
+const KEYWORD_STUFFING_TERMS = 6;
+/** A keyword hit from a channel the user already watches is trusted (full score, never dropped). */
+const KEYWORD_TRUSTED_CHANNEL_AFFINITY = 0.04;
+
+/**
+ * A keyword candidate is "unvetted" when the user has no relationship with its
+ * channel — it entered the pool solely on a keyword title match.
+ */
+function isUnvettedKeywordCandidate(
+  video: UnifiedVideo,
+  signals: UserSignals,
+  candidateSource: string | undefined,
+  interestChannelIds: ReadonlySet<string>,
+): boolean {
+  if (!candidateSource?.startsWith("keyword_search:")) return false;
+  if (video.channelId && interestChannelIds.has(video.channelId)) return false;
+  const ch = video.channelId
+    ? (signals.channelWeights.get(video.channelId) ?? 0) /
+      Math.max(1, ...signals.channelWeights.values())
+    : 0;
+  return ch < KEYWORD_TRUSTED_CHANNEL_AFFINITY;
+}
+
+/**
+ * Keyword-stuffed titles (compilations, "Greatest Hits", "Full Movie In
+ * English") match far more distinct taste terms than a focused upload — a robust
+ * SEO-spam tell that a single-topic legit video does not trip.
+ */
+function isKeywordStuffedTitle(
+  video: UnifiedVideo,
+  tasteModel: TfidfModel,
+): boolean {
+  return (
+    tasteModel.explain(video.title, KEYWORD_STUFFING_TERMS + 1).length >
+    KEYWORD_STUFFING_TERMS
+  );
+}
+
+/**
+ * Clear keyword SEO spam: an unvetted keyword candidate whose title is stuffed
+ * with the user's taste terms. These are dropped from the pool entirely (a
+ * down-rank is not enough — deep pagination would still surface them).
+ */
+export function isUnvettedKeywordSpam(
+  video: UnifiedVideo,
+  signals: UserSignals,
+  tasteModel: TfidfModel,
+  candidateSource: string | undefined,
+  interestChannelIds: ReadonlySet<string>,
+): boolean {
+  return (
+    isUnvettedKeywordCandidate(
+      video,
+      signals,
+      candidateSource,
+      interestChannelIds,
+    ) && isKeywordStuffedTitle(video, tasteModel)
+  );
+}
+
+/**
+ * Down-rank (but keep) unvetted keyword discovery: discount most of the
+ * saturated title match so a focused video from an unknown channel can still
+ * surface, but cannot beat genuinely personalized content on a keyword alone.
+ * Stuffed spam is removed upstream by {@link isUnvettedKeywordSpam}.
+ */
+export function keywordDiscoveryScorePenalty(
+  video: UnifiedVideo,
+  signals: UserSignals,
+  tasteModel: TfidfModel,
+  candidateSource: string | undefined,
+  interestChannelIds: ReadonlySet<string>,
+): number {
+  if (
+    !isUnvettedKeywordCandidate(
+      video,
+      signals,
+      candidateSource,
+      interestChannelIds,
+    )
+  ) {
+    return 0;
+  }
+  const titleContribution =
+    W_TITLE * applyTitleGain(tasteModel.similarity(video.title));
+  return titleContribution * (1 - KEYWORD_DISCOVERY_TITLE_TRUST);
+}
+
 /** Weighted pieces of `scoreCandidate`; they sum to the base score (within float noise). */
 export type RecommendationScoreBreakdown = {
   components: {

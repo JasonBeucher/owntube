@@ -40,9 +40,24 @@ const INTERACTION_CHANNEL_TAU_SEC = 45 * 24 * 3600;
 const LIKE_CHANNEL_WEIGHT = 0.52;
 const SAVE_CHANNEL_WEIGHT = 0.34;
 
-export function collectUserSignals(db: AppDb, userId: number): UserSignals {
+export function collectUserSignals(
+  db: AppDb,
+  userId: number,
+  opts: { excludeShorts?: boolean } = {},
+): UserSignals {
   const nowSec = Math.floor(Date.now() / 1000);
   const since = nowSec - WINDOW_SEC;
+  const watchConditions = [
+    eq(watchHistory.userId, userId),
+    eq(watchHistory.isDeleted, 0),
+    gt(watchHistory.startedAt, since),
+  ];
+  // Long-form recommendations must ignore Shorts-feed watches: scrolling Shorts
+  // records a row per glanced short, which would otherwise promote viral junk
+  // channels into the home feed as "channels you watch".
+  if (opts.excludeShorts) {
+    watchConditions.push(eq(watchHistory.isShort, 0));
+  }
   const rows = db
     .select({
       videoId: watchHistory.videoId,
@@ -50,13 +65,7 @@ export function collectUserSignals(db: AppDb, userId: number): UserSignals {
       startedAt: watchHistory.startedAt,
     })
     .from(watchHistory)
-    .where(
-      and(
-        eq(watchHistory.userId, userId),
-        eq(watchHistory.isDeleted, 0),
-        gt(watchHistory.startedAt, since),
-      ),
-    )
+    .where(and(...watchConditions))
     .orderBy(desc(watchHistory.startedAt))
     .limit(300)
     .all();

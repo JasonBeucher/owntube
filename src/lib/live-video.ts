@@ -33,8 +33,12 @@ export function pickLiveFlagsFromUpstream(raw: Record<string, unknown>): {
     raw.isLive === true ||
     raw.live === true ||
     type === "livestream";
+  // Piped list/trending payloads often type active lives as plain "stream" and
+  // only signal them with `duration: -1` (no fixed length) and `uploaded: -1`.
+  const pipedDurationLive = raw.duration === -1 && raw.uploaded === -1;
   const invidiousLive = raw.liveNow === true;
-  const isLive = !isUpcoming && (pipedExplicit || invidiousLive);
+  const isLive =
+    !isUpcoming && (pipedExplicit || pipedDurationLive || invidiousLive);
   return { isLive, isUpcoming };
 }
 

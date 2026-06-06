@@ -1,8 +1,14 @@
 "use client";
 
+import { type InfiniteData, useQueryClient } from "@tanstack/react-query";
+import { getQueryKey } from "@trpc/react-query";
+import type { inferRouterOutputs } from "@trpc/server";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import type { AppRouter } from "@/server/trpc/root";
 import { trpc } from "@/trpc/react";
+
+type HomeFeedPage = inferRouterOutputs<AppRouter>["feed"]["home"];
 
 export type VideoCardActionsView = "main" | "playlist" | "create-playlist";
 
@@ -24,6 +30,7 @@ export function useVideoCardActions({
   const [playlistOpen, setPlaylistOpen] = useState(false);
 
   const utils = trpc.useUtils();
+  const queryClient = useQueryClient();
   const interactionState = trpc.interactions.state.useQuery({ videoId });
   const playlists = trpc.playlists.list.useQuery(undefined, {
     enabled: loadPlaylists || (playlistOpen && view !== "main"),
@@ -34,9 +41,10 @@ export function useVideoCardActions({
 
   const setInteraction = trpc.interactions.set.useMutation({
     onSuccess: async () => {
+      // The home feed is patched optimistically per-action below; refetching it
+      // here would resurface a freshly hidden card before the server pool clears.
       await Promise.all([
         utils.interactions.state.invalidate({ videoId }),
-        utils.feed.home.invalidate(),
         utils.video.related.invalidate(),
         utils.shorts.feed.invalidate(),
       ]);
@@ -57,12 +65,41 @@ export function useVideoCardActions({
       onSuccess: async () => {
         await Promise.all([
           utils.settings.get.invalidate(),
-          utils.feed.home.invalidate(),
           utils.video.related.invalidate(),
           utils.shorts.feed.invalidate(),
         ]);
       },
     },
+  );
+
+  /** Patches every cached home-feed page, dropping rows that match the predicate. */
+  const patchHomeFeed = useCallback(
+    (keep: (video: HomeFeedPage["videos"][number]) => boolean) => {
+      queryClient.setQueriesData<InfiniteData<HomeFeedPage>>(
+        { queryKey: getQueryKey(trpc.feed.home, undefined, "infinite") },
+        (old) => {
+          if (!old) return old;
+          return {
+            ...old,
+            pages: old.pages.map((page) => ({
+              ...page,
+              videos: page.videos.filter(keep),
+            })),
+          };
+        },
+      );
+    },
+    [queryClient],
+  );
+
+  const removeVideoFromFeed = useCallback(
+    (id: string) => patchHomeFeed((v) => v.videoId !== id),
+    [patchHomeFeed],
+  );
+
+  const removeChannelFromFeed = useCallback(
+    (id: string) => patchHomeFeed((v) => v.channelId !== id),
+    [patchHomeFeed],
   );
 
   const liked = interactionState.data?.like ?? false;
@@ -132,7 +169,8 @@ export function useVideoCardActions({
           active: false,
         });
       }
-      setFeedback(next ? "Ajouté aux contenus aimés" : "Like retiré");
+      await utils.feed.home.invalidate();
+      setFeedback(next ? "Added to liked" : "Like removed");
     });
   };
 
@@ -153,14 +191,21 @@ export function useVideoCardActions({
           active: false,
         });
       }
-      setFeedback(next ? "Signalé comme non aimé" : "Dislike retiré");
+      if (next) {
+        // Hide the disliked card immediately; the server pool already excludes it.
+        removeVideoFromFeed(videoId);
+      } else {
+        // Un-disliked: let the feed refetch so the video can surface again.
+        await utils.feed.home.invalidate();
+      }
+      setFeedback(next ? "Marked as not interested" : "Dislike removed");
     });
   };
 
   const addVideoToPlaylist = async (playlistId: number) => {
     await runAuthed(async () => {
       await addToPlaylist.mutateAsync({ playlistId, videoId, channelId });
-      setFeedback("Ajouté à la playlist");
+      setFeedback("Added to playlist");
       closePanels();
     });
   };
@@ -176,7 +221,7 @@ export function useVideoCardActions({
         channelId,
       });
       setNewPlaylistName("");
-      setFeedback("Playlist créée et vidéo ajoutée");
+      setFeedback("Playlist created and video added");
       closePanels();
     });
   };
@@ -185,10 +230,12 @@ export function useVideoCardActions({
     if (!channelId) return;
     await runAuthed(async () => {
       await blockChannel.mutateAsync({ channelId });
+      // Drop every card from this channel right away (server already excludes it).
+      removeChannelFromFeed(channelId);
       setFeedback(
         channelName
-          ? `« ${channelName} » exclue des recommandations`
-          : "Chaîne exclue des recommandations",
+          ? `"${channelName}" excluded from recommendations`
+          : "Channel excluded from recommendations",
       );
       closePanels();
     });

@@ -46,6 +46,10 @@ import { preferHighResVideoThumbnailUrl } from "@/lib/video-thumbnail-url";
 import type { AppDb } from "@/server/db/client";
 import { videoCache } from "@/server/db/schema";
 import { RateLimitExceededError } from "@/server/errors/rate-limit-exceeded";
+import {
+  isAgeRestrictedUpstreamMessage,
+  UpstreamAgeRestrictedError,
+} from "@/server/errors/upstream-age-restricted";
 import { parseInvidiousUpcomingFromFetchMessage } from "@/server/errors/upstream-live-upcoming";
 import { UpstreamUnavailableError } from "@/server/errors/upstream-unavailable";
 import {
@@ -147,6 +151,7 @@ function rethrowIfInvidiousUpcoming(error: unknown, videoId: string): void {
   if (upcoming) throw upcoming;
 }
 
+export { UpstreamAgeRestrictedError } from "@/server/errors/upstream-age-restricted";
 export { UpstreamLiveUpcomingError } from "@/server/errors/upstream-live-upcoming";
 
 function throwIfUpstreamFailed(
@@ -158,6 +163,11 @@ function throwIfUpstreamFailed(
     errors.every((entry) => entry.endsWith(`:${UPSTREAM_RATE_LIMIT_NOTE}`))
   ) {
     throw new RateLimitExceededError();
+  }
+  // When either backend explicitly refuses an age-restricted video, surface a
+  // clean typed error instead of the raw NewPipe/Invidious stack trace.
+  if (errors.some(isAgeRestrictedUpstreamMessage)) {
+    throw new UpstreamAgeRestrictedError();
   }
   throw new UpstreamUnavailableError(
     errors.length > 0 ? errors.join("; ") : fallbackMessage,
@@ -2082,10 +2092,7 @@ export async function fetchVideoDetail(
   ) {
     invidiousResolved = await fetchInvidiousDetail();
     if (invidiousResolved) {
-      const picked = pickRicherPlaybackDetail(
-        pipedResolved,
-        invidiousResolved,
-      );
+      const picked = pickRicherPlaybackDetail(pipedResolved, invidiousResolved);
       if (picked.sourceUsed === "invidious") {
         logger.info("upstream.prefer_invidious_over_piped", {
           videoId: input.videoId,
@@ -2941,10 +2948,7 @@ export async function fetchShortsFeed(
   const key = shortsFeedCacheKey({ ...input, region, limit });
   const fresh = readFreshShortsFeedCache(db, key);
   // Shelf needs ~14 items; a thin cached page (e.g. from warm-cache) must not block refetch.
-  if (
-    fresh &&
-    (input.purpose !== "shelf" || fresh.videos.length >= limit)
-  ) {
+  if (fresh && (input.purpose !== "shelf" || fresh.videos.length >= limit)) {
     return fresh;
   }
 

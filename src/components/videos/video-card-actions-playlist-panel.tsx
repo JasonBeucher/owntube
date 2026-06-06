@@ -59,12 +59,12 @@ export function VideoCardActionsPlaylistPanel({
             )}
             onClick={() => setView("main")}
           >
-            ‹ Retour
+            ‹ Back
           </button>
           <ul className="max-h-48 overflow-y-auto border-t border-[hsl(var(--border))]">
             {playlists.isLoading ? (
               <li className="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))]">
-                Chargement…
+                Loading…
               </li>
             ) : null}
             {playlists.data?.map((p) => (
@@ -86,7 +86,7 @@ export function VideoCardActionsPlaylistPanel({
             playlists.data &&
             playlists.data.length === 0 ? (
               <li className="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))]">
-                Aucune playlist
+                No playlists
               </li>
             ) : null}
           </ul>
@@ -98,7 +98,7 @@ export function VideoCardActionsPlaylistPanel({
             )}
             onClick={() => setView("create-playlist")}
           >
-            Créer une playlist…
+            Create a playlist…
           </button>
         </div>
       ) : null}
@@ -112,12 +112,12 @@ export function VideoCardActionsPlaylistPanel({
             )}
             onClick={() => setView("playlist")}
           >
-            ‹ Retour
+            ‹ Back
           </button>
           <Input
             value={newPlaylistName}
             onChange={(e) => setNewPlaylistName(e.currentTarget.value)}
-            placeholder="Nom de la playlist"
+            placeholder="Playlist name"
             maxLength={120}
             onKeyDown={(e) => {
               if (e.key === "Enter") onSubmitNewPlaylist();
@@ -130,7 +130,7 @@ export function VideoCardActionsPlaylistPanel({
             disabled={!newPlaylistName.trim() || pending}
             onClick={onSubmitNewPlaylist}
           >
-            Créer et ajouter
+            Create and add
           </Button>
         </div>
       ) : null}

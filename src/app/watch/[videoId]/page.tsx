@@ -7,6 +7,7 @@ import { InteractionButtons } from "@/components/player/interaction-buttons";
 import { WatchTracker } from "@/components/player/watch-tracker";
 import { ChannelAvatarCircle } from "@/components/videos/channel-avatar-circle";
 import { VideoCardCompact } from "@/components/videos/video-card";
+import { WatchAgeRestricted } from "@/components/watch/watch-age-restricted";
 import { WatchChaptersSection } from "@/components/watch/watch-chapters-section";
 import { WatchCinemaProvider } from "@/components/watch/watch-cinema-context";
 import { WatchCommentsSection } from "@/components/watch/watch-comments-section";
@@ -33,6 +34,7 @@ import {
 } from "@/lib/video-display";
 import { auth } from "@/server/auth";
 import { getDb } from "@/server/db/client";
+import { UpstreamAgeRestrictedError } from "@/server/errors/upstream-age-restricted";
 import { UpstreamLiveUpcomingError } from "@/server/errors/upstream-live-upcoming";
 import { getRecommendations } from "@/server/recommendation/engine";
 import {
@@ -53,7 +55,10 @@ import {
 
 type WatchPageProps = {
   params: Promise<{ videoId: string }>;
-  searchParams: Promise<{ t?: string | string[]; upstream?: string | string[] }>;
+  searchParams: Promise<{
+    t?: string | string[];
+    upstream?: string | string[];
+  }>;
 };
 
 export async function generateMetadata({
@@ -68,6 +73,9 @@ export async function generateMetadata({
   } catch (error) {
     if (error instanceof UpstreamLiveUpcomingError) {
       return { title: "Upcoming live stream" };
+    }
+    if (error instanceof UpstreamAgeRestrictedError) {
+      return { title: "Age-restricted video" };
     }
     return { title: "Video" };
   }
@@ -123,6 +131,7 @@ export default async function WatchPage({
       : "US";
   let detail: VideoDetail | null = null;
   let upcomingLive: UpstreamLiveUpcomingError | null = null;
+  let ageRestricted: UpstreamAgeRestrictedError | null = null;
   try {
     detail = await fetchVideoDetail(db, input, overrides, {
       bypassDetailCache: true,
@@ -131,6 +140,8 @@ export default async function WatchPage({
   } catch (error) {
     if (error instanceof UpstreamLiveUpcomingError) {
       upcomingLive = error;
+    } else if (error instanceof UpstreamAgeRestrictedError) {
+      ageRestricted = error;
     } else {
       throw error;
     }
@@ -242,7 +253,8 @@ export default async function WatchPage({
       ? (scrubPreviewStreamFromDetail(detail, appOrigin, requestHost) ??
         undefined)
       : undefined;
-  const pageTitle = detail?.title ?? "Live stream";
+  const pageTitle =
+    detail?.title ?? (ageRestricted ? "Age-restricted video" : "Live stream");
   const upcomingMessage =
     upcomingLive?.message ??
     "This live stream has not started yet. Check back when it goes live.";
@@ -271,6 +283,11 @@ export default async function WatchPage({
                 message={upcomingMessage}
                 premiereTimestamp={upcomingLive?.premiereTimestamp}
                 publishedText={detail?.publishedText}
+              />
+            ) : ageRestricted ? (
+              <WatchAgeRestricted
+                title={pageTitle}
+                message={ageRestricted.message}
               />
             ) : videoPayload && detail ? (
               <WatchVideoPlayer

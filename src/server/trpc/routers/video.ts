@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { RateLimitExceededError } from "@/server/errors/rate-limit-exceeded";
+import { UpstreamAgeRestrictedError } from "@/server/errors/upstream-age-restricted";
 import { UpstreamUnavailableError } from "@/server/errors/upstream-unavailable";
 import {
   fetchRelatedVideos,
@@ -24,9 +25,28 @@ export const videoRouter = router({
     .input(videoDetailInputSchema)
     .query(async ({ ctx, input }) => {
       const overrides = getUserProxyOverrides(ctx.db, ctx.userId);
-      return fetchVideoDetail(ctx.db, input, overrides, {
-        preferUpstream: input.preferUpstream,
-      });
+      try {
+        return await fetchVideoDetail(ctx.db, input, overrides, {
+          preferUpstream: input.preferUpstream,
+        });
+      } catch (e) {
+        if (e instanceof UpstreamAgeRestrictedError) {
+          throw new TRPCError({
+            code: "UNPROCESSABLE_CONTENT",
+            message: e.message,
+          });
+        }
+        if (e instanceof UpstreamUnavailableError) {
+          throw new TRPCError({ code: "BAD_GATEWAY", message: e.message });
+        }
+        if (e instanceof RateLimitExceededError) {
+          throw new TRPCError({
+            code: "TOO_MANY_REQUESTS",
+            message: e.message,
+          });
+        }
+        throw e;
+      }
     }),
   related: publicProcedure
     .input(videoDetailInputSchema)

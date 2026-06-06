@@ -164,6 +164,7 @@ export async function buildTasteDeckVideos(
       region,
       overrides,
       signals,
+      tasteKeywords: settings.tasteKeywords,
     });
   } catch (e) {
     if (e instanceof UpstreamUnavailableError) {

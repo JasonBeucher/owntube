@@ -45,10 +45,23 @@ describe("pickLiveFlagsFromUpstream", () => {
       isLive: false,
       isUpcoming: false,
     });
-    expect(pickLiveFlagsFromUpstream({ type: "stream", duration: -1 })).toEqual({
-      isLive: false,
-      isUpcoming: false,
-    });
+    expect(pickLiveFlagsFromUpstream({ type: "stream", duration: -1 })).toEqual(
+      {
+        isLive: false,
+        isUpcoming: false,
+      },
+    );
+  });
+
+  it("infers live from Piped trending streams with duration and uploaded both -1", () => {
+    // Shape of a regional-trending live TV item (e.g. "atv Canlı Yayın").
+    expect(
+      pickLiveFlagsFromUpstream({
+        type: "stream",
+        duration: -1,
+        uploaded: -1,
+      }),
+    ).toEqual({ isLive: true, isUpcoming: false });
   });
 
   it("reads Invidious liveNow and isUpcoming", () => {

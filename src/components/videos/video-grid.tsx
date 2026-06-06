@@ -26,6 +26,7 @@ function videoCardProps(v: UnifiedVideo) {
     viewCount: v.viewCount,
     publishedText: v.publishedText,
     publishedAt: v.publishedAt,
+    recommendationReason: v.recommendationReason,
   };
 }
 

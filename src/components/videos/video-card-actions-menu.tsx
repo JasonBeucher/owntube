@@ -4,12 +4,16 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useVideoCardActions } from "@/components/videos/use-video-card-actions";
 import { VideoCardActionsPlaylistPanel } from "@/components/videos/video-card-actions-playlist-panel";
+import { formatRecommendationReason } from "@/lib/recommendation-reason";
 import { cn } from "@/lib/utils";
+import type { RecommendationReason } from "@/server/services/proxy.types";
 
 type VideoCardActionsMenuProps = {
   videoId: string;
   channelId?: string;
   channelName?: string;
+  /** When set, the menu opens with a non-interactive "why recommended" line. */
+  recommendationReason?: RecommendationReason;
   className?: string;
 };
 
@@ -42,6 +46,7 @@ export function VideoCardActionsMenu({
   videoId,
   channelId,
   channelName,
+  recommendationReason,
   className,
 }: VideoCardActionsMenuProps) {
   const menuId = useId();
@@ -84,7 +89,7 @@ export function VideoCardActionsMenu({
         variant="ghost"
         size="icon"
         className="h-8 w-8 rounded-full text-[hsl(var(--muted-foreground))] opacity-0 transition-opacity duration-200 hover:bg-[hsl(var(--muted)_/_0.65)] hover:text-[hsl(var(--foreground))] group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
-        aria-label="Options de la vidéo"
+        aria-label="Video options"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
@@ -112,55 +117,67 @@ export function VideoCardActionsMenu({
           onKeyDown={(e) => e.stopPropagation()}
         >
           {actions.view === "main" ? (
-            <ul>
-              <li>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className={menuItemClass()}
-                  disabled={actions.pending}
-                  onClick={() => actions.setView("playlist")}
+            <>
+              {recommendationReason ? (
+                <p
+                  role="presentation"
+                  className="border-b border-[hsl(var(--border))] px-3 py-2 text-xs text-[hsl(var(--muted-foreground))]"
                 >
-                  <span className="flex-1">Ajouter à une playlist</span>
-                  <span className="text-[hsl(var(--muted-foreground))]">›</span>
-                </button>
-              </li>
-              <li>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className={menuItemClass(actions.liked)}
-                  disabled={actions.pending}
-                  onClick={() => void actions.toggleLike()}
-                >
-                  J&apos;aime
-                </button>
-              </li>
-              <li>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className={menuItemClass(actions.disliked)}
-                  disabled={actions.pending}
-                  onClick={() => void actions.toggleDislike()}
-                >
-                  J&apos;aime pas
-                </button>
-              </li>
-              {channelId ? (
+                  {formatRecommendationReason(recommendationReason)}
+                </p>
+              ) : null}
+              <ul>
                 <li>
                   <button
                     type="button"
                     role="menuitem"
-                    className={menuItemClass(actions.channelBlocked)}
-                    disabled={actions.pending || actions.channelBlocked}
-                    onClick={() => void actions.blockRecommendationChannel()}
+                    className={menuItemClass()}
+                    disabled={actions.pending}
+                    onClick={() => actions.setView("playlist")}
                   >
-                    Ne pas recommander cette chaîne
+                    <span className="flex-1">Add to playlist</span>
+                    <span className="text-[hsl(var(--muted-foreground))]">
+                      ›
+                    </span>
                   </button>
                 </li>
-              ) : null}
-            </ul>
+                <li>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={menuItemClass(actions.liked)}
+                    disabled={actions.pending}
+                    onClick={() => void actions.toggleLike()}
+                  >
+                    Like
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={menuItemClass(actions.disliked)}
+                    disabled={actions.pending}
+                    onClick={() => void actions.toggleDislike()}
+                  >
+                    Dislike
+                  </button>
+                </li>
+                {channelId ? (
+                  <li>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={menuItemClass(actions.channelBlocked)}
+                      disabled={actions.pending || actions.channelBlocked}
+                      onClick={() => void actions.blockRecommendationChannel()}
+                    >
+                      Don&apos;t recommend this channel
+                    </button>
+                  </li>
+                ) : null}
+              </ul>
+            </>
           ) : (
             <VideoCardActionsPlaylistPanel
               view={actions.view}

@@ -12,6 +12,7 @@ import {
   formatPublishedLabel,
   formatViews,
 } from "@/lib/video-display";
+import type { RecommendationReason } from "@/server/services/proxy.types";
 
 type VideoCardProps = {
   href: string;
@@ -31,6 +32,8 @@ type VideoCardProps = {
   publishedText?: string;
   /** Unix seconds when available (preferred for accurate relative display). */
   publishedAt?: number;
+  /** Personalized feed only — surfaced as a "why recommended" line in the menu. */
+  recommendationReason?: RecommendationReason;
 };
 
 export function VideoCard({
@@ -48,6 +51,7 @@ export function VideoCard({
   viewCount,
   publishedText,
   publishedAt,
+  recommendationReason,
 }: VideoCardProps) {
   const viewsLabel = formatViews(viewCount);
   const publishedLabel = formatPublishedLabel(publishedText, publishedAt);
@@ -151,6 +155,7 @@ export function VideoCard({
                 videoId={videoId}
                 channelId={channelId}
                 channelName={channelName}
+                recommendationReason={recommendationReason}
                 className="absolute -right-1 -top-1"
               />
             ) : null}
@@ -211,6 +216,8 @@ type VideoCardShortProps = {
   viewCount?: number;
   publishedText?: string;
   publishedAt?: number;
+  /** Personalized feed only — surfaced as a "why recommended" line in the menu. */
+  recommendationReason?: RecommendationReason;
   /** Show channel name under the title (e.g. search). Off on channel pages. */
   showChannelMeta?: boolean;
   /** Full-width card for the home Shorts shelf (no 210px cap). */
@@ -231,6 +238,7 @@ export function VideoCardShort({
   viewCount,
   publishedText,
   publishedAt,
+  recommendationReason,
   showChannelMeta = false,
   layout = "default",
 }: VideoCardShortProps) {
@@ -304,6 +312,7 @@ export function VideoCardShort({
               videoId={videoId}
               channelId={channelId}
               channelName={channelName}
+              recommendationReason={recommendationReason}
               className="absolute -right-1 -top-1"
             />
           ) : null}

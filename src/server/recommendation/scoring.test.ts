@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   isLikelyShortVideo,
+  isUnvettedKeywordSpam,
+  keywordDiscoveryScorePenalty,
   publicationFreshnessScore,
   scoreCandidate,
   scoreCandidateDetail,
@@ -229,6 +231,104 @@ describe("scoring", () => {
       recentCoverageByChannel: new Map(),
     });
     expect(fanShare).toBeGreaterThan(lowShare);
+  });
+
+  describe("keywordDiscoveryScorePenalty", () => {
+    const interestChannelIds = new Set<string>();
+    // Mirror production: many distinct taste keywords folded into the corpus 3×,
+    // so a stuffed title can match enough distinct terms to trip the spam gate.
+    const keywords = [
+      "rock",
+      "jazz",
+      "blues",
+      "metal",
+      "indie",
+      "folk",
+      "music",
+      "movies",
+    ];
+    const corpus = keywords.flatMap((k) => [k, k, k]);
+    const taste = buildTfidfModel(corpus, { groups: [corpus] });
+
+    it("does not touch non-keyword sources", () => {
+      expect(
+        keywordDiscoveryScorePenalty(
+          { videoId: "v", title: "music compilation" },
+          emptySignals(),
+          taste,
+          "history_channel:UC1",
+          interestChannelIds,
+        ),
+      ).toBe(0);
+    });
+
+    it("discounts an unvetted keyword candidate from an unknown channel", () => {
+      const penalty = keywordDiscoveryScorePenalty(
+        { videoId: "v", channelId: "UCspam", title: "live rock concert" },
+        emptySignals(),
+        taste,
+        "keyword_search:rock",
+        interestChannelIds,
+      );
+      expect(penalty).toBeGreaterThan(0);
+    });
+
+    it("flags keyword-stuffed compilations as spam but spares focused titles", () => {
+      const stuffed = isUnvettedKeywordSpam(
+        {
+          videoId: "v",
+          channelId: "UCspam",
+          title: "rock jazz blues metal indie folk music compilation",
+        },
+        emptySignals(),
+        taste,
+        "keyword_search:music",
+        interestChannelIds,
+      );
+      const focused = isUnvettedKeywordSpam(
+        { videoId: "v", channelId: "UCspam", title: "live rock concert" },
+        emptySignals(),
+        taste,
+        "keyword_search:rock",
+        interestChannelIds,
+      );
+      expect(stuffed).toBe(true);
+      expect(focused).toBe(false);
+    });
+
+    it("never flags a non-keyword source as spam", () => {
+      expect(
+        isUnvettedKeywordSpam(
+          {
+            videoId: "v",
+            title: "rock jazz blues metal indie folk music movies",
+          },
+          emptySignals(),
+          taste,
+          "history_channel:UC1",
+          interestChannelIds,
+        ),
+      ).toBe(false);
+    });
+
+    it("trusts a keyword hit from a channel the user already watches", () => {
+      const signals = emptySignals({
+        channelWeights: new Map([["UCfan", 5]]),
+      });
+      const args = [
+        {
+          videoId: "v",
+          channelId: "UCfan",
+          title: "rock jazz blues metal indie folk music",
+        },
+        signals,
+        taste,
+        "keyword_search:music",
+        new Set(["UCfan"]),
+      ] as const;
+      expect(keywordDiscoveryScorePenalty(...args)).toBe(0);
+      expect(isUnvettedKeywordSpam(...args)).toBe(false);
+    });
   });
 });
 

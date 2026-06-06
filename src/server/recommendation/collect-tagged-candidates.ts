@@ -8,6 +8,7 @@ import {
   fetchChannelPage,
   fetchTrendingVideos,
   type ProxySourceOverrides,
+  searchVideos,
 } from "@/server/services/proxy";
 import type { UnifiedVideo } from "@/server/services/proxy.types";
 
@@ -18,6 +19,10 @@ const MIN_UNIQUE_CANDIDATES_HISTORY_ONLY = 14;
 const CHANNEL_FETCH_CONCURRENCY = 6;
 /** When trending supplies a channel we did not page yet, fetch latest uploads so recs prefer newer unwatched videos. */
 const MAX_TRENDING_ONLY_CHANNEL_HEAD_FETCHES = 12;
+/** Cap upstream searches per pool build so many configured keywords cannot burst the rate limiter (6h search cache absorbs repeats). */
+const MAX_KEYWORD_SEARCHES = 6;
+const VIDEOS_PER_KEYWORD = 8;
+const KEYWORD_SEARCH_CONCURRENCY = 3;
 
 export type TaggedVideoCandidate = { video: UnifiedVideo; source: string };
 
@@ -44,6 +49,8 @@ export async function collectTaggedVideoCandidates(
     region: string;
     overrides?: ProxySourceOverrides;
     signals: UserSignals;
+    /** "Refine recommendations" topics — each seeds an upstream search so the pool can include videos absent from the user's history. */
+    tasteKeywords: string[];
   },
 ): Promise<{
   tagged: TaggedVideoCandidate[];
@@ -54,7 +61,7 @@ export async function collectTaggedVideoCandidates(
   historyOnlyUnique: number;
   trendingWarning?: string;
 }> {
-  const { region, overrides, signals } = args;
+  const { region, overrides, signals, tasteKeywords } = args;
   const nowSec = Math.floor(Date.now() / 1000);
   const coldStart = useColdStartBlend(signals.totalWatches);
   const taggedCandidates: TaggedVideoCandidate[] = [];
@@ -251,6 +258,38 @@ export async function collectTaggedVideoCandidates(
           }
           recentCoverageByChannel.set(channelId, hit / pageIds.length);
         }
+      }
+    }
+  }
+
+  // "Refine recommendations" keywords seed upstream searches so the pool can
+  // surface topics the user is interested in but has not watched yet — the
+  // taste model only re-ranks the candidate pool, it cannot conjure candidates.
+  const keywords = tasteKeywords
+    .map((kw) => kw.trim())
+    .filter((kw) => kw.length > 0)
+    .slice(0, MAX_KEYWORD_SEARCHES);
+  for (let i = 0; i < keywords.length; i += KEYWORD_SEARCH_CONCURRENCY) {
+    const batch = keywords.slice(i, i + KEYWORD_SEARCH_CONCURRENCY);
+    const settled = await Promise.allSettled(
+      batch.map(async (keyword) => {
+        const result = await searchVideos(
+          db,
+          { q: keyword, limit: VIDEOS_PER_KEYWORD, region },
+          overrides,
+        );
+        return { keyword, videos: result.videos };
+      }),
+    );
+    for (const item of settled) {
+      if (item.status !== "fulfilled") continue;
+      const { keyword, videos } = item.value;
+      for (const v of videos) {
+        if (!v.videoId) continue;
+        taggedCandidates.push({
+          video: v,
+          source: `keyword_search:${keyword}`,
+        });
       }
     }
   }

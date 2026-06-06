@@ -9,6 +9,8 @@ type WatchTrackerProps = {
   durationSeconds?: number;
   /** Use session elapsed time instead of VOD duration (live streams). */
   isLive?: boolean;
+  /** Recorded from the Shorts feed — excluded from the long-form recommendation signal. */
+  isShort?: boolean;
   /** Called after the final watch event is persisted (e.g. leave slide / unmount). */
   onWatched?: (videoId: string) => void;
 };
@@ -18,6 +20,7 @@ export function WatchTracker({
   channelId = "unknown",
   durationSeconds = 0,
   isLive = false,
+  isShort = false,
   onWatched,
 }: WatchTrackerProps) {
   const { mutate } = trpc.history.upsertEvent.useMutation();
@@ -52,6 +55,7 @@ export function WatchTracker({
       channelId,
       durationWatched: 0,
       completed: false,
+      isShort,
     });
     const interval = window.setInterval(() => {
       m({
@@ -59,6 +63,7 @@ export function WatchTracker({
         channelId,
         durationWatched: partialWatched(),
         completed: false,
+        isShort,
       });
     }, 20_000);
     return () => {
@@ -69,13 +74,14 @@ export function WatchTracker({
           channelId,
           durationWatched: watchedSeconds(),
           completed: true,
+          isShort,
         },
         {
           onSuccess: () => onWatchedRef.current?.(videoId),
         },
       );
     };
-  }, [channelId, durationSeconds, isLive, videoId]);
+  }, [channelId, durationSeconds, isLive, isShort, videoId]);
 
   return null;
 }

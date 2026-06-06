@@ -17,6 +17,8 @@ const historyEventInputSchema = z.object({
     .max(60 * 60 * 24)
     .default(0),
   completed: z.boolean().default(false),
+  /** Recorded from the Shorts feed — kept out of the long-form recommendation signal. */
+  isShort: z.boolean().default(false),
 });
 
 const historyPageInputSchema = z.object({
@@ -82,6 +84,7 @@ export const historyRouter = router({
           durationWatched: input.durationWatched,
           completed: input.completed ? 1 : 0,
           isDeleted: 0,
+          isShort: input.isShort ? 1 : 0,
           createdAt: ts,
         })
         .returning({ id: watchHistory.id })

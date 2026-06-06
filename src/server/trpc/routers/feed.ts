@@ -65,9 +65,13 @@ async function buildTrendingTailPoolUncached(
     { region, limit: 200 },
     overrides,
   );
+  // Drop live/upcoming streams: regional trending leaks foreign 24/7 live TV
+  // (e.g. news channels) that matches no interest and never ends — pure noise in
+  // a personalized home tail.
+  const withoutLive = trending.videos.filter((v) => !v.isLive && !v.isUpcoming);
   let pool = hideRestricted
-    ? stripRestrictedListVideos(trending.videos)
-    : trending.videos;
+    ? stripRestrictedListVideos(withoutLive)
+    : withoutLive;
   if (userId) {
     const seenRows = db
       .select({ videoId: watchHistory.videoId })

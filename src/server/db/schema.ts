@@ -35,6 +35,8 @@ export const watchHistory = sqliteTable(
     durationWatched: integer("duration_watched").notNull().default(0),
     completed: integer("completed").notNull().default(0),
     isDeleted: integer("is_deleted").notNull().default(0),
+    /** 1 when recorded from the Shorts feed — excluded from the long-form recommendation signal. */
+    isShort: integer("is_short").notNull().default(0),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [

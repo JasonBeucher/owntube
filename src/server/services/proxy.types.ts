@@ -10,6 +10,20 @@ export const searchVideosInputSchema = z.object({
 
 export type SearchVideosInput = z.infer<typeof searchVideosInputSchema>;
 
+/**
+ * Why a personalized feed row was recommended. Only set for rows produced by
+ * the recommendation engine; trending / search / channel rows leave it unset.
+ */
+export const recommendationReasonSchema = z.object({
+  kind: z.enum(["subscription", "channel", "topic", "related", "trending"]),
+  /** Channel the affinity comes from (for `kind: "subscription" | "channel"`). */
+  channelName: z.string().optional(),
+  /** Top matched taste terms (for `kind: "topic"`). */
+  terms: z.array(z.string()).optional(),
+});
+
+export type RecommendationReason = z.infer<typeof recommendationReasonSchema>;
+
 export const unifiedVideoSchema = z.object({
   videoId: z.string(),
   title: z.string(),
@@ -27,6 +41,8 @@ export const unifiedVideoSchema = z.object({
   isLive: z.boolean().optional(),
   /** Scheduled premiere not started yet (Invidious `isUpcoming`). */
   isUpcoming: z.boolean().optional(),
+  /** Why this row was recommended (personalized feed only). */
+  recommendationReason: recommendationReasonSchema.optional(),
 });
 
 export type UnifiedVideo = z.infer<typeof unifiedVideoSchema>;

@@ -225,6 +225,7 @@ export function ShortsSlide({
           videoId={video.videoId}
           channelId={video.channelId ?? detailQuery.data.channelId}
           durationSeconds={detailQuery.data.durationSeconds}
+          isShort
           onWatched={onWatched}
         />
       ) : null}
