@@ -32,10 +32,11 @@ import {
   SHORTS_DISCOVERY_FALLBACK_QUERIES,
   shortsSearchQueriesForRegion,
 } from "@/lib/shorts-discovery-queries";
+import { isUpstreamDisabled } from "@/lib/upstream-base-url";
 import {
-  isUpstreamDisabled,
-  normalizeUpstreamBaseUrl,
-} from "@/lib/upstream-base-url";
+  normalizePreferredUpstreamInstance,
+  normalizeUpstreamInstanceList,
+} from "@/lib/upstream-instances";
 import {
   pickLivePlaybackDetail,
   pickRicherPlaybackDetail,
@@ -45,13 +46,6 @@ import {
 import { preferHighResVideoThumbnailUrl } from "@/lib/video-thumbnail-url";
 import type { AppDb } from "@/server/db/client";
 import { videoCache } from "@/server/db/schema";
-import { RateLimitExceededError } from "@/server/errors/rate-limit-exceeded";
-import {
-  isAgeRestrictedUpstreamMessage,
-  UpstreamAgeRestrictedError,
-} from "@/server/errors/upstream-age-restricted";
-import { parseInvidiousUpcomingFromFetchMessage } from "@/server/errors/upstream-live-upcoming";
-import { UpstreamUnavailableError } from "@/server/errors/upstream-unavailable";
 import {
   type ChannelPageInput,
   type ChannelPageResult,
@@ -84,8 +78,20 @@ import {
   videoCommentsResultSchema,
   videoDetailSchema,
 } from "@/server/services/proxy.types";
+import {
+  recordUpstreamFailure,
+  rethrowIfInvidiousUpcoming,
+  throwIfUpstreamFailed,
+} from "@/server/services/proxy/errors";
 import { acquireUpstreamSlot } from "@/server/services/rate-limiter";
 import { upstreamGetText } from "@/server/services/upstream-get";
+import {
+  orderUpstreamCandidates,
+  recordUpstreamFailure as recordInstanceFailure,
+  recordUpstreamSuccess,
+  type UpstreamHealthSnapshot,
+  upstreamHealthSnapshot,
+} from "@/server/services/upstream-health";
 
 const CACHE_TTL_SEC = 6 * 60 * 60;
 /** Channel “videos” lists change often; long TTL hid fresh uploads from recommendations. */
@@ -110,6 +116,10 @@ export function clearProxyCaches(db: AppDb): { clearedRows: number } {
 export type ProxySourceOverrides = {
   pipedBaseUrl?: string | null;
   invidiousBaseUrl?: string | null;
+  pipedBaseUrls?: string[] | null;
+  invidiousBaseUrls?: string[] | null;
+  preferredPipedBaseUrl?: string | null;
+  preferredInvidiousBaseUrl?: string | null;
 };
 
 /** Cache rows store the real upstream name (`piped` / `invidious`), never `"cache"`. */
@@ -126,53 +136,8 @@ function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-const UPSTREAM_RATE_LIMIT_NOTE = "rate limit";
-
-/** Record a primary/fallback failure; never abort before the sibling upstream is tried. */
-function recordUpstreamFailure(
-  e: unknown,
-  label: "piped" | "invidious",
-  errors: string[],
-): void {
-  if (e instanceof RateLimitExceededError) {
-    errors.push(`${label}:${UPSTREAM_RATE_LIMIT_NOTE}`);
-    return;
-  }
-  const msg = e instanceof Error ? e.message : String(e);
-  errors.push(`${label}:${msg}`);
-}
-
-function rethrowIfInvidiousUpcoming(error: unknown, videoId: string): void {
-  if (!(error instanceof Error)) return;
-  const upcoming = parseInvidiousUpcomingFromFetchMessage(
-    error.message,
-    videoId,
-  );
-  if (upcoming) throw upcoming;
-}
-
 export { UpstreamAgeRestrictedError } from "@/server/errors/upstream-age-restricted";
 export { UpstreamLiveUpcomingError } from "@/server/errors/upstream-live-upcoming";
-
-function throwIfUpstreamFailed(
-  errors: string[],
-  fallbackMessage: string,
-): never {
-  if (
-    errors.length > 0 &&
-    errors.every((entry) => entry.endsWith(`:${UPSTREAM_RATE_LIMIT_NOTE}`))
-  ) {
-    throw new RateLimitExceededError();
-  }
-  // When either backend explicitly refuses an age-restricted video, surface a
-  // clean typed error instead of the raw NewPipe/Invidious stack trace.
-  if (errors.some(isAgeRestrictedUpstreamMessage)) {
-    throw new UpstreamAgeRestrictedError();
-  }
-  throw new UpstreamUnavailableError(
-    errors.length > 0 ? errors.join("; ") : fallbackMessage,
-  );
-}
 
 /** Invidious often returns paths like `/api/v1/manifest/...` — resolve against the instance base. */
 function resolveInvidiousAbsoluteMediaUrl(
@@ -234,12 +199,6 @@ function normalizeInvidiousOutboundBase(base: string): string {
   }
 }
 
-function invidiousBaseFromEnv(): string {
-  const raw = normalizeUpstreamBaseUrl(process.env.INVIDIOUS_BASE_URL);
-  if (!raw) return "";
-  return normalizeInvidiousOutboundBase(normalizeBaseUrl(raw));
-}
-
 export type UpstreamAvailability = {
   pipedConfigured: boolean;
   invidiousConfigured: boolean;
@@ -249,11 +208,11 @@ export type UpstreamAvailability = {
 export function describeUpstreamAvailability(
   overrides?: ProxySourceOverrides,
 ): UpstreamAvailability {
-  const { pipedBase, invidiousBase } = resolveProxyBases(overrides);
+  const { pipedBases, invidiousBases } = resolveProxyBaseCandidates(overrides);
   return {
-    pipedConfigured: Boolean(pipedBase),
-    invidiousConfigured: Boolean(invidiousBase),
-    anyConfigured: Boolean(pipedBase || invidiousBase),
+    pipedConfigured: pipedBases.length > 0,
+    invidiousConfigured: invidiousBases.length > 0,
+    anyConfigured: pipedBases.length > 0 || invidiousBases.length > 0,
   };
 }
 
@@ -274,6 +233,9 @@ export type InstanceSourceRow = {
   profileOverride: string | null;
   /** URL OwnTube actually uses for this upstream. */
   effectiveUrl: string | null;
+  urls: string[];
+  preferredUrl: string | null;
+  health: UpstreamHealthSnapshot[];
 };
 
 export type InstanceSourceInfo = {
@@ -292,31 +254,63 @@ function readEnvInvidiousRaw(): string | null {
 }
 
 function readEnvPipedUrl(): string | null {
-  const raw = readEnvPipedRaw();
-  if (!raw || isUpstreamDisabled(raw)) return null;
-  return normalizeBaseUrl(raw);
+  return readEnvPipedUrls()[0] ?? null;
 }
 
 function readEnvInvidiousUrl(): string | null {
-  const base = invidiousBaseFromEnv();
-  return base || null;
+  return readEnvInvidiousUrls()[0] ?? null;
+}
+
+function splitConfiguredUrls(raw: string | null): string[] {
+  if (!raw || isUpstreamDisabled(raw)) return [];
+  return raw
+    .split(/[\s,]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function readEnvPipedUrls(): string[] {
+  return normalizeUpstreamInstanceList(splitConfiguredUrls(readEnvPipedRaw()));
+}
+
+function readEnvInvidiousUrls(): string[] {
+  return normalizeUpstreamInstanceList(
+    splitConfiguredUrls(readEnvInvidiousRaw()),
+  ).map(normalizeInvidiousOutboundBase);
 }
 
 /** Server env + optional profile overrides — for Settings display. */
 export function getInstanceSourceInfo(profile?: {
   pipedBaseUrl?: string;
   invidiousBaseUrl?: string;
+  pipedBaseUrls?: string[];
+  invidiousBaseUrls?: string[];
+  preferredPipedBaseUrl?: string;
+  preferredInvidiousBaseUrl?: string;
 }): InstanceSourceInfo {
-  const profilePiped = profile?.pipedBaseUrl?.trim() || null;
-  const profileInv = profile?.invidiousBaseUrl?.trim() || null;
+  const profilePipedUrls = normalizeUpstreamInstanceList([
+    ...(profile?.pipedBaseUrls ?? []),
+    ...(profile?.pipedBaseUrl ? [profile.pipedBaseUrl] : []),
+  ]);
+  const profileInvUrls = normalizeUpstreamInstanceList([
+    ...(profile?.invidiousBaseUrls ?? []),
+    ...(profile?.invidiousBaseUrl ? [profile.invidiousBaseUrl] : []),
+  ]).map(normalizeInvidiousOutboundBase);
   const overrides =
-    profilePiped || profileInv
+    profilePipedUrls.length > 0 || profileInvUrls.length > 0
       ? {
-          pipedBaseUrl: profile?.pipedBaseUrl,
-          invidiousBaseUrl: profile?.invidiousBaseUrl,
+          pipedBaseUrls: profilePipedUrls,
+          invidiousBaseUrls: profileInvUrls,
+          preferredPipedBaseUrl: profile?.preferredPipedBaseUrl,
+          preferredInvidiousBaseUrl: profile?.preferredInvidiousBaseUrl,
         }
       : undefined;
-  const { pipedBase, invidiousBase } = resolveProxyBases(overrides);
+  const {
+    pipedBases,
+    invidiousBases,
+    preferredPipedBase,
+    preferredInvidiousBase,
+  } = resolveProxyBaseCandidates(overrides);
 
   const pipedEnvRaw = readEnvPipedRaw();
   const invEnvRaw = readEnvInvidiousRaw();
@@ -329,8 +323,12 @@ export function getInstanceSourceInfo(profile?: {
           ? readEnvPipedUrl()
           : null,
       envDisabled: Boolean(pipedEnvRaw && isUpstreamDisabled(pipedEnvRaw)),
-      profileOverride: profilePiped,
-      effectiveUrl: pipedBase || null,
+      profileOverride:
+        profilePipedUrls.length > 0 ? profilePipedUrls.join(", ") : null,
+      effectiveUrl: pipedBases[0] ?? null,
+      urls: pipedBases,
+      preferredUrl: preferredPipedBase ?? null,
+      health: pipedBases.map((url) => upstreamHealthSnapshot("piped", url)),
     },
     invidious: {
       envRaw: invEnvRaw,
@@ -339,9 +337,63 @@ export function getInstanceSourceInfo(profile?: {
           ? readEnvInvidiousUrl()
           : null,
       envDisabled: Boolean(invEnvRaw && isUpstreamDisabled(invEnvRaw)),
-      profileOverride: profileInv,
-      effectiveUrl: invidiousBase || null,
+      profileOverride:
+        profileInvUrls.length > 0 ? profileInvUrls.join(", ") : null,
+      effectiveUrl: invidiousBases[0] ?? null,
+      urls: invidiousBases,
+      preferredUrl: preferredInvidiousBase ?? null,
+      health: invidiousBases.map((url) =>
+        upstreamHealthSnapshot("invidious", url),
+      ),
     },
+  };
+}
+
+export function resolveProxyBaseCandidates(overrides?: ProxySourceOverrides): {
+  pipedBases: string[];
+  invidiousBases: string[];
+  preferredPipedBase?: string;
+  preferredInvidiousBase?: string;
+} {
+  const rawPiped =
+    overrides?.pipedBaseUrls && overrides.pipedBaseUrls.length > 0
+      ? overrides.pipedBaseUrls
+      : overrides?.pipedBaseUrl !== undefined
+        ? [overrides.pipedBaseUrl ?? ""]
+        : readEnvPipedUrls();
+  const rawInvidious =
+    overrides?.invidiousBaseUrls && overrides.invidiousBaseUrls.length > 0
+      ? overrides.invidiousBaseUrls
+      : overrides?.invidiousBaseUrl !== undefined
+        ? [overrides.invidiousBaseUrl ?? ""]
+        : readEnvInvidiousUrls();
+
+  const pipedBases = normalizeUpstreamInstanceList(rawPiped);
+  const invidiousBases = normalizeUpstreamInstanceList(rawInvidious).map(
+    normalizeInvidiousOutboundBase,
+  );
+  const preferredPipedBase = normalizePreferredUpstreamInstance(
+    overrides?.preferredPipedBaseUrl ?? undefined,
+    pipedBases,
+  );
+  const preferredInvidiousBase = normalizePreferredUpstreamInstance(
+    overrides?.preferredInvidiousBaseUrl ?? undefined,
+    invidiousBases,
+  );
+
+  return {
+    pipedBases: orderUpstreamCandidates(
+      "piped",
+      pipedBases,
+      preferredPipedBase,
+    ),
+    invidiousBases: orderUpstreamCandidates(
+      "invidious",
+      invidiousBases,
+      preferredInvidiousBase,
+    ),
+    preferredPipedBase,
+    preferredInvidiousBase,
   };
 }
 
@@ -349,23 +401,11 @@ export function resolveProxyBases(overrides?: ProxySourceOverrides): {
   pipedBase: string;
   invidiousBase: string;
 } {
-  const pipedCandidate = overrides?.pipedBaseUrl?.trim();
-  const pipedRaw =
-    pipedCandidate !== undefined
-      ? pipedCandidate
-      : process.env.PIPED_BASE_URL?.trim();
-  const pipedBase =
-    pipedRaw && !isUpstreamDisabled(pipedRaw) ? normalizeBaseUrl(pipedRaw) : "";
-
-  const invidiousCandidate = overrides?.invidiousBaseUrl?.trim();
-  const invidiousBase =
-    invidiousCandidate !== undefined
-      ? invidiousCandidate
-        ? normalizeInvidiousOutboundBase(normalizeBaseUrl(invidiousCandidate))
-        : ""
-      : invidiousBaseFromEnv();
-
-  return { pipedBase, invidiousBase };
+  const { pipedBases, invidiousBases } = resolveProxyBaseCandidates(overrides);
+  return {
+    pipedBase: pipedBases[0] ?? "",
+    invidiousBase: invidiousBases[0] ?? "",
+  };
 }
 
 function nowUnix(): number {
@@ -876,6 +916,7 @@ async function tryFetchInvidiousStoryboard(
     acquireUpstreamSlot();
     const json = await fetchJson(
       buildInvidiousVideosUrl(invidiousBase, videoId),
+      { source: "invidious", baseUrl: invidiousBase },
     );
     if (!json || typeof json !== "object") return undefined;
     return pickInvidiousStoryboard(
@@ -990,38 +1031,68 @@ type FetchJsonOptions = {
    * completely empty body instead of `[]` when there are no related items.
    */
   emptyBodyAs?: unknown;
+  source?: "piped" | "invidious";
+  baseUrl?: string;
 };
 
 async function fetchJson(
   url: string,
   options?: FetchJsonOptions,
 ): Promise<unknown> {
-  const { status, ok, text } = await upstreamGetText(url, FETCH_TIMEOUT_MS);
-  const trimmed = text.trim();
-  if (!ok) {
-    const hint = trimmed.slice(0, 240);
-    throw new Error(
-      hint ? `HTTP ${status}: ${hint}` : `HTTP ${status} (empty body)`,
-    );
-  }
-  if (!trimmed) {
-    if (options?.emptyBodyAs !== undefined) {
-      return options.emptyBodyAs;
-    }
-    throw new Error(
-      `HTTP ${status} with empty body (expected JSON from upstream)`,
-    );
-  }
+  const startedAt = Date.now();
   try {
-    return JSON.parse(trimmed) as unknown;
-  } catch (e) {
-    const isHtml = trimmed.startsWith("<");
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(
-      isHtml
-        ? `Invalid JSON (upstream returned HTML — base URL may be the web UI, not the API; use the Piped backend URL or set PIPED_BASE_URL=disabled): ${msg}; start: ${trimmed.slice(0, 120)}`
-        : `Invalid JSON: ${msg}; start: ${trimmed.slice(0, 120)}`,
-    );
+    const { status, ok, text } = await upstreamGetText(url, FETCH_TIMEOUT_MS);
+    const trimmed = text.trim();
+    if (!ok) {
+      const hint = trimmed.slice(0, 240);
+      throw new Error(
+        hint ? `HTTP ${status}: ${hint}` : `HTTP ${status} (empty body)`,
+      );
+    }
+    if (!trimmed) {
+      if (options?.emptyBodyAs !== undefined) {
+        if (options.source && options.baseUrl) {
+          recordUpstreamSuccess(
+            options.source,
+            options.baseUrl,
+            Date.now() - startedAt,
+          );
+        }
+        return options.emptyBodyAs;
+      }
+      throw new Error(
+        `HTTP ${status} with empty body (expected JSON from upstream)`,
+      );
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (options?.source && options.baseUrl) {
+        recordUpstreamSuccess(
+          options.source,
+          options.baseUrl,
+          Date.now() - startedAt,
+        );
+      }
+      return parsed;
+    } catch (e) {
+      const isHtml = trimmed.startsWith("<");
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(
+        isHtml
+          ? `Invalid JSON (upstream returned HTML — base URL may be the web UI, not the API; use the Piped backend URL or set PIPED_BASE_URL=disabled): ${msg}; start: ${trimmed.slice(0, 120)}`
+          : `Invalid JSON: ${msg}; start: ${trimmed.slice(0, 120)}`,
+      );
+    }
+  } catch (error) {
+    if (options?.source && options.baseUrl) {
+      recordInstanceFailure(
+        options.source,
+        options.baseUrl,
+        error,
+        Date.now() - startedAt,
+      );
+    }
+    throw error;
   }
 }
 
@@ -1255,122 +1326,136 @@ export async function searchVideos(
   const cached = readFreshSearchCache(db, key);
   if (cached) return cached;
 
-  const { pipedBase, invidiousBase } = resolveProxyBases(overrides);
+  const { pipedBases, invidiousBases } = resolveProxyBaseCandidates(overrides);
 
   const errors: string[] = [];
 
   const tryPiped = async (): Promise<SearchVideosResult | null> => {
-    if (!pipedBase) return null;
-    try {
-      acquireUpstreamSlot();
-      const url = buildPipedSearchUrl(pipedBase, parsedInput);
-      logger.info("proxy.piped.request", {
-        url: url.replace(parsedInput.q, "[q]"),
-      });
-      const json = await fetchJson(url);
-      let { videos, channels, continuation } = parsePipedSearch(
-        json,
-        limit,
-        pipedBase,
-      );
-      if (channels.length === 0 && !parsedInput.continuation) {
-        try {
-          acquireUpstreamSlot();
-          const channelUrl = buildPipedSearchUrl(
-            pipedBase,
-            parsedInput,
-            "channels",
-          );
-          const channelJson = await fetchJson(channelUrl);
-          const channelOnly = parsePipedSearch(channelJson, limit, pipedBase);
-          if (channelOnly.channels.length > 0) {
-            channels = channelOnly.channels;
+    for (const pipedBase of pipedBases) {
+      try {
+        acquireUpstreamSlot();
+        const url = buildPipedSearchUrl(pipedBase, parsedInput);
+        logger.info("proxy.piped.request", {
+          url: url.replace(parsedInput.q, "[q]"),
+        });
+        const json = await fetchJson(url, {
+          source: "piped",
+          baseUrl: pipedBase,
+        });
+        let { videos, channels, continuation } = parsePipedSearch(
+          json,
+          limit,
+          pipedBase,
+        );
+        if (channels.length === 0 && !parsedInput.continuation) {
+          try {
+            acquireUpstreamSlot();
+            const channelUrl = buildPipedSearchUrl(
+              pipedBase,
+              parsedInput,
+              "channels",
+            );
+            const channelJson = await fetchJson(channelUrl, {
+              source: "piped",
+              baseUrl: pipedBase,
+            });
+            const channelOnly = parsePipedSearch(channelJson, limit, pipedBase);
+            if (channelOnly.channels.length > 0) {
+              channels = channelOnly.channels;
+            }
+          } catch {
+            // optional channel-only pass
           }
-        } catch {
-          // optional channel-only pass
         }
+        const result: SearchVideosResult = {
+          videos,
+          channels,
+          continuation,
+          sourceUsed: "piped",
+        };
+        const safe = searchVideosResultSchema.parse(result);
+        return safe;
+      } catch (e) {
+        recordUpstreamFailure(e, "piped", errors, pipedBase);
+        logger.warn("proxy.piped.failed", {
+          message: e instanceof Error ? e.message : String(e),
+        });
       }
-      const result: SearchVideosResult = {
-        videos,
-        channels,
-        continuation,
-        sourceUsed: "piped",
-      };
-      const safe = searchVideosResultSchema.parse(result);
-      return safe;
-    } catch (e) {
-      recordUpstreamFailure(e, "piped", errors);
-      logger.warn("proxy.piped.failed", {
-        message: e instanceof Error ? e.message : String(e),
-      });
-      return null;
     }
+    return null;
   };
 
   const tryInvidious = async (): Promise<SearchVideosResult | null> => {
-    if (!invidiousBase) return null;
-    if (invidiousPortCollidesWithNextApp(invidiousBase)) {
-      errors.push(
-        "invidious:INVIDIOUS_BASE_URL uses the same loopback port as this Next.js server (PORT). Server fetch would hit OwnTube itself (404 on /api/v1/...). Run Invidious on another port (e.g. 3001 in docker-compose) or start Next on a different port (e.g. pnpm dev -- -p 3000).",
-      );
-      return null;
-    }
-    try {
-      acquireUpstreamSlot();
-      const page =
-        parsedInput.continuation && /^\d+$/.test(parsedInput.continuation)
-          ? Number.parseInt(parsedInput.continuation, 10)
-          : 1;
-      const url = buildInvidiousSearchUrl(invidiousBase, {
-        ...parsedInput,
-        continuation: String(page),
-      });
-      logger.info("proxy.invidious.request", {
-        url: url.replace(parsedInput.q, "[q]"),
-      });
-      const json = await fetchJson(url);
-      let { videos, channels, continuation } = parseInvidiousSearch(
-        json,
-        limit,
-        page,
-        invidiousBase,
-      );
-      if (channels.length === 0 && page === 1) {
-        try {
-          acquireUpstreamSlot();
-          const channelUrl = buildInvidiousSearchUrl(
-            invidiousBase,
-            { ...parsedInput, continuation: "1" },
-            "channel",
-          );
-          const channelJson = await fetchJson(channelUrl);
-          const channelOnly = parseInvidiousSearch(
-            channelJson,
-            limit,
-            page,
-            invidiousBase,
-          );
-          if (channelOnly.channels.length > 0) {
-            channels = channelOnly.channels;
-          }
-        } catch {
-          // optional channel-only pass
-        }
+    for (const invidiousBase of invidiousBases) {
+      if (invidiousPortCollidesWithNextApp(invidiousBase)) {
+        errors.push(
+          "invidious:INVIDIOUS_BASE_URL uses the same loopback port as this Next.js server (PORT). Server fetch would hit OwnTube itself (404 on /api/v1/...). Run Invidious on another port (e.g. 3001 in docker-compose) or start Next on a different port (e.g. pnpm dev -- -p 3000).",
+        );
+        continue;
       }
-      const result: SearchVideosResult = {
-        videos,
-        channels,
-        continuation,
-        sourceUsed: "invidious",
-      };
-      return searchVideosResultSchema.parse(result);
-    } catch (e) {
-      recordUpstreamFailure(e, "invidious", errors);
-      logger.warn("proxy.invidious.failed", {
-        message: e instanceof Error ? e.message : String(e),
-      });
-      return null;
+      try {
+        acquireUpstreamSlot();
+        const page =
+          parsedInput.continuation && /^\d+$/.test(parsedInput.continuation)
+            ? Number.parseInt(parsedInput.continuation, 10)
+            : 1;
+        const url = buildInvidiousSearchUrl(invidiousBase, {
+          ...parsedInput,
+          continuation: String(page),
+        });
+        logger.info("proxy.invidious.request", {
+          url: url.replace(parsedInput.q, "[q]"),
+        });
+        const json = await fetchJson(url, {
+          source: "invidious",
+          baseUrl: invidiousBase,
+        });
+        let { videos, channels, continuation } = parseInvidiousSearch(
+          json,
+          limit,
+          page,
+          invidiousBase,
+        );
+        if (channels.length === 0 && page === 1) {
+          try {
+            acquireUpstreamSlot();
+            const channelUrl = buildInvidiousSearchUrl(
+              invidiousBase,
+              { ...parsedInput, continuation: "1" },
+              "channel",
+            );
+            const channelJson = await fetchJson(channelUrl, {
+              source: "invidious",
+              baseUrl: invidiousBase,
+            });
+            const channelOnly = parseInvidiousSearch(
+              channelJson,
+              limit,
+              page,
+              invidiousBase,
+            );
+            if (channelOnly.channels.length > 0) {
+              channels = channelOnly.channels;
+            }
+          } catch {
+            // optional channel-only pass
+          }
+        }
+        const result: SearchVideosResult = {
+          videos,
+          channels,
+          continuation,
+          sourceUsed: "invidious",
+        };
+        return searchVideosResultSchema.parse(result);
+      } catch (e) {
+        recordUpstreamFailure(e, "invidious", errors, invidiousBase);
+        logger.warn("proxy.invidious.failed", {
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
     }
+    return null;
   };
 
   let resolved = await tryPiped();
@@ -2027,7 +2112,7 @@ export async function fetchVideoDetail(
     if (cached) return cached;
   }
 
-  const { pipedBase, invidiousBase } = resolveProxyBases(overrides);
+  const { pipedBases, invidiousBases } = resolveProxyBaseCandidates(overrides);
   const errors: string[] = [];
 
   let resolved: VideoDetail | null = null;
@@ -2036,36 +2121,40 @@ export async function fetchVideoDetail(
   const preferUpstream = opts?.preferUpstream ?? input.preferUpstream;
 
   const fetchInvidiousDetail = async (): Promise<VideoDetail | null> => {
-    if (!invidiousBase) return null;
-    if (invidiousPortCollidesWithNextApp(invidiousBase)) {
-      errors.push(
-        "invidious:INVIDIOUS_BASE_URL port conflicts with Next.js PORT (server would call itself).",
-      );
-      return null;
+    for (const invidiousBase of invidiousBases) {
+      if (invidiousPortCollidesWithNextApp(invidiousBase)) {
+        errors.push(
+          "invidious:INVIDIOUS_BASE_URL port conflicts with Next.js PORT (server would call itself).",
+        );
+        continue;
+      }
+      try {
+        acquireUpstreamSlot();
+        const json = await fetchJson(
+          buildInvidiousVideosUrl(invidiousBase, input.videoId),
+          { source: "invidious", baseUrl: invidiousBase },
+        );
+        return mapInvidiousVideo(json, invidiousBase);
+      } catch (error) {
+        rethrowIfInvidiousUpcoming(error, input.videoId);
+        recordUpstreamFailure(error, "invidious", errors, invidiousBase);
+      }
     }
-    try {
-      acquireUpstreamSlot();
-      const json = await fetchJson(
-        buildInvidiousVideosUrl(invidiousBase, input.videoId),
-      );
-      return mapInvidiousVideo(json, invidiousBase);
-    } catch (error) {
-      rethrowIfInvidiousUpcoming(error, input.videoId);
-      recordUpstreamFailure(error, "invidious", errors);
-      return null;
-    }
+    return null;
   };
 
-  if (pipedBase) {
+  for (const pipedBase of pipedBases) {
     try {
       acquireUpstreamSlot();
       const json = await fetchJson(
         buildPipedStreamsUrl(pipedBase, input.videoId),
+        { source: "piped", baseUrl: pipedBase },
       );
       pipedResolved = mapPipedStream(json, pipedBase, input.videoId);
       resolved = pipedResolved;
+      break;
     } catch (error) {
-      recordUpstreamFailure(error, "piped", errors);
+      recordUpstreamFailure(error, "piped", errors, pipedBase);
     }
   }
 
@@ -2073,10 +2162,10 @@ export async function fetchVideoDetail(
   const shouldConsultInvidiousForLive =
     liveFromPiped || preferUpstream === "invidious";
 
-  if (!resolved && invidiousBase) {
+  if (!resolved && invidiousBases.length > 0) {
     invidiousResolved = await fetchInvidiousDetail();
     resolved = invidiousResolved;
-  } else if (shouldConsultInvidiousForLive && invidiousBase) {
+  } else if (shouldConsultInvidiousForLive && invidiousBases.length > 0) {
     invidiousResolved = await fetchInvidiousDetail();
     if (pipedResolved?.isLive || invidiousResolved?.isLive) {
       resolved = pickLivePlaybackDetail(
@@ -2087,7 +2176,7 @@ export async function fetchVideoDetail(
     }
   } else if (
     pipedResolved &&
-    invidiousBase &&
+    invidiousBases.length > 0 &&
     shouldPreferInvidiousOverPiped(pipedResolved)
   ) {
     invidiousResolved = await fetchInvidiousDetail();
@@ -2111,10 +2200,11 @@ export async function fetchVideoDetail(
   }
 
   let enriched = enrichDetailForPlayback(resolved);
-  if (invidiousBase && !enriched.storyboard) {
+  const storyboardInvidiousBase = invidiousBases[0];
+  if (storyboardInvidiousBase && !enriched.storyboard) {
     const storyboard = await tryFetchInvidiousStoryboard(
       input.videoId,
-      invidiousBase,
+      storyboardInvidiousBase,
     );
     if (storyboard) enriched = { ...enriched, storyboard };
   }
@@ -2243,15 +2333,16 @@ export async function fetchRelatedVideos(
   const cached = readFreshRelatedCache(db, key);
   if (cached) return cached;
 
-  const { pipedBase, invidiousBase } = resolveProxyBases(overrides);
+  const { pipedBases, invidiousBases } = resolveProxyBaseCandidates(overrides);
   const errors: string[] = [];
 
   let resolved: RelatedVideosResult | null = null;
-  if (pipedBase) {
+  for (const pipedBase of pipedBases) {
     try {
       acquireUpstreamSlot();
       const json = await fetchJson(
         buildPipedStreamsUrl(pipedBase, input.videoId),
+        { source: "piped", baseUrl: pipedBase },
       );
       const fromStreams = parseRelatedFromPiped(json, limit, pipedBase);
       if (fromStreams.length > 0) {
@@ -2261,14 +2352,14 @@ export async function fetchRelatedVideos(
         });
       }
     } catch (error) {
-      recordUpstreamFailure(error, "piped", errors);
+      recordUpstreamFailure(error, "piped", errors, pipedBase);
     }
     if (!resolved || resolved.videos.length === 0) {
       try {
         acquireUpstreamSlot();
         const json = await fetchJson(
           buildPipedRelatedUrl(pipedBase, input.videoId),
-          { emptyBodyAs: [] },
+          { emptyBodyAs: [], source: "piped", baseUrl: pipedBase },
         );
         const fromRelatedRoute = parseRelatedFromPiped(json, limit, pipedBase);
         if (fromRelatedRoute.length > 0) {
@@ -2278,29 +2369,36 @@ export async function fetchRelatedVideos(
           });
         }
       } catch (error) {
-        recordUpstreamFailure(error, "piped", errors);
+        recordUpstreamFailure(error, "piped", errors, pipedBase);
       }
     }
+    if (resolved && resolved.videos.length > 0) break;
   }
 
-  if ((!resolved || resolved.videos.length === 0) && invidiousBase) {
-    if (invidiousPortCollidesWithNextApp(invidiousBase)) {
-      errors.push(
-        "invidious:INVIDIOUS_BASE_URL port conflicts with Next.js PORT (server would call itself).",
-      );
-    } else {
+  if (
+    (!resolved || resolved.videos.length === 0) &&
+    invidiousBases.length > 0
+  ) {
+    for (const invidiousBase of invidiousBases) {
+      if (invidiousPortCollidesWithNextApp(invidiousBase)) {
+        errors.push(
+          "invidious:INVIDIOUS_BASE_URL port conflicts with Next.js PORT (server would call itself).",
+        );
+        continue;
+      }
       try {
         acquireUpstreamSlot();
         const json = await fetchJson(
           buildInvidiousRelatedUrl(invidiousBase, input.videoId),
-          { emptyBodyAs: [] },
+          { emptyBodyAs: [], source: "invidious", baseUrl: invidiousBase },
         );
         resolved = relatedVideosResultSchema.parse({
           videos: parseRelatedFromInvidious(json, limit, invidiousBase),
           sourceUsed: "invidious",
         });
+        if (resolved.videos.length > 0) break;
       } catch (error) {
-        recordUpstreamFailure(error, "invidious", errors);
+        recordUpstreamFailure(error, "invidious", errors, invidiousBase);
       }
     }
   }
@@ -2576,29 +2674,37 @@ export async function fetchVideoComments(
   input: VideoCommentsInput,
   overrides?: ProxySourceOverrides,
 ): Promise<VideoCommentsResult> {
-  const { pipedBase, invidiousBase } = resolveProxyBases(overrides);
+  const { pipedBases, invidiousBases } = resolveProxyBaseCandidates(overrides);
   const errors: string[] = [];
   const continuation = input.continuation?.trim() || undefined;
 
   let resolved: VideoCommentsResult | null = null;
-  if (pipedBase && input.sortBy === "top") {
-    try {
-      acquireUpstreamSlot();
-      const url = continuation
-        ? buildPipedCommentsNextUrl(pipedBase, input.videoId, continuation)
-        : buildPipedCommentsUrl(pipedBase, input.videoId);
-      const json = await fetchJson(url);
-      resolved = mapPipedComments(json, pipedBase, input.videoId);
-    } catch (error) {
-      recordUpstreamFailure(error, "piped", errors);
+  if (input.sortBy === "top") {
+    for (const pipedBase of pipedBases) {
+      try {
+        acquireUpstreamSlot();
+        const url = continuation
+          ? buildPipedCommentsNextUrl(pipedBase, input.videoId, continuation)
+          : buildPipedCommentsUrl(pipedBase, input.videoId);
+        const json = await fetchJson(url, {
+          source: "piped",
+          baseUrl: pipedBase,
+        });
+        resolved = mapPipedComments(json, pipedBase, input.videoId);
+        break;
+      } catch (error) {
+        recordUpstreamFailure(error, "piped", errors, pipedBase);
+      }
     }
   }
-  if (!resolved && invidiousBase) {
-    if (invidiousPortCollidesWithNextApp(invidiousBase)) {
-      errors.push(
-        "invidious:INVIDIOUS_BASE_URL port conflicts with Next.js PORT (server would call itself).",
-      );
-    } else {
+  if (!resolved) {
+    for (const invidiousBase of invidiousBases) {
+      if (invidiousPortCollidesWithNextApp(invidiousBase)) {
+        errors.push(
+          "invidious:INVIDIOUS_BASE_URL port conflicts with Next.js PORT (server would call itself).",
+        );
+        continue;
+      }
       try {
         acquireUpstreamSlot();
         const json = await fetchJson(
@@ -2608,10 +2714,12 @@ export async function fetchVideoComments(
             input.sortBy,
             continuation,
           ),
+          { source: "invidious", baseUrl: invidiousBase },
         );
         resolved = mapInvidiousComments(json, invidiousBase, input.videoId);
+        break;
       } catch (error) {
-        recordUpstreamFailure(error, "invidious", errors);
+        recordUpstreamFailure(error, "invidious", errors, invidiousBase);
       }
     }
   }
@@ -2764,19 +2872,18 @@ export async function fetchTrendingVideos(
   if (inFlight) return inFlight;
 
   const task = (async (): Promise<TrendingVideosResult> => {
-    const { pipedBase, invidiousBase } = resolveProxyBases(overrides);
+    const { pipedBases, invidiousBases } =
+      resolveProxyBaseCandidates(overrides);
     const errors: string[] = [];
 
     let resolved: TrendingVideosResult | null = null;
 
-    if (pipedBase) {
+    for (const pipedBase of pipedBases) {
       try {
         acquireUpstreamSlot();
         const json = await fetchJson(
           buildPipedTrendingUrl(pipedBase, region, input.category),
-          {
-            emptyBodyAs: [],
-          },
+          { emptyBodyAs: [], source: "piped", baseUrl: pipedBase },
         );
         const videos = parsePipedTrending(json, limit, pipedBase);
         if (videos.length > 0) {
@@ -2786,30 +2893,38 @@ export async function fetchTrendingVideos(
           });
         }
       } catch (e) {
-        recordUpstreamFailure(e, "piped", errors);
+        recordUpstreamFailure(e, "piped", errors, pipedBase);
       }
+      if (resolved && resolved.videos.length > 0) break;
     }
 
-    if ((!resolved || resolved.videos.length === 0) && invidiousBase) {
-      if (invidiousPortCollidesWithNextApp(invidiousBase)) {
-        errors.push("invidious:port collision with Next.js");
-      } else {
-        try {
-          acquireUpstreamSlot();
-          const json = await fetchJson(
-            buildInvidiousTrendingUrl(invidiousBase, region, input.category),
-            { emptyBodyAs: [] },
-          );
-          const videos = parseInvidiousTrending(json, limit, invidiousBase);
-          if (videos.length > 0) {
-            resolved = trendingVideosResultSchema.parse({
-              videos,
-              sourceUsed: "invidious",
-            });
+    if (
+      (!resolved || resolved.videos.length === 0) &&
+      invidiousBases.length > 0
+    ) {
+      for (const invidiousBase of invidiousBases) {
+        if (invidiousPortCollidesWithNextApp(invidiousBase)) {
+          errors.push("invidious:port collision with Next.js");
+          continue;
+        } else {
+          try {
+            acquireUpstreamSlot();
+            const json = await fetchJson(
+              buildInvidiousTrendingUrl(invidiousBase, region, input.category),
+              { emptyBodyAs: [], source: "invidious", baseUrl: invidiousBase },
+            );
+            const videos = parseInvidiousTrending(json, limit, invidiousBase);
+            if (videos.length > 0) {
+              resolved = trendingVideosResultSchema.parse({
+                videos,
+                sourceUsed: "invidious",
+              });
+            }
+          } catch (e) {
+            recordUpstreamFailure(e, "invidious", errors, invidiousBase);
           }
-        } catch (e) {
-          recordUpstreamFailure(e, "invidious", errors);
         }
+        if (resolved && resolved.videos.length > 0) break;
       }
     }
 
@@ -2956,202 +3071,222 @@ export async function fetchShortsFeed(
   if (inFlight) return inFlight;
 
   const task = (async (): Promise<ShortsFeedResult> => {
-    const { pipedBase, invidiousBase } = resolveProxyBases(overrides);
+    const { pipedBases, invidiousBases } =
+      resolveProxyBaseCandidates(overrides);
     const errors: string[] = [];
     let resolved: ShortsFeedResult | null = null;
 
     const tryInvidious = async (): Promise<ShortsFeedResult | null> => {
-      if (!invidiousBase) return null;
-      if (invidiousPortCollidesWithNextApp(invidiousBase)) {
-        errors.push("invidious:port collision with Next.js");
-        return null;
+      for (const invidiousBase of invidiousBases) {
+        if (invidiousPortCollidesWithNextApp(invidiousBase)) {
+          errors.push("invidious:port collision with Next.js");
+          continue;
+        }
+        try {
+          const page = invidiousShortsSearchPage(input.continuation);
+          if (!input.continuation) {
+            const seen = new Set<string>();
+            const videos: UnifiedVideo[] = [];
+            const invidiousDiscoveryQueries = resolveShortsDiscoveryQueries(
+              input,
+              region,
+            );
+            const tasteDiscovery = (input.discoveryQueries?.length ?? 0) > 0;
+            if (!tasteDiscovery) {
+              try {
+                acquireUpstreamSlot();
+                const trendingUrl = buildInvidiousTrendingUrl(
+                  invidiousBase,
+                  region,
+                );
+                const trendingJson = await fetchJson(trendingUrl, {
+                  emptyBodyAs: [],
+                  source: "invidious",
+                  baseUrl: invidiousBase,
+                });
+                mergeDiscoveryShortVideos(
+                  limit,
+                  seen,
+                  videos,
+                  parseInvidiousShortsList(trendingJson, limit, invidiousBase),
+                );
+              } catch (e) {
+                recordUpstreamFailure(e, "invidious", errors, invidiousBase);
+              }
+            }
+            for (const q of invidiousDiscoveryQueries) {
+              if (videos.length >= limit) break;
+              try {
+                acquireUpstreamSlot();
+                const searchUrl = buildInvidiousSearchUrl(
+                  invidiousBase,
+                  { q, continuation: "1", region },
+                  "video",
+                );
+                const json = await fetchJson(searchUrl, {
+                  emptyBodyAs: [],
+                  source: "invidious",
+                  baseUrl: invidiousBase,
+                });
+                const found = parseInvidiousShortsList(
+                  json,
+                  limit,
+                  invidiousBase,
+                );
+                if (mergeDiscoveryShortVideos(limit, seen, videos, found))
+                  break;
+              } catch (e) {
+                recordUpstreamFailure(e, "invidious", errors, invidiousBase);
+              }
+            }
+            if (videos.length > 0) {
+              return shortsFeedResultSchema.parse({
+                videos: videos.slice(0, limit),
+                continuation: nextInvidiousShortsContinuation(1, videos.length),
+                sourceUsed: "invidious",
+              });
+            }
+          }
+          acquireUpstreamSlot();
+          const searchUrl = buildInvidiousSearchUrl(
+            invidiousBase,
+            {
+              q: INVIDIOUS_SHORTS_SEARCH_QUERY,
+              continuation: String(page),
+              region,
+            },
+            "video",
+          );
+          const json = await fetchJson(searchUrl, {
+            emptyBodyAs: [],
+            source: "invidious",
+            baseUrl: invidiousBase,
+          });
+          const videos = parseInvidiousShortsList(json, limit, invidiousBase);
+          if (videos.length === 0) continue;
+          return shortsFeedResultSchema.parse({
+            videos,
+            continuation: nextInvidiousShortsContinuation(page, videos.length),
+            sourceUsed: "invidious",
+          });
+        } catch (e) {
+          recordUpstreamFailure(e, "invidious", errors, invidiousBase);
+        }
       }
-      try {
-        const page = invidiousShortsSearchPage(input.continuation);
+      return null;
+    };
+
+    const tryPiped = async (): Promise<ShortsFeedResult | null> => {
+      for (const pipedBase of pipedBases) {
+        const discoveryQueries = resolveShortsDiscoveryQueries(input, region);
+        const tasteDiscovery = (input.discoveryQueries?.length ?? 0) > 0;
+
+        const fetchPipedSearchShorts = async (
+          q: string,
+          continuation?: string,
+        ): Promise<UnifiedVideo[]> => {
+          try {
+            acquireUpstreamSlot();
+            const searchUrl = buildPipedSearchUrl(
+              pipedBase,
+              {
+                q,
+                limit: Math.min(40, limit * 3),
+                continuation,
+                region,
+              },
+              "all",
+            );
+            const json = await fetchJson(searchUrl, {
+              source: "piped",
+              baseUrl: pipedBase,
+            });
+            return parsePipedShortsSearch(json, limit, pipedBase).videos;
+          } catch (e) {
+            recordUpstreamFailure(e, "piped", errors, pipedBase);
+            return [];
+          }
+        };
+
         if (!input.continuation) {
           const seen = new Set<string>();
           const videos: UnifiedVideo[] = [];
-          const invidiousDiscoveryQueries = resolveShortsDiscoveryQueries(
-            input,
-            region,
-          );
-          const tasteDiscovery = (input.discoveryQueries?.length ?? 0) > 0;
+
           if (!tasteDiscovery) {
             try {
               acquireUpstreamSlot();
-              const trendingUrl = buildInvidiousTrendingUrl(
-                invidiousBase,
-                region,
+              const trendingJson = await fetchJson(
+                buildPipedTrendingUrl(pipedBase, region),
+                { emptyBodyAs: [], source: "piped", baseUrl: pipedBase },
               );
-              const trendingJson = await fetchJson(trendingUrl, {
-                emptyBodyAs: [],
-              });
               mergeDiscoveryShortVideos(
                 limit,
                 seen,
                 videos,
-                parseInvidiousShortsList(trendingJson, limit, invidiousBase),
+                parsePipedTrendingShorts(trendingJson, limit, pipedBase),
               );
             } catch (e) {
-              recordUpstreamFailure(e, "invidious", errors);
+              recordUpstreamFailure(e, "piped", errors, pipedBase);
             }
           }
-          for (const q of invidiousDiscoveryQueries) {
+
+          for (const q of discoveryQueries) {
             if (videos.length >= limit) break;
-            try {
-              acquireUpstreamSlot();
-              const searchUrl = buildInvidiousSearchUrl(
-                invidiousBase,
-                { q, continuation: "1", region },
-                "video",
-              );
-              const json = await fetchJson(searchUrl, { emptyBodyAs: [] });
-              const found = parseInvidiousShortsList(
-                json,
-                limit,
-                invidiousBase,
-              );
-              if (mergeDiscoveryShortVideos(limit, seen, videos, found)) break;
-            } catch (e) {
-              recordUpstreamFailure(e, "invidious", errors);
-            }
+            const found = await fetchPipedSearchShorts(q);
+            if (mergeDiscoveryShortVideos(limit, seen, videos, found)) break;
           }
+
           if (videos.length > 0) {
             return shortsFeedResultSchema.parse({
               videos: videos.slice(0, limit),
-              continuation: nextInvidiousShortsContinuation(1, videos.length),
-              sourceUsed: "invidious",
+              continuation: "piped:search",
+              sourceUsed: "piped",
             });
           }
         }
-        acquireUpstreamSlot();
-        const searchUrl = buildInvidiousSearchUrl(
-          invidiousBase,
-          {
-            q: INVIDIOUS_SHORTS_SEARCH_QUERY,
-            continuation: String(page),
-            region,
-          },
-          "video",
-        );
-        const json = await fetchJson(searchUrl, { emptyBodyAs: [] });
-        const videos = parseInvidiousShortsList(json, limit, invidiousBase);
-        if (videos.length === 0) return null;
-        return shortsFeedResultSchema.parse({
-          videos,
-          continuation: nextInvidiousShortsContinuation(page, videos.length),
-          sourceUsed: "invidious",
-        });
-      } catch (e) {
-        recordUpstreamFailure(e, "invidious", errors);
-        return null;
-      }
-    };
 
-    const tryPiped = async (): Promise<ShortsFeedResult | null> => {
-      if (!pipedBase) return null;
-      const discoveryQueries = resolveShortsDiscoveryQueries(input, region);
-      const tasteDiscovery = (input.discoveryQueries?.length ?? 0) > 0;
-
-      const fetchPipedSearchShorts = async (
-        q: string,
-        continuation?: string,
-      ): Promise<UnifiedVideo[]> => {
-        try {
-          acquireUpstreamSlot();
-          const searchUrl = buildPipedSearchUrl(
-            pipedBase,
-            {
-              q,
-              limit: Math.min(40, limit * 3),
-              continuation,
-              region,
-            },
-            "all",
-          );
-          const json = await fetchJson(searchUrl);
-          return parsePipedShortsSearch(json, limit, pipedBase).videos;
-        } catch (e) {
-          recordUpstreamFailure(e, "piped", errors);
-          return [];
-        }
-      };
-
-      if (!input.continuation) {
-        const seen = new Set<string>();
-        const videos: UnifiedVideo[] = [];
-
-        if (!tasteDiscovery) {
-          try {
-            acquireUpstreamSlot();
-            const trendingJson = await fetchJson(
-              buildPipedTrendingUrl(pipedBase, region),
-              { emptyBodyAs: [] },
-            );
-            mergeDiscoveryShortVideos(
-              limit,
-              seen,
-              videos,
-              parsePipedTrendingShorts(trendingJson, limit, pipedBase),
-            );
-          } catch (e) {
-            recordUpstreamFailure(e, "piped", errors);
-          }
-        }
+        const pipedContinuation =
+          input.continuation === "piped:search"
+            ? undefined
+            : input.continuation?.startsWith("piped:")
+              ? input.continuation.slice("piped:".length)
+              : input.continuation;
 
         for (const q of discoveryQueries) {
-          if (videos.length >= limit) break;
-          const found = await fetchPipedSearchShorts(q);
-          if (mergeDiscoveryShortVideos(limit, seen, videos, found)) break;
-        }
-
-        if (videos.length > 0) {
-          return shortsFeedResultSchema.parse({
-            videos: videos.slice(0, limit),
-            continuation: "piped:search",
-            sourceUsed: "piped",
-          });
-        }
-      }
-
-      const pipedContinuation =
-        input.continuation === "piped:search"
-          ? undefined
-          : input.continuation?.startsWith("piped:")
-            ? input.continuation.slice("piped:".length)
-            : input.continuation;
-
-      for (const q of discoveryQueries) {
-        try {
-          acquireUpstreamSlot();
-          const searchUrl = buildPipedSearchUrl(
-            pipedBase,
-            {
-              q,
-              limit: Math.min(40, limit * 3),
-              continuation: pipedContinuation,
-              region,
-            },
-            "all",
-          );
-          const json = await fetchJson(searchUrl);
-          const { videos, continuation } = parsePipedShortsSearch(
-            json,
-            limit,
-            pipedBase,
-          );
-          if (videos.length === 0) continue;
-          const next =
-            continuation && continuation.length > 0
-              ? `piped:${continuation}`
-              : null;
-          return shortsFeedResultSchema.parse({
-            videos,
-            continuation: next,
-            sourceUsed: "piped",
-          });
-        } catch (e) {
-          recordUpstreamFailure(e, "piped", errors);
+          try {
+            acquireUpstreamSlot();
+            const searchUrl = buildPipedSearchUrl(
+              pipedBase,
+              {
+                q,
+                limit: Math.min(40, limit * 3),
+                continuation: pipedContinuation,
+                region,
+              },
+              "all",
+            );
+            const json = await fetchJson(searchUrl, {
+              source: "piped",
+              baseUrl: pipedBase,
+            });
+            const { videos, continuation } = parsePipedShortsSearch(
+              json,
+              limit,
+              pipedBase,
+            );
+            if (videos.length === 0) continue;
+            const next =
+              continuation && continuation.length > 0
+                ? `piped:${continuation}`
+                : null;
+            return shortsFeedResultSchema.parse({
+              videos,
+              continuation: next,
+              sourceUsed: "piped",
+            });
+          } catch (e) {
+            recordUpstreamFailure(e, "piped", errors, pipedBase);
+          }
         }
       }
       return null;
@@ -3182,11 +3317,12 @@ export async function fetchShortsFeed(
       if (errors.length > 0) {
         throwIfUpstreamFailed(errors, "shorts feed unavailable");
       }
-      const fallbackSource = pipedBase
-        ? "piped"
-        : invidiousBase
-          ? "invidious"
-          : "piped";
+      const fallbackSource =
+        pipedBases.length > 0
+          ? "piped"
+          : invidiousBases.length > 0
+            ? "invidious"
+            : "piped";
       return shortsFeedResultSchema.parse({
         videos: [],
         continuation: null,
@@ -3525,8 +3661,8 @@ function extractXmlTagContent(
   );
   const m = re.exec(block);
   if (!m) return undefined;
-  return m[1]!
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+  return m[1]
+    ?.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -3984,13 +4120,17 @@ async function fetchPipedChannelShortsPage(
   if (continuation) {
     const json = await fetchJson(
       buildPipedChannelNextUrl(pipedBase, channelId, continuation),
+      { source: "piped", baseUrl: pipedBase },
     );
     return parsePipedChannelContinuation(json, channelId, pipedBase, {
       shortsOnly: true,
     });
   }
 
-  const json = await fetchJson(buildPipedChannelUrl(pipedBase, channelId));
+  const json = await fetchJson(buildPipedChannelUrl(pipedBase, channelId), {
+    source: "piped",
+    baseUrl: pipedBase,
+  });
   if (!json || typeof json !== "object") return null;
   const root = json as Record<string, unknown>;
   const name = typeof root.name === "string" ? root.name : undefined;
@@ -4005,7 +4145,10 @@ async function fetchPipedChannelShortsPage(
     if (tabName !== "shorts") continue;
     const data = typeof t.data === "string" ? t.data : null;
     if (!data) continue;
-    const tabJson = await fetchJson(buildPipedChannelTabsUrl(pipedBase, data));
+    const tabJson = await fetchJson(buildPipedChannelTabsUrl(pipedBase, data), {
+      source: "piped",
+      baseUrl: pipedBase,
+    });
     const videos = videosFromPipedListItems(
       pipedListItemsFromPayload(tabJson),
       pipedBase,
@@ -4045,6 +4188,7 @@ async function fetchInvidiousChannelShortsPage(
   if (continuation) {
     const json = await fetchJson(
       buildInvidiousChannelShortsUrl(invidiousBase, channelId, continuation),
+      { source: "invidious", baseUrl: invidiousBase },
     );
     return parseInvidiousChannelVideosContinuation(
       json,
@@ -4055,8 +4199,14 @@ async function fetchInvidiousChannelShortsPage(
   }
 
   const [metaJson, shortsJson] = await Promise.all([
-    fetchJson(buildInvidiousChannelMetaUrl(invidiousBase, channelId)),
-    fetchJson(buildInvidiousChannelShortsUrl(invidiousBase, channelId)),
+    fetchJson(buildInvidiousChannelMetaUrl(invidiousBase, channelId), {
+      source: "invidious",
+      baseUrl: invidiousBase,
+    }),
+    fetchJson(buildInvidiousChannelShortsUrl(invidiousBase, channelId), {
+      source: "invidious",
+      baseUrl: invidiousBase,
+    }),
   ]);
   if (!metaJson || typeof metaJson !== "object") return null;
   const m = metaJson as Record<string, unknown>;
@@ -4115,15 +4265,18 @@ export async function fetchChannelPage(
   if (inFlight) return inFlight;
 
   const task = (async (): Promise<ChannelPageResult> => {
-    const { pipedBase, invidiousBase } = resolveProxyBases(overrides);
+    const { pipedBases, invidiousBases } =
+      resolveProxyBaseCandidates(overrides);
     const errors: string[] = [];
     const tab = input.tab ?? "videos";
 
     let resolved: ChannelPageResult | null = null;
     let pipedChannelPayload: unknown;
+    let usedPipedBase = "";
+    let usedInvidiousBase = "";
 
     if (tab === "shorts") {
-      if (pipedBase) {
+      for (const pipedBase of pipedBases) {
         try {
           acquireUpstreamSlot();
           if (!input.continuation) acquireUpstreamSlot();
@@ -4132,14 +4285,20 @@ export async function fetchChannelPage(
             input.channelId,
             input.continuation,
           );
+          if (resolved) {
+            usedPipedBase = pipedBase;
+            break;
+          }
         } catch (e) {
-          recordUpstreamFailure(e, "piped", errors);
+          recordUpstreamFailure(e, "piped", errors, pipedBase);
         }
       }
-      if (!resolved && invidiousBase) {
-        if (invidiousPortCollidesWithNextApp(invidiousBase)) {
-          errors.push("invidious:port collision with Next.js");
-        } else {
+      if (!resolved) {
+        for (const invidiousBase of invidiousBases) {
+          if (invidiousPortCollidesWithNextApp(invidiousBase)) {
+            errors.push("invidious:port collision with Next.js");
+            continue;
+          }
           try {
             if (!input.continuation) {
               acquireUpstreamSlot();
@@ -4152,52 +4311,67 @@ export async function fetchChannelPage(
               input.channelId,
               input.continuation,
             );
+            if (resolved) {
+              usedInvidiousBase = invidiousBase;
+              break;
+            }
           } catch (e) {
-            recordUpstreamFailure(e, "invidious", errors);
+            recordUpstreamFailure(e, "invidious", errors, invidiousBase);
           }
         }
       }
-    } else if (pipedBase) {
-      try {
-        acquireUpstreamSlot();
-        const url = input.continuation
-          ? buildPipedChannelNextUrl(
+    } else {
+      for (const pipedBase of pipedBases) {
+        try {
+          acquireUpstreamSlot();
+          const url = input.continuation
+            ? buildPipedChannelNextUrl(
+                pipedBase,
+                input.channelId,
+                input.continuation,
+              )
+            : buildPipedChannelUrl(pipedBase, input.channelId);
+          const json = await fetchJson(url, {
+            source: "piped",
+            baseUrl: pipedBase,
+          });
+          if (!input.continuation) pipedChannelPayload = json;
+          resolved = input.continuation
+            ? parsePipedChannelContinuation(json, input.channelId, pipedBase)
+            : parsePipedChannelPage(json, input.channelId, pipedBase);
+          if (resolved && resolved.videos.length === 0 && !input.continuation) {
+            const channelLabel =
+              resolved.name && resolved.name !== "Channel"
+                ? resolved.name
+                : input.channelId;
+            const fallbackVideos = await tryPipedChannelVideoFallbacks(
               pipedBase,
               input.channelId,
-              input.continuation,
-            )
-          : buildPipedChannelUrl(pipedBase, input.channelId);
-        const json = await fetchJson(url);
-        if (!input.continuation) pipedChannelPayload = json;
-        resolved = input.continuation
-          ? parsePipedChannelContinuation(json, input.channelId, pipedBase)
-          : parsePipedChannelPage(json, input.channelId, pipedBase);
-        if (resolved && resolved.videos.length === 0 && !input.continuation) {
-          const channelLabel =
-            resolved.name && resolved.name !== "Channel"
-              ? resolved.name
-              : input.channelId;
-          const fallbackVideos = await tryPipedChannelVideoFallbacks(
-            pipedBase,
-            input.channelId,
-            json,
-            channelLabel,
-          );
-          if (fallbackVideos.length > 0) {
-            resolved = { ...resolved, videos: fallbackVideos };
-          } else {
-            resolved = null;
+              json,
+              channelLabel,
+            );
+            if (fallbackVideos.length > 0) {
+              resolved = { ...resolved, videos: fallbackVideos };
+            } else {
+              resolved = null;
+            }
           }
+          if (resolved) {
+            usedPipedBase = pipedBase;
+            break;
+          }
+        } catch (e) {
+          recordUpstreamFailure(e, "piped", errors, pipedBase);
         }
-      } catch (e) {
-        recordUpstreamFailure(e, "piped", errors);
       }
     }
 
-    if (tab !== "shorts" && !resolved && invidiousBase) {
-      if (invidiousPortCollidesWithNextApp(invidiousBase)) {
-        errors.push("invidious:port collision with Next.js");
-      } else {
+    if (tab !== "shorts" && !resolved) {
+      for (const invidiousBase of invidiousBases) {
+        if (invidiousPortCollidesWithNextApp(invidiousBase)) {
+          errors.push("invidious:port collision with Next.js");
+          continue;
+        }
         try {
           if (input.continuation) {
             acquireUpstreamSlot();
@@ -4207,6 +4381,7 @@ export async function fetchChannelPage(
                 input.channelId,
                 input.continuation,
               ),
+              { source: "invidious", baseUrl: invidiousBase },
             );
             resolved = parseInvidiousChannelVideosContinuation(
               json,
@@ -4235,8 +4410,14 @@ export async function fetchChannelPage(
               input.channelId,
             );
             const [metaJson, videosJson] = await Promise.all([
-              fetchJson(metaUrl),
-              fetchJson(videosUrl),
+              fetchJson(metaUrl, {
+                source: "invidious",
+                baseUrl: invidiousBase,
+              }),
+              fetchJson(videosUrl, {
+                source: "invidious",
+                baseUrl: invidiousBase,
+              }),
             ]);
             resolved = parseInvidiousChannelCombined(
               metaJson,
@@ -4262,8 +4443,12 @@ export async function fetchChannelPage(
               }
             }
           }
+          if (resolved) {
+            usedInvidiousBase = invidiousBase;
+            break;
+          }
         } catch (e) {
-          recordUpstreamFailure(e, "invidious", errors);
+          recordUpstreamFailure(e, "invidious", errors, invidiousBase);
         }
       }
     }
@@ -4281,8 +4466,8 @@ export async function fetchChannelPage(
           resolved.videos,
           input.channelId,
           {
-            pipedBase,
-            invidiousBase,
+            pipedBase: usedPipedBase,
+            invidiousBase: usedInvidiousBase,
             sourceUsed: resolved.sourceUsed,
             pipedChannelPayload,
           },
