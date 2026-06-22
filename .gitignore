@@ -20,11 +20,15 @@
 # production
 /build
 
-# local planning / IDE config
+# local planning / AI tooling config
 TODO.md
+REFACTOR-PLAN.md
 .cursor/
 .claude/
+.agents/
 CLAUDE.md
+AGENTS.md
+.github/copilot-instructions.md
 
 # misc
 .DS_Store
