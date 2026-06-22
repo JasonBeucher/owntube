@@ -21,9 +21,16 @@ import {
 } from "@/lib/sponsorblock-prefs";
 import { TRENDING_REGION_OPTIONS } from "@/lib/trending-regions";
 import { writeWatchMiniEnabled } from "@/lib/watch-mini-player-state";
-import type { InstanceSourceInfo } from "@/server/services/proxy";
+import type {
+  InstanceSourceInfo,
+  InstanceSourceRow,
+} from "@/server/services/proxy";
 import type { AppSettings } from "@/server/settings/profile";
-import { type ThemeMode, useThemeStore } from "@/stores/theme-store";
+import {
+  type ThemeMode,
+  useThemeStore,
+  type VisualTheme,
+} from "@/stores/theme-store";
 import { trpc } from "@/trpc/react";
 
 type SettingsPanelProps = {
@@ -31,12 +38,103 @@ type SettingsPanelProps = {
   initialInstanceSources: InstanceSourceInfo;
 };
 
+function nonEmptyUrls(urls: string[]): string[] {
+  return urls.map((url) => url.trim()).filter(Boolean);
+}
+
+type UpstreamInstanceListEditorProps = {
+  label: string;
+  source: InstanceSourceRow;
+  urls: string[];
+  preferredUrl: string;
+  onUrlsChange: (urls: string[]) => void;
+  onPreferredChange: (url: string) => void;
+};
+
+function UpstreamInstanceListEditor({
+  label,
+  source,
+  urls,
+  preferredUrl,
+  onUrlsChange,
+  onPreferredChange,
+}: UpstreamInstanceListEditorProps) {
+  const rows = urls.length > 0 ? urls : [""];
+
+  function updateUrl(index: number, value: string) {
+    const next = [...rows];
+    next[index] = value;
+    onUrlsChange(next);
+  }
+
+  function removeUrl(index: number) {
+    const next = rows.filter((_, i) => i !== index);
+    onUrlsChange(next);
+    if (preferredUrl === rows[index]) onPreferredChange(next[0] ?? "");
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-medium">{label}</p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={urls.some((url) => !url.trim())}
+          onClick={() => onUrlsChange([...urls, ""])}
+        >
+          Add instance
+        </Button>
+      </div>
+      <div className="space-y-2">
+        {rows.map((url, index) => {
+          const trimmed = url.trim();
+          const preferred = trimmed.length > 0 && preferredUrl === trimmed;
+          return (
+            <div key={`${label}-${trimmed || "empty"}`} className="flex gap-2">
+              <Input
+                value={url}
+                placeholder={
+                  source.envUrl ??
+                  source.envRaw ??
+                  "Leave empty to use server defaults"
+                }
+                onChange={(e) => updateUrl(index, e.currentTarget.value)}
+              />
+              <Button
+                type="button"
+                variant={preferred ? "default" : "outline"}
+                size="sm"
+                disabled={!trimmed}
+                onClick={() => onPreferredChange(trimmed)}
+              >
+                Preferred
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => removeUrl(index)}
+              >
+                Remove
+              </Button>
+            </div>
+          );
+        })}
+      </div>
+      <InstanceSourceHint row={source} />
+    </div>
+  );
+}
+
 export function SettingsPanel({
   initial,
   initialInstanceSources,
 }: SettingsPanelProps) {
   const utils = trpc.useUtils();
   const setTheme = useThemeStore((s) => s.setTheme);
+  const setVisualTheme = useThemeStore((s) => s.setVisualTheme);
 
   const settingsQuery = trpc.settings.get.useQuery(undefined, {
     initialData: { ...initial, instanceSources: initialInstanceSources },
@@ -45,9 +143,28 @@ export function SettingsPanel({
     settingsQuery.data?.instanceSources ?? initialInstanceSources;
 
   const [theme, setThemeLocal] = useState<ThemeMode>(initial.theme);
-  const [pipedBaseUrl, setPipedBaseUrl] = useState(initial.pipedBaseUrl ?? "");
-  const [invidiousBaseUrl, setInvidiousBaseUrl] = useState(
-    initial.invidiousBaseUrl ?? "",
+  const [visualTheme, setVisualThemeLocal] = useState<VisualTheme>(
+    initial.visualTheme,
+  );
+  const [pipedBaseUrls, setPipedBaseUrls] = useState<string[]>(
+    initial.pipedBaseUrls.length > 0
+      ? initial.pipedBaseUrls
+      : initial.pipedBaseUrl
+        ? [initial.pipedBaseUrl]
+        : [],
+  );
+  const [invidiousBaseUrls, setInvidiousBaseUrls] = useState<string[]>(
+    initial.invidiousBaseUrls.length > 0
+      ? initial.invidiousBaseUrls
+      : initial.invidiousBaseUrl
+        ? [initial.invidiousBaseUrl]
+        : [],
+  );
+  const [preferredPipedBaseUrl, setPreferredPipedBaseUrl] = useState(
+    initial.preferredPipedBaseUrl ?? initial.pipedBaseUrls[0] ?? "",
+  );
+  const [preferredInvidiousBaseUrl, setPreferredInvidiousBaseUrl] = useState(
+    initial.preferredInvidiousBaseUrl ?? initial.invidiousBaseUrls[0] ?? "",
   );
   const [trendingRegion, setTrendingRegion] = useState(
     initial.trendingRegion ?? "US",
@@ -77,10 +194,16 @@ export function SettingsPanel({
   const [importModeReplace, setImportModeReplace] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [healthMessage, setHealthMessage] = useState<string | null>(null);
+  const [checkedInstanceSources, setCheckedInstanceSources] =
+    useState<InstanceSourceInfo | null>(null);
 
   useEffect(() => {
     setTheme(initial.theme);
   }, [initial.theme, setTheme]);
+
+  useEffect(() => {
+    setVisualTheme(initial.visualTheme);
+  }, [initial.visualTheme, setVisualTheme]);
 
   useEffect(() => {
     setTrendingRegion(initial.trendingRegion ?? "US");
@@ -117,6 +240,8 @@ export function SettingsPanel({
     onSuccess: async (data) => {
       setTheme(data.theme);
       setThemeLocal(data.theme);
+      setVisualTheme(data.visualTheme);
+      setVisualThemeLocal(data.visualTheme);
       setTrendingRegion(data.trendingRegion ?? "US");
       writeWatchMiniEnabled(data.enableMiniPlayer ?? true);
       writeDefaultPlaybackQuality(data.defaultPlaybackQuality ?? "1080p");
@@ -160,11 +285,25 @@ export function SettingsPanel({
   const saving = updateMutation.isPending;
   const importing = importMutation.isPending;
   const clearingCaches = clearCachesMutation.isPending;
-  const healthQuery = trpc.settings.checkInstances.useQuery(undefined, {
+  const healthCheckInput = useMemo(
+    () => ({
+      pipedBaseUrls: nonEmptyUrls(pipedBaseUrls),
+      invidiousBaseUrls: nonEmptyUrls(invidiousBaseUrls),
+      preferredPipedBaseUrl: preferredPipedBaseUrl.trim() || undefined,
+      preferredInvidiousBaseUrl: preferredInvidiousBaseUrl.trim() || undefined,
+    }),
+    [
+      pipedBaseUrls,
+      invidiousBaseUrls,
+      preferredPipedBaseUrl,
+      preferredInvidiousBaseUrl,
+    ],
+  );
+  const healthQuery = trpc.settings.checkInstances.useQuery(healthCheckInput, {
     enabled: false,
   });
 
-  const themeButtons = useMemo(
+  const appearanceButtons = useMemo(
     () =>
       (["system", "light", "dark"] as const).map((value) => (
         <Button
@@ -172,20 +311,55 @@ export function SettingsPanel({
           type="button"
           variant={theme === value ? "default" : "outline"}
           size="sm"
-          onClick={() => setThemeLocal(value)}
+          onClick={() => {
+            setThemeLocal(value);
+            setTheme(value);
+          }}
         >
-          {value}
+          {value === "system" ? "System" : value === "light" ? "Light" : "Dark"}
         </Button>
       )),
-    [theme],
+    [setTheme, theme],
+  );
+
+  const visualThemeButtons = useMemo(
+    () =>
+      (["default", "terminal"] as const).map((value) => (
+        <Button
+          key={value}
+          type="button"
+          variant={visualTheme === value ? "default" : "outline"}
+          size="sm"
+          onClick={() => {
+            setVisualThemeLocal(value);
+            setVisualTheme(value);
+          }}
+        >
+          {value === "default" ? "Default" : "Terminal"}
+        </Button>
+      )),
+    [setVisualTheme, visualTheme],
   );
 
   async function onSave() {
     setMessage(null);
+    const nextPipedBaseUrls = nonEmptyUrls(pipedBaseUrls);
+    const nextInvidiousBaseUrls = nonEmptyUrls(invidiousBaseUrls);
     await updateMutation.mutateAsync({
       theme,
-      pipedBaseUrl: pipedBaseUrl.trim() || undefined,
-      invidiousBaseUrl: invidiousBaseUrl.trim() || undefined,
+      visualTheme,
+      pipedBaseUrls: nextPipedBaseUrls,
+      invidiousBaseUrls: nextInvidiousBaseUrls,
+      preferredPipedBaseUrl: nextPipedBaseUrls.includes(
+        preferredPipedBaseUrl.trim(),
+      )
+        ? preferredPipedBaseUrl.trim()
+        : nextPipedBaseUrls[0],
+      preferredInvidiousBaseUrl: nextInvidiousBaseUrls.includes(
+        preferredInvidiousBaseUrl.trim(),
+      )
+        ? preferredInvidiousBaseUrl.trim()
+        : nextInvidiousBaseUrls[0],
       trendingRegion,
       hideRestrictedVideos,
       defaultCinemaMode,
@@ -230,22 +404,34 @@ export function SettingsPanel({
       setHealthMessage("Health check failed.");
       return;
     }
+    setCheckedInstanceSources(data.data.instanceSources);
     const p =
       data.data.pipedOk == null
         ? "Piped: not set"
-        : `Piped: ${data.data.pipedOk ? "ok" : "down"}`;
+        : `Piped: ${data.data.pipedOk ? "healthy" : "down"}`;
     const i =
       data.data.invidiousOk == null
         ? "Invidious: not set"
-        : `Invidious: ${data.data.invidiousOk ? "ok" : "down"}`;
+        : `Invidious: ${data.data.invidiousOk ? "healthy" : "down"}`;
     setHealthMessage(`${p} · ${i}`);
   }
+
+  const displayedInstanceSources = checkedInstanceSources ?? instanceSources;
 
   return (
     <div className="space-y-8">
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Theme</h2>
-        <div className="flex flex-wrap gap-2">{themeButtons}</div>
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Appearance</p>
+            <div className="flex flex-wrap gap-2">{appearanceButtons}</div>
+          </div>
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Style</p>
+            <div className="flex flex-wrap gap-2">{visualThemeButtons}</div>
+          </div>
+        </div>
       </section>
 
       <section className="space-y-3">
@@ -289,38 +475,22 @@ export function SettingsPanel({
           values shown below.
         </p>
         <div className="space-y-4 max-w-2xl">
-          <div className="space-y-2">
-            <label htmlFor="settings-piped" className="text-sm font-medium">
-              Piped base URL (override)
-            </label>
-            <Input
-              id="settings-piped"
-              value={pipedBaseUrl}
-              placeholder={
-                instanceSources.piped.envUrl ??
-                instanceSources.piped.envRaw ??
-                "Leave empty to use server default"
-              }
-              onChange={(e) => setPipedBaseUrl(e.currentTarget.value)}
-            />
-            <InstanceSourceHint row={instanceSources.piped} />
-          </div>
-          <div className="space-y-2">
-            <label htmlFor="settings-invidious" className="text-sm font-medium">
-              Invidious base URL (override)
-            </label>
-            <Input
-              id="settings-invidious"
-              value={invidiousBaseUrl}
-              placeholder={
-                instanceSources.invidious.envUrl ??
-                instanceSources.invidious.envRaw ??
-                "Leave empty to use server default"
-              }
-              onChange={(e) => setInvidiousBaseUrl(e.currentTarget.value)}
-            />
-            <InstanceSourceHint row={instanceSources.invidious} />
-          </div>
+          <UpstreamInstanceListEditor
+            label="Piped instances"
+            source={displayedInstanceSources.piped}
+            urls={pipedBaseUrls}
+            preferredUrl={preferredPipedBaseUrl}
+            onUrlsChange={setPipedBaseUrls}
+            onPreferredChange={setPreferredPipedBaseUrl}
+          />
+          <UpstreamInstanceListEditor
+            label="Invidious instances"
+            source={displayedInstanceSources.invidious}
+            urls={invidiousBaseUrls}
+            preferredUrl={preferredInvidiousBaseUrl}
+            onUrlsChange={setInvidiousBaseUrls}
+            onPreferredChange={setPreferredInvidiousBaseUrl}
+          />
           <Button type="button" onClick={onSave} disabled={saving}>
             Save settings
           </Button>
@@ -458,7 +628,7 @@ export function SettingsPanel({
           }}
           disabled={clearingCaches}
         >
-          {clearingCaches ? "Clearing cache..." : "Clear cache"}
+          {clearingCaches ? "Clearing cache…" : "Clear cache"}
         </Button>
       </section>
 

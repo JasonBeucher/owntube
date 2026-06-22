@@ -46,9 +46,13 @@ export function RegisterForm() {
         placeholder="Password (8+ chars)"
         required
       />
-      {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      {error ? (
+        <p className="text-sm text-[hsl(var(--destructive))]" role="alert">
+          {error}
+        </p>
+      ) : null}
       <Button className="w-full" type="submit" disabled={mutation.isPending}>
-        {mutation.isPending ? "Creating account..." : "Create account"}
+        {mutation.isPending ? "Creating account…" : "Create account"}
       </Button>
     </form>
   );

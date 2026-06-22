@@ -636,7 +636,7 @@ export function TasteOnboardingClient() {
               </div>
             </div>
           ) : deckQuery.isError ? (
-            <p className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-600">
+            <p className="rounded-xl border border-[hsl(var(--destructive)_/_0.3)] bg-[hsl(var(--destructive)_/_0.1)] p-4 text-sm text-[hsl(var(--destructive))]">
               {deckQuery.error.message ||
                 "Could not load videos. Try again later or check your instance settings."}
             </p>
@@ -769,7 +769,7 @@ export function TasteOnboardingClient() {
 
       {message ? (
         <p
-          className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-600"
+          className="rounded-xl border border-[hsl(var(--destructive)_/_0.3)] bg-[hsl(var(--destructive)_/_0.1)] p-3 text-sm text-[hsl(var(--destructive))]"
           role="alert"
         >
           {message}

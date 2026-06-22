@@ -78,9 +78,17 @@ describe("pickLiveFlagsFromUpstream", () => {
   });
 });
 
+type LiveMergeFixture = {
+  videoId: string;
+  title?: string;
+  durationSeconds?: number;
+  isLive?: boolean;
+  isUpcoming?: boolean;
+};
+
 describe("mergeActiveLiveVideosFirst", () => {
   it("prepends live-only rows and tags duplicates", () => {
-    const merged = mergeActiveLiveVideosFirst(
+    const merged = mergeActiveLiveVideosFirst<LiveMergeFixture>(
       [
         {
           videoId: "upload1",
@@ -114,7 +122,7 @@ describe("mergeActiveLiveVideosFirst", () => {
   });
 
   it("marks channel-tab live rows even without upstream flags", () => {
-    const merged = mergeActiveLiveVideosFirst(
+    const merged = mergeActiveLiveVideosFirst<LiveMergeFixture>(
       [],
       [{ videoId: "liveOnly", title: "Live", durationSeconds: 0 }],
     );
@@ -125,7 +133,7 @@ describe("mergeActiveLiveVideosFirst", () => {
 
 describe("markUnifiedVideoAsActiveLive", () => {
   it("skips upcoming premieres", () => {
-    const row = markUnifiedVideoAsActiveLive({
+    const row = markUnifiedVideoAsActiveLive<LiveMergeFixture>({
       videoId: "x",
       isUpcoming: true,
       durationSeconds: 0,

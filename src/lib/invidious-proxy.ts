@@ -303,7 +303,9 @@ export function googlevideoUrlFromInvidiousVideoplaybackReference(
       } catch {
         const q = trimmed.indexOf("?");
         if (q < 0) return null;
-        parsed = new URL(`http://local.invalid/videoplayback${trimmed.slice(q)}`);
+        parsed = new URL(
+          `http://local.invalid/videoplayback${trimmed.slice(q)}`,
+        );
       }
     } else {
       parsed = new URL(trimmed, "http://local.invalid");

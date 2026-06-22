@@ -1,5 +1,5 @@
-import { Suspense } from "react";
 import { redirect } from "next/navigation";
+import { Suspense } from "react";
 import { SearchResults } from "@/components/search/search-results";
 
 type SearchPageProps = {

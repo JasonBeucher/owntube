@@ -23,7 +23,7 @@ export function ShellTopbar({
   return (
     <header
       className={cn(
-        "sticky top-0 z-30 flex shrink-0 items-center gap-2 border-b border-[hsl(var(--border))] bg-[hsl(var(--background)_/_0.88)] px-3 py-2 backdrop-blur-xl backdrop-saturate-150 md:gap-3 md:px-4 dark:bg-[hsl(var(--background)_/_0.78)]",
+        "ot-shell-topbar sticky top-0 z-30 flex shrink-0 items-center gap-2 border-b border-[hsl(var(--border))] bg-[hsl(var(--background)_/_0.88)] px-3 py-2 backdrop-blur-xl backdrop-saturate-150 md:gap-3 md:px-4 dark:bg-[hsl(var(--background)_/_0.78)]",
         hiddenOnMobile && "hidden min-[901px]:flex",
       )}
     >
@@ -31,7 +31,7 @@ export function ShellTopbar({
         <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
-            className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))] min-[901px]:inline-flex"
+            className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-shell)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))] min-[901px]:inline-flex"
             aria-label="Toggle menu"
             onClick={onOpenMenu}
           >
@@ -51,7 +51,7 @@ export function ShellTopbar({
             </svg>
           </button>
           <div className="block">
-            <BrandLogo compact onNavigate={onLogoClick} />
+            <BrandLogo compact tile onNavigate={onLogoClick} />
           </div>
         </div>
       ) : null}

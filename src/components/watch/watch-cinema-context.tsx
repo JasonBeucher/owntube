@@ -2,12 +2,12 @@
 
 import {
   createContext,
-  useContext,
-  useMemo,
-  useState,
   type Dispatch,
   type ReactNode,
   type SetStateAction,
+  useContext,
+  useMemo,
+  useState,
 } from "react";
 
 type WatchCinemaValue = {

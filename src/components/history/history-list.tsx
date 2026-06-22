@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { VideoThumbnailImg } from "@/components/videos/video-thumbnail-img";
@@ -31,16 +31,19 @@ export function HistoryList({ initialItems }: HistoryListProps) {
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [page, setPage] = useState(1);
   const [items, setItems] = useState<HistoryItem[]>(initialItems);
+  const appliedQueryRef = useRef("");
 
   useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
+    const t = window.setTimeout(() => {
+      const nextQuery = query.trim();
+      if (appliedQueryRef.current === nextQuery) return;
+      appliedQueryRef.current = nextQuery;
+      setDebouncedQuery(nextQuery);
+      setPage(1);
+      setItems([]);
+    }, 250);
     return () => window.clearTimeout(t);
   }, [query]);
-
-  useEffect(() => {
-    setPage(1);
-    setItems([]);
-  }, [debouncedQuery]);
 
   const listQuery = trpc.history.list.useQuery(
     {
@@ -94,7 +97,7 @@ export function HistoryList({ initialItems }: HistoryListProps) {
       ) : null}
 
       {items.length === 0 && !listQuery.isFetching ? (
-        <p className="rounded-[14px] border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-10 text-center text-sm text-[hsl(var(--muted-foreground))]">
+        <p className="rounded-[var(--radius-card)] border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-10 text-center text-sm text-[hsl(var(--muted-foreground))]">
           {isSearching ? "No matches in history." : "No history yet."}
         </p>
       ) : null}

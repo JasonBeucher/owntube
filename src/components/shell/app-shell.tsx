@@ -38,7 +38,7 @@ export function AppShell({
   }, []);
 
   return (
-    <div className="flex h-[100dvh] w-full overflow-hidden bg-[hsl(var(--background))] text-[hsl(var(--foreground))]">
+    <div className="ot-app-shell flex h-[100dvh] w-full overflow-hidden bg-[hsl(var(--background))] text-[hsl(var(--foreground))]">
       <ShellSidebar
         open={sidebarOpen}
         onClose={close}

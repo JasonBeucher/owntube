@@ -1,13 +1,11 @@
-import { FAVICON_VERSION } from "@/lib/favicon";
 import { THEME_STORAGE_KEY } from "@/lib/theme-appearance";
 
-/** Runs before paint so the tab icon matches app theme, not only OS preference. */
+/** Runs before paint so persisted appearance and visual theme apply before hydration. */
 export function FaviconInitScript() {
   const script = `
 (function () {
   try {
     var storageKey = ${JSON.stringify(THEME_STORAGE_KEY)};
-    var version = ${JSON.stringify(FAVICON_VERSION)};
     var theme = "system";
     var raw = localStorage.getItem(storageKey);
     if (raw) {
@@ -15,22 +13,17 @@ export function FaviconInitScript() {
       if (parsed && parsed.state && parsed.state.theme) {
         theme = parsed.state.theme;
       }
+      if (parsed && parsed.state && parsed.state.visualTheme === "terminal") {
+        document.documentElement.dataset.visualTheme = "terminal";
+      }
     }
-    var isDark =
-      theme === "dark" ||
-      (theme !== "light" &&
-        window.matchMedia("(prefers-color-scheme: dark)").matches);
-    var variant = isDark ? "dark" : "light";
-    var href = "/favicon-" + variant + ".ico?v=" + version;
-    document
-      .querySelectorAll('link[rel="icon"], link[rel="shortcut icon"]')
-      .forEach(function (node) {
-        node.remove();
-      });
-    var link = document.createElement("link");
-    link.rel = "icon";
-    link.href = href;
-    document.head.appendChild(link);
+    document.documentElement.classList.remove("light", "dark");
+    if (theme === "light") {
+      document.documentElement.classList.add("light");
+    }
+    if (theme === "dark") {
+      document.documentElement.classList.add("dark");
+    }
   } catch (_) {}
 })();
 `.trim();

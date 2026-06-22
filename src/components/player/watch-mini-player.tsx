@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { VideoPlayer } from "@/components/player/video-player";
-import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   readWatchMiniEnabled,
   readWatchMiniState,
@@ -14,6 +14,44 @@ import {
 type WatchMiniPlayerProps = {
   isLoggedIn: boolean;
 };
+
+function ExpandIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M15 3h6v6" />
+      <path d="M9 21H3v-6" />
+      <path d="M21 3l-7 7" />
+      <path d="M3 21l7-7" />
+    </svg>
+  );
+}
+
+function CloseIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 6 6 18" />
+      <path d="M6 6l12 12" />
+    </svg>
+  );
+}
 
 function persistMiniPlayback(
   videoId: string,
@@ -39,6 +77,8 @@ export function WatchMiniPlayer({ isLoggedIn }: WatchMiniPlayerProps) {
   const stateRef = useRef<WatchMiniState | null>(null);
   const [state, setState] = useState(() => readWatchMiniState());
   const [enabled, setEnabled] = useState(() => readWatchMiniEnabled(true));
+  const [progress, setProgress] = useState(0);
+  const [entered, setEntered] = useState(false);
   const hidden =
     !isLoggedIn ||
     !enabled ||
@@ -67,6 +107,17 @@ export function WatchMiniPlayer({ isLoggedIn }: WatchMiniPlayerProps) {
 
   const activeVideoId = state?.videoId;
   const miniStartPaused = state?.paused ?? false;
+  const visible = !!state && !hidden;
+
+  // Trigger the slide-in transition once the player is mounted and visible.
+  useEffect(() => {
+    if (!visible) {
+      setEntered(false);
+      return;
+    }
+    const id = window.requestAnimationFrame(() => setEntered(true));
+    return () => window.cancelAnimationFrame(id);
+  }, [visible]);
 
   useEffect(() => {
     if (!activeVideoId || hidden) return;
@@ -77,6 +128,7 @@ export function WatchMiniPlayer({ isLoggedIn }: WatchMiniPlayerProps) {
     const videoId = activeVideoId;
     const sync = () => {
       persistMiniPlayback(videoId, v, () => stateRef.current);
+      setProgress(v.duration > 0 ? Math.min(1, v.currentTime / v.duration) : 0);
     };
     const onEnded = () => writeWatchMiniState(null);
     v.addEventListener("timeupdate", sync);
@@ -102,7 +154,10 @@ export function WatchMiniPlayer({ isLoggedIn }: WatchMiniPlayerProps) {
 
   return (
     <aside
-      className="fixed z-50 w-[min(420px,94vw)] overflow-hidden rounded-xl border border-[hsl(var(--border))] bg-black shadow-2xl"
+      className={cn(
+        "group fixed z-50 w-[min(420px,94vw)] overflow-hidden rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl ring-1 ring-black/5 transition-all duration-300 ease-out",
+        entered ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0",
+      )}
       style={{
         bottom: "max(0.75rem, env(safe-area-inset-bottom))",
         right: "max(0.75rem, env(safe-area-inset-right))",
@@ -122,28 +177,36 @@ export function WatchMiniPlayer({ isLoggedIn }: WatchMiniPlayerProps) {
           miniStartPaused={miniStartPaused}
           miniMode
         />
-      </div>
-      <div className="flex items-center justify-between gap-2 bg-[hsl(var(--card))] px-2.5 py-2">
-        <p className="line-clamp-1 text-xs text-[hsl(var(--foreground))]">
-          {state.title}
-        </p>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button
+
+        {/* Hover-reveal controls. Container ignores pointer events so the
+            player's own controls stay reachable; only the buttons capture. */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-end gap-1.5 bg-gradient-to-b from-black/55 to-transparent p-2 opacity-100 transition-opacity duration-200 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+          <button
             type="button"
-            size="sm"
-            variant="outline"
             onClick={handleReopen}
+            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm transition hover:bg-black/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+            aria-label="Expand to full player"
+            title="Expand"
           >
-            Reopen
-          </Button>
-          <Button
+            <ExpandIcon className="h-3.5 w-3.5" />
+          </button>
+          <button
             type="button"
-            size="sm"
-            variant="ghost"
             onClick={() => writeWatchMiniState(null)}
+            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm transition hover:bg-black/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+            aria-label="Close mini player"
+            title="Close"
           >
-            Close
-          </Button>
+            <CloseIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {/* Playback progress along the bottom edge of the video. */}
+        <div className="absolute inset-x-0 bottom-0 z-10 h-0.5 bg-white/15">
+          <div
+            className="h-full bg-[hsl(var(--primary))] transition-[width] duration-300 ease-linear"
+            style={{ width: `${Math.round(progress * 100)}%` }}
+          />
         </div>
       </div>
     </aside>

@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useEffect } from "react";
 import {
-  useScrubFramePreview,
   type ScrubFramePreview,
+  useScrubFramePreview,
 } from "@/hooks/use-scrub-frame-preview";
 import type { VideoChapter } from "@/lib/video-chapters";
 import { scrubFrameStyleAt } from "@/lib/video-scrub-frames";

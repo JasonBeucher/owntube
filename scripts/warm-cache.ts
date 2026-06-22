@@ -200,8 +200,7 @@ async function main(): Promise<void> {
         ? Math.min(historyChannelLimit, 128)
         : DEFAULT_WARM_HISTORY_CHANNELS;
     const safeSubscriptionLimit =
-      Number.isFinite(subscriptionChannelLimit) &&
-      subscriptionChannelLimit > 0
+      Number.isFinite(subscriptionChannelLimit) && subscriptionChannelLimit > 0
         ? Math.min(subscriptionChannelLimit, 256)
         : DEFAULT_WARM_SUBSCRIPTION_CHANNELS;
     const channelIds = collectWarmChannelIds(db, {

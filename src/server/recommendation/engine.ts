@@ -16,6 +16,10 @@ import {
   appendRecommendationDebugLog,
   recommendationDebugEnabled,
 } from "@/server/recommendation/debug-file-log";
+import {
+  dailyExploreSeed,
+  deterministicColdStartJitter,
+} from "@/server/recommendation/deterministic-jitter";
 import { maximalMarginalRelevance } from "@/server/recommendation/diversity";
 import { deriveRecommendationReason } from "@/server/recommendation/reason";
 import {
@@ -26,8 +30,13 @@ import {
   scoreCandidateDetail,
 } from "@/server/recommendation/scoring";
 import { clearShortsRecommendationCacheForUser } from "@/server/recommendation/shorts-recommendation-pool";
-import { collectUserSignals } from "@/server/recommendation/signals";
 import {
+  collectUserSignals,
+  dislikeCorpusVideoIds,
+} from "@/server/recommendation/signals";
+import {
+  buildKeywordCorpus,
+  buildTasteCorpusTitles,
   readCachedDetailTitlesForVideos,
   readCachedDislikeTitlesOrdered,
 } from "@/server/recommendation/taste-corpus";
@@ -61,22 +70,6 @@ const recommendationPoolInFlight = new Map<
   Promise<RecommendationPoolCacheEntry>
 >();
 
-function deterministicUnitInterval(seed: string): number {
-  // FNV-1a 32-bit hash for stable pseudo-random ordering.
-  let h = 0x811c9dc5;
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  // Convert to [0, 1).
-  return (h >>> 0) / 0x1_0000_0000;
-}
-
-function deterministicColdStartJitter(userId: number, videoId: string): number {
-  const u = deterministicUnitInterval(`${userId}:${videoId}`);
-  return (u - 0.5) * 0.08;
-}
-
 function recommendationPoolCacheKey(
   userId: number,
   opts: {
@@ -86,8 +79,20 @@ function recommendationPoolCacheKey(
   },
 ): string {
   const region = opts.region ?? "US";
-  const piped = opts.overrides?.pipedBaseUrl?.trim() ?? "";
-  const invidious = opts.overrides?.invidiousBaseUrl?.trim() ?? "";
+  const piped = (
+    opts.overrides?.pipedBaseUrls ?? [opts.overrides?.pipedBaseUrl ?? ""]
+  )
+    .map((url) => url.trim())
+    .filter(Boolean)
+    .join(",");
+  const invidious = (
+    opts.overrides?.invidiousBaseUrls ?? [
+      opts.overrides?.invidiousBaseUrl ?? "",
+    ]
+  )
+    .map((url) => url.trim())
+    .filter(Boolean)
+    .join(",");
   return `${userId}|${region}|${opts.pageSize}|${piped}|${invidious}`;
 }
 
@@ -366,11 +371,12 @@ async function ensureRecommendationPool(
       tasteKeywords: userSettings.tasteKeywords,
     });
 
+    const nowSec = Math.floor(Date.now() / 1000);
     const scoreContext: RecommendationScoreContext = {
       recentCoverageByChannel,
+      exploreSeed: dailyExploreSeed(userId, nowSec),
     };
 
-    const nowSec = Math.floor(Date.now() / 1000);
     const blockedRecommendationChannels = new Set(
       userSettings.blockedRecommendationChannels,
     );
@@ -394,22 +400,13 @@ async function ensureRecommendationPool(
       new Set([...signals.likedVideoIds, ...signals.savedVideoIds]),
     );
     const tasteTitles = readCachedDetailTitlesForVideos(db, tasteVideoIds, 72);
-    const keywordCorpus: string[] = [];
-    for (const kw of userSettings.tasteKeywords) {
-      const k = kw.trim();
-      if (!k) continue;
-      keywordCorpus.push(k, k, k);
-    }
+    const keywordCorpus = buildKeywordCorpus(userSettings.tasteKeywords);
     const poolTitles = unique.map((v) => v.title).slice(0, 200);
-    const corpusSeen = new Set<string>();
-    const corpusTitles: string[] = [];
-    for (const t of [...keywordCorpus, ...tasteTitles, ...poolTitles]) {
-      const low = t.trim().toLowerCase();
-      if (!low || corpusSeen.has(low)) continue;
-      corpusSeen.add(low);
-      corpusTitles.push(t.trim());
-      if (corpusTitles.length >= 240) break;
-    }
+    const corpusTitles = buildTasteCorpusTitles([
+      keywordCorpus,
+      tasteTitles,
+      poolTitles,
+    ]);
     const interestChannelIds = new Set([
       ...signals.historyChannelIds,
       ...signals.interactionInterestChannelIds,
@@ -421,7 +418,7 @@ async function ensureRecommendationPool(
       groups: [keywordCorpus, tasteTitles],
     });
     const dislikeModel = buildTfidfModel(
-      readCachedDislikeTitlesOrdered(db, [...signals.dislikedVideoIds], 48),
+      readCachedDislikeTitlesOrdered(db, dislikeCorpusVideoIds(signals), 48),
     );
 
     // Drop clear keyword SEO spam (stuffed compilations from unknown channels)

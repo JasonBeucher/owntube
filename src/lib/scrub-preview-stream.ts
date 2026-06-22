@@ -1,6 +1,6 @@
 import {
-  cardPreviewPlaybackFromDetail,
   type CardPreviewPlayback,
+  cardPreviewPlaybackFromDetail,
 } from "@/lib/card-preview-playback";
 import type { VideoDetail } from "@/server/services/proxy.types";
 

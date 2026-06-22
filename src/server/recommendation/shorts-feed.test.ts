@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { shortsSeen as shortsSeenTable, users } from "@/server/db/schema";
 import {
   buildShortsExclusionSet,
   fetchShortsFeedForViewer,
@@ -9,6 +10,7 @@ import * as shortsPool from "@/server/recommendation/shorts-recommendation-pool"
 import * as shortsSeen from "@/server/recommendation/shorts-seen";
 import * as watchedVideos from "@/server/recommendation/watched-videos";
 import * as proxy from "@/server/services/proxy";
+import { createTestDb } from "@/test/db";
 
 describe("parseShortsRecPage", () => {
   it("returns null for first page", () => {
@@ -59,6 +61,42 @@ describe("buildShortsExclusionSet", () => {
     expect(set?.size).toBe(3);
 
     vi.restoreAllMocks();
+  });
+
+  it("excludes recently seen shorts but lets old ones recycle", () => {
+    const { db, sqlite } = createTestDb();
+    const now = Math.floor(Date.now() / 1000);
+    const userId = db
+      .insert(users)
+      .values({
+        email: "shorts-window@test.local",
+        passwordHash: "x",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: users.id })
+      .get().id;
+    db.insert(shortsSeenTable)
+      .values([
+        {
+          userId,
+          videoId: "seenLastWk1",
+          channelId: "ch1",
+          seenAt: now - 7 * 24 * 3600,
+        },
+        {
+          userId,
+          videoId: "seenAges001",
+          channelId: "ch1",
+          seenAt: now - 200 * 24 * 3600,
+        },
+      ])
+      .run();
+
+    const set = buildShortsExclusionSet(db, userId, []);
+    expect(set?.has("seenLastWk1")).toBe(true);
+    expect(set?.has("seenAges001")).toBe(false);
+    sqlite.close();
   });
 });
 
@@ -111,6 +149,62 @@ describe("fetchShortsFeedForViewer generic recycle", () => {
 });
 
 describe("fetchShortsFeedForViewer shelf purpose", () => {
+  it("tops up a starved shelf with already-seen shorts instead of a near-empty row", async () => {
+    vi.spyOn(
+      watchedVideos,
+      "loadWatchedVideoIdsForRecommendations",
+    ).mockReturnValue(new Set(["watchedShort1", "watchedShort2"]));
+    vi.spyOn(shortsSeen, "loadShortSeenVideoIds").mockReturnValue(new Set());
+    vi.spyOn(shortsPool, "getShortsRecommendations").mockResolvedValue({
+      videos: [],
+      coldStart: false,
+      hasMore: false,
+    });
+    const upstream = [
+      {
+        videoId: "watchedShort1",
+        title: "Seen before",
+        channelId: "ch1",
+        channelName: "Channel",
+        durationSeconds: 30,
+      },
+      {
+        videoId: "watchedShort2",
+        title: "Also seen",
+        channelId: "ch2",
+        channelName: "Channel 2",
+        durationSeconds: 25,
+      },
+      {
+        videoId: "freshShort01",
+        title: "Fresh one",
+        channelId: "ch3",
+        channelName: "Channel 3",
+        durationSeconds: 20,
+      },
+    ];
+    vi.spyOn(proxy, "fetchShortsFeed").mockResolvedValue({
+      videos: upstream,
+      continuation: undefined,
+      sourceUsed: "piped" as const,
+    });
+
+    const result = await fetchShortsFeedForViewer(
+      null as unknown as import("@/server/db/client").AppDb,
+      7,
+      { region: "FR", limit: 3, purpose: "shelf" },
+    );
+
+    // Fresh short first, then watched ones re-surfaced to fill the row.
+    expect(result.videos.map((v) => v.videoId)).toEqual([
+      "freshShort01",
+      "watchedShort1",
+      "watchedShort2",
+    ]);
+
+    vi.restoreAllMocks();
+  });
+
   it("uses a single upstream fetch when the personalized pool is cold", async () => {
     vi.spyOn(shortsPool, "getShortsRecommendations").mockResolvedValue({
       videos: [],

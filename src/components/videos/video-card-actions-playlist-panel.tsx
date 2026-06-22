@@ -42,6 +42,8 @@ export function VideoCardActionsPlaylistPanel({
 }: VideoCardActionsPlaylistPanelProps) {
   return (
     <div
+      role="dialog"
+      aria-label="Playlist actions"
       className={cn(
         "w-56 overflow-hidden rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] py-1 text-sm shadow-lg",
         className,

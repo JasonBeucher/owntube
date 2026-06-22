@@ -28,11 +28,11 @@ test.describe("P0 smoke", () => {
       .catch(() => false);
     if (!visible) return;
     await expect(
-      page.getByRole("link", { name: "See all" }).filter({ hasText: /^See all$/ }),
+      page
+        .getByRole("link", { name: "See all" })
+        .filter({ hasText: /^See all$/ }),
     ).toBeVisible();
-    await expect(
-      page.locator('a[href^="/shorts?v="]').first(),
-    ).toBeVisible();
+    await expect(page.locator('a[href^="/shorts?v="]').first()).toBeVisible();
   });
 
   test("shorts page loads feed shell", async ({ page }) => {

@@ -12,8 +12,13 @@ import { clearRecommendationCachesForUser } from "@/server/recommendation/engine
 import {
   clearProxyCaches,
   getInstanceSourceInfo,
-  resolveEffectiveProxyBases,
+  resolveProxyBaseCandidates,
 } from "@/server/services/proxy";
+import { upstreamGetText } from "@/server/services/upstream-get";
+import {
+  recordUpstreamFailure,
+  recordUpstreamSuccess,
+} from "@/server/services/upstream-health";
 import {
   appSettingsSchema,
   getUserProxyOverrides,
@@ -24,8 +29,13 @@ import { protectedProcedure, router } from "@/server/trpc/init";
 
 const settingsPatchSchema = z.object({
   theme: appSettingsSchema.shape.theme.optional(),
+  visualTheme: appSettingsSchema.shape.visualTheme.optional(),
   pipedBaseUrl: z.string().max(512).optional(),
   invidiousBaseUrl: z.string().max(512).optional(),
+  pipedBaseUrls: z.array(z.string().max(512)).max(8).optional(),
+  invidiousBaseUrls: z.array(z.string().max(512)).max(8).optional(),
+  preferredPipedBaseUrl: z.string().max(512).optional(),
+  preferredInvidiousBaseUrl: z.string().max(512).optional(),
   trendingRegion: z.string().length(2).optional(),
   hideRestrictedVideos: z.boolean().optional(),
   defaultCinemaMode: z.boolean().optional(),
@@ -39,6 +49,10 @@ const settingsPatchSchema = z.object({
 const healthCheckInputSchema = z.object({
   pipedBaseUrl: z.string().max(512).optional(),
   invidiousBaseUrl: z.string().max(512).optional(),
+  pipedBaseUrls: z.array(z.string().max(512)).max(8).optional(),
+  invidiousBaseUrls: z.array(z.string().max(512)).max(8).optional(),
+  preferredPipedBaseUrl: z.string().max(512).optional(),
+  preferredInvidiousBaseUrl: z.string().max(512).optional(),
 });
 
 const exportPayloadSchema = z.object({
@@ -76,11 +90,27 @@ function nowUnix(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-async function checkUrl(url: string): Promise<boolean> {
+async function checkUrl(
+  source: "piped" | "invidious",
+  baseUrl: string,
+  url: string,
+): Promise<boolean> {
+  const startedAt = Date.now();
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    return res.ok;
-  } catch {
+    const res = await upstreamGetText(url, 8000);
+    if (res.ok) {
+      recordUpstreamSuccess(source, baseUrl, Date.now() - startedAt);
+      return true;
+    }
+    const error = new Error(
+      res.text.trim()
+        ? `HTTP ${res.status}: ${res.text.trim().slice(0, 160)}`
+        : `HTTP ${res.status} (empty body)`,
+    );
+    recordUpstreamFailure(source, baseUrl, error, Date.now() - startedAt);
+    return false;
+  } catch (error) {
+    recordUpstreamFailure(source, baseUrl, error, Date.now() - startedAt);
     return false;
   }
 }
@@ -106,24 +136,49 @@ export const settingsRouter = router({
       const current = getUserSettings(ctx.db, ctx.userId);
       const overrides =
         input?.pipedBaseUrl !== undefined ||
-        input?.invidiousBaseUrl !== undefined
+        input?.invidiousBaseUrl !== undefined ||
+        input?.pipedBaseUrls !== undefined ||
+        input?.invidiousBaseUrls !== undefined
           ? {
               pipedBaseUrl: input.pipedBaseUrl ?? current.pipedBaseUrl,
               invidiousBaseUrl:
                 input.invidiousBaseUrl ?? current.invidiousBaseUrl,
+              pipedBaseUrls: input.pipedBaseUrls ?? current.pipedBaseUrls,
+              invidiousBaseUrls:
+                input.invidiousBaseUrls ?? current.invidiousBaseUrls,
+              preferredPipedBaseUrl:
+                input.preferredPipedBaseUrl ?? current.preferredPipedBaseUrl,
+              preferredInvidiousBaseUrl:
+                input.preferredInvidiousBaseUrl ??
+                current.preferredInvidiousBaseUrl,
             }
           : getUserProxyOverrides(ctx.db, ctx.userId);
-      const { pipedBase, invidiousBase } =
-        resolveEffectiveProxyBases(overrides);
-      const pipedOk = pipedBase
-        ? await checkUrl(`${pipedBase}/trending?region=US`)
-        : null;
-      const invidiousOk = invidiousBase
-        ? await checkUrl(`${invidiousBase}/api/v1/stats`)
-        : null;
+      const { pipedBases, invidiousBases } =
+        resolveProxyBaseCandidates(overrides);
+      const pipedResults = await Promise.all(
+        pipedBases.map((baseUrl) =>
+          checkUrl("piped", baseUrl, `${baseUrl}/trending?region=US`),
+        ),
+      );
+      const invidiousResults = await Promise.all(
+        invidiousBases.map((baseUrl) =>
+          checkUrl("invidious", baseUrl, `${baseUrl}/api/v1/stats`),
+        ),
+      );
+      const instanceSources = getInstanceSourceInfo({
+        pipedBaseUrls: pipedBases,
+        invidiousBaseUrls: invidiousBases,
+        preferredPipedBaseUrl:
+          overrides?.preferredPipedBaseUrl ?? current.preferredPipedBaseUrl,
+        preferredInvidiousBaseUrl:
+          overrides?.preferredInvidiousBaseUrl ??
+          current.preferredInvidiousBaseUrl,
+      });
       return {
-        pipedOk,
-        invidiousOk,
+        pipedOk: pipedResults.length > 0 ? pipedResults.some(Boolean) : null,
+        invidiousOk:
+          invidiousResults.length > 0 ? invidiousResults.some(Boolean) : null,
+        instanceSources,
       };
     }),
 

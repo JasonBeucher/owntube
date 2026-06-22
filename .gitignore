@@ -20,6 +20,9 @@
 # production
 /build
 
+# separate design mockup repo (has its own .git)
+owntube-charte-graphique/
+
 # local planning / AI tooling config
 TODO.md
 REFACTOR-PLAN.md

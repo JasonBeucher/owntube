@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { computeWatchEvent } from "@/lib/watch-event";
 import { trpc } from "@/trpc/react";
 
 type WatchTrackerProps = {
@@ -29,25 +30,56 @@ export function WatchTracker({
   mutateRef.current = mutate;
   const onWatchedRef = useRef(onWatched);
   onWatchedRef.current = onWatched;
-  const sessionStartRef = useRef(Date.now());
 
   useEffect(() => {
-    sessionStartRef.current = Date.now();
     const m = mutateRef.current;
-    const watchedSeconds = () => {
-      if (isLive) {
-        return Math.max(
-          0,
-          Math.floor((Date.now() - sessionStartRef.current) / 1000),
-        );
-      }
-      return durationSeconds;
+    /**
+     * Dwell accounting: accumulate wall-clock time only while the tab is
+     * visible, so background tabs don't inflate watch time. This is an upper
+     * bound on real playback (a paused-but-visible tab still counts).
+     */
+    let visibleAccumMs = 0;
+    let visibleSince: number | null =
+      document.visibilityState === "visible" ? Date.now() : null;
+
+    const elapsedVisibleSeconds = () => {
+      const running = visibleSince === null ? 0 : Date.now() - visibleSince;
+      return (visibleAccumMs + running) / 1000;
     };
-    const partialWatched = () => {
-      if (isLive) {
-        return Math.max(10, watchedSeconds());
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        visibleSince ??= Date.now();
+      } else if (visibleSince !== null) {
+        visibleAccumMs += Date.now() - visibleSince;
+        visibleSince = null;
       }
-      return Math.max(10, Math.floor(durationSeconds / 4));
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    /**
+     * Live rows keep videoDurationSeconds=0: dwell/length ratios are
+     * meaningless there. Clamped because upstreams send `-1` for unknown
+     * lengths (and occasionally floats) — the tRPC input schema is
+     * `int().min(0)` and a single bad value must not void the whole event.
+     */
+    const reportedDuration = isLive
+      ? 0
+      : Math.min(86_400, Math.max(0, Math.floor(durationSeconds || 0)));
+    const buildEvent = () => {
+      const event = computeWatchEvent(
+        elapsedVisibleSeconds(),
+        durationSeconds,
+        isLive,
+      );
+      return {
+        videoId,
+        channelId,
+        durationWatched: event.durationWatched,
+        completed: event.completed,
+        videoDurationSeconds: reportedDuration,
+        isShort,
+      };
     };
 
     m({
@@ -55,31 +87,18 @@ export function WatchTracker({
       channelId,
       durationWatched: 0,
       completed: false,
+      videoDurationSeconds: reportedDuration,
       isShort,
     });
     const interval = window.setInterval(() => {
-      m({
-        videoId,
-        channelId,
-        durationWatched: partialWatched(),
-        completed: false,
-        isShort,
-      });
+      m(buildEvent());
     }, 20_000);
     return () => {
       window.clearInterval(interval);
-      m(
-        {
-          videoId,
-          channelId,
-          durationWatched: watchedSeconds(),
-          completed: true,
-          isShort,
-        },
-        {
-          onSuccess: () => onWatchedRef.current?.(videoId),
-        },
-      );
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      m(buildEvent(), {
+        onSuccess: () => onWatchedRef.current?.(videoId),
+      });
     };
   }, [channelId, durationSeconds, isLive, isShort, videoId]);
 

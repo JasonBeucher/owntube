@@ -12,6 +12,7 @@ import { VideoPlayer } from "@/components/player/video-player";
 import { WatchTracker } from "@/components/player/watch-tracker";
 import { ShortsVerticalActions } from "@/components/shorts/shorts-vertical-actions";
 import { VideoThumbnailImg } from "@/components/videos/video-thumbnail-img";
+import { isIosLikeBrowser } from "@/lib/ios-playback";
 import {
   aspectRatioFromPixelDimensions,
   inferShortAspectRatioFromDetail,
@@ -70,6 +71,7 @@ export function ShortsSlide({
       detailQuery.data,
       window.location.origin,
       window.location.host,
+      { avoidSplitAudioVideo: isIosLikeBrowser() },
     );
   }, [detailQuery.data]);
 

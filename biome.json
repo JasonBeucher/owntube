@@ -13,7 +13,8 @@
       "!.next",
       "!dist",
       "!build",
-      "!ui-inspîration"
+      "!ui-inspîration",
+      "!owntube-charte-graphique"
     ]
   },
   "formatter": {

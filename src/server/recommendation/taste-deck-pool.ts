@@ -13,6 +13,10 @@ import { interactions } from "@/server/db/schema";
 import { RateLimitExceededError } from "@/server/errors/rate-limit-exceeded";
 import { UpstreamUnavailableError } from "@/server/errors/upstream-unavailable";
 import { collectTaggedVideoCandidates } from "@/server/recommendation/collect-tagged-candidates";
+import {
+  dailyExploreSeed,
+  deterministicColdStartJitter,
+} from "@/server/recommendation/deterministic-jitter";
 import { enrichVideosWithStoredChannelAvatars } from "@/server/recommendation/engine";
 import {
   type RecommendationScoreContext,
@@ -20,6 +24,8 @@ import {
 } from "@/server/recommendation/scoring";
 import { collectUserSignals } from "@/server/recommendation/signals";
 import {
+  buildKeywordCorpus,
+  buildTasteCorpusTitles,
   readCachedDetailTitlesForVideos,
   readCachedDislikeTitlesOrdered,
 } from "@/server/recommendation/taste-corpus";
@@ -46,20 +52,6 @@ function shuffleInPlace<T>(arr: T[], seed: number): void {
     arr[i] = b;
     arr[j] = a;
   }
-}
-
-function deterministicUnitInterval(seed: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0) / 0x1_0000_0000;
-}
-
-function deterministicColdStartJitter(userId: number, videoId: string): number {
-  const u = deterministicUnitInterval(`${userId}:${videoId}`);
-  return (u - 0.5) * 0.08;
 }
 
 function applyTasteDeckFilters(
@@ -262,25 +254,17 @@ export async function buildTasteDeckVideos(
   );
   const tasteTitles = readCachedDetailTitlesForVideos(db, tasteVideoIds, 72);
   const userSettings = getUserSettings(db, userId);
-  const keywordCorpus: string[] = [];
-  for (const kw of userSettings.tasteKeywords) {
-    const k = kw.trim();
-    if (!k) continue;
-    keywordCorpus.push(k, k, k);
-  }
+  const keywordCorpus = buildKeywordCorpus(userSettings.tasteKeywords);
   const poolTitles = fresh.map((v) => v.title).slice(0, 200);
-  const corpusSeen = new Set<string>();
-  const corpusTitles: string[] = [];
-  for (const t of [...keywordCorpus, ...tasteTitles, ...poolTitles]) {
-    const low = t.trim().toLowerCase();
-    if (!low || corpusSeen.has(low)) continue;
-    corpusSeen.add(low);
-    corpusTitles.push(t.trim());
-    if (corpusTitles.length >= 240) break;
-  }
+  const corpusTitles = buildTasteCorpusTitles([
+    keywordCorpus,
+    tasteTitles,
+    poolTitles,
+  ]);
 
   const scoreContext: RecommendationScoreContext = {
     recentCoverageByChannel,
+    exploreSeed: dailyExploreSeed(userId, nowSec),
   };
   const maxCh = Math.max(1, ...signals.channelWeights.values());
   const tasteModel = buildTfidfModel(corpusTitles, {

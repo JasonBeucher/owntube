@@ -63,12 +63,12 @@ export function VideoCard({
   const channel = channelName ?? "Unknown channel";
 
   const thumbShell =
-    "relative aspect-video w-full overflow-hidden rounded-[14px] bg-[hsl(var(--muted))] shadow-none transition duration-300 group-hover:-translate-y-0.5 group-hover:shadow-[0_20px_40px_rgba(0,0,0,0.45)]";
+    "ot-video-card-thumbnail relative aspect-video w-full overflow-hidden rounded-[var(--radius-card)] bg-[hsl(var(--muted))] shadow-none transition duration-300 group-hover:-translate-y-0.5 group-hover:shadow-[var(--shadow-card-hover)]";
   const thumbImg =
     "h-full w-full object-cover transition duration-500 ease-out group-hover:scale-[1.04]";
 
   return (
-    <article className="group flex flex-col gap-3 text-left text-[hsl(var(--foreground))]">
+    <article className="ot-video-card group flex flex-col gap-3 text-left text-[hsl(var(--foreground))]">
       {videoId ? (
         <div className="relative">
           <VideoCardThumbnailInteractive
@@ -127,7 +127,7 @@ export function VideoCard({
           </div>
         </Link>
       )}
-      <div className="flex items-start gap-3">
+      <div className="ot-video-card-meta flex items-start gap-3">
         {channelHref ? (
           <Link href={channelHref} className="mt-0.5 shrink-0">
             <ChannelAvatarCircle
@@ -160,7 +160,7 @@ export function VideoCard({
               />
             ) : null}
           </div>
-          <p className="line-clamp-1 text-[13px] text-[hsl(var(--muted-foreground))]">
+          <p className="ot-video-card-byline line-clamp-1 text-[13px] text-[hsl(var(--muted-foreground))]">
             {channelHref ? (
               <Link
                 href={channelHref}
@@ -261,10 +261,10 @@ export function VideoCardShort({
       : "ot-video-card-title m-0 text-[13px] font-semibold leading-snug tracking-tight transition group-hover:text-[hsl(var(--primary))]";
 
   return (
-    <article className="group flex flex-col gap-2 text-left text-[hsl(var(--foreground))]">
+    <article className="ot-video-card ot-video-card--short group flex flex-col gap-2 text-left text-[hsl(var(--foreground))]">
       <div className={thumbShellClass}>
         <Link href={href} className="block">
-          <div className="relative aspect-[9/16] w-full overflow-hidden rounded-[var(--radius-card)] bg-[hsl(var(--muted))] shadow-none transition duration-300 group-hover:-translate-y-0.5 group-hover:shadow-[0_16px_32px_rgba(0,0,0,0.4)]">
+          <div className="ot-video-card-thumbnail relative aspect-[9/16] w-full overflow-hidden rounded-[var(--radius-card)] bg-[hsl(var(--muted))] shadow-none transition duration-300 group-hover:-translate-y-0.5 group-hover:shadow-[var(--shadow-card-hover)]">
             {thumbnailUrl ? (
               <VideoCardThumbnailImg
                 url={thumbnailUrl}
@@ -415,11 +415,11 @@ export function VideoCardCompact({
   const metaPadClass = showChannelAvatar ? "pl-8" : "pl-0";
 
   return (
-    <article className="group rounded-xl p-2 transition hover:bg-[hsl(var(--muted)_/_0.45)]">
+    <article className="ot-video-card ot-video-card--compact group rounded-xl p-2 transition hover:bg-[hsl(var(--muted)_/_0.45)]">
       <div className="flex items-start gap-3 text-left">
         <Link href={href} className="block shrink-0">
           <div
-            className={`relative aspect-video overflow-hidden rounded-xl bg-[hsl(var(--muted))] ${thumbSizeClass}`}
+            className={`ot-video-card-thumbnail relative aspect-video overflow-hidden rounded-xl bg-[hsl(var(--muted))] ${thumbSizeClass}`}
           >
             {thumbnailUrl ? (
               <VideoCardThumbnailImg

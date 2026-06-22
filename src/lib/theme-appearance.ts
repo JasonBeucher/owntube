@@ -1,4 +1,5 @@
 export type ThemeMode = "system" | "light" | "dark";
+export type VisualTheme = "default" | "terminal";
 
 export const THEME_STORAGE_KEY = "owntube-theme";
 

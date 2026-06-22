@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { HomeHero } from "@/components/home/home-hero";
 import { HomeShortsShelf } from "@/components/home/home-shorts-shelf";
+import { Button } from "@/components/ui/button";
 import { VideoGrid } from "@/components/videos/video-grid";
 import { useLargeVideoGridColumnCount } from "@/hooks/use-large-video-grid-column-count";
 import {
@@ -109,15 +110,12 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
         if (!lastPage.hasMore || lastPage.videos.length === 0) {
           return undefined;
         }
-        const merged = dedupeVideos(allPages.flatMap((p) => p.videos));
-        const prevCount =
-          allPages.length > 1
-            ? dedupeVideos(allPages.slice(0, -1).flatMap((p) => p.videos))
-                .length
-            : 0;
-        if (merged.length <= prevCount) return undefined;
         if (allPages.length >= MAX_FEED_PAGES) return undefined;
-        return merged.length;
+        // Advance by the count the server actually served, not by unique
+        // videos shown: the 90s pool/tail caches can reorder between pages,
+        // so a page may overlap previous ones. Overlap is deduped at render;
+        // stopping on it would dead-end the scroll early.
+        return allPages.reduce((n, p) => n + p.videos.length, 0);
       },
       placeholderData: (prev) => prev,
     },
@@ -196,7 +194,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
     <section className="space-y-6">
       <div className="flex flex-col gap-3">
         <p className="text-sm text-[hsl(var(--muted-foreground))]">
-          {subtitle || "Preparing your feed..."}
+          {subtitle || "Preparing your feed…"}
         </p>
       </div>
 
@@ -213,7 +211,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
           <ul className="ot-video-grid ot-video-grid--large">
             {LOAD_MORE_SKELETON_KEYS.slice(0, 4).map((k) => (
               <li key={`initial-skeleton-top-${k}`} className="space-y-3">
-                <div className="aspect-video w-full animate-pulse rounded-[14px] bg-[hsl(var(--muted)_/_0.45)]" />
+                <div className="aspect-video w-full animate-pulse rounded-[var(--radius-card)] bg-[hsl(var(--muted)_/_0.45)]" />
                 <div className="flex gap-3">
                   <div className="h-9 w-9 shrink-0 animate-pulse rounded-full bg-[hsl(var(--muted)_/_0.45)]" />
                   <div className="min-w-0 flex-1 space-y-2 pt-1">
@@ -231,7 +229,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
           <ul className="ot-video-grid ot-video-grid--large">
             {LOAD_MORE_SKELETON_KEYS.slice(4, 6).map((k) => (
               <li key={`initial-skeleton-bottom-${k}`} className="space-y-3">
-                <div className="aspect-video w-full animate-pulse rounded-[14px] bg-[hsl(var(--muted)_/_0.45)]" />
+                <div className="aspect-video w-full animate-pulse rounded-[var(--radius-card)] bg-[hsl(var(--muted)_/_0.45)]" />
                 <div className="flex gap-3">
                   <div className="h-9 w-9 shrink-0 animate-pulse rounded-full bg-[hsl(var(--muted)_/_0.45)]" />
                   <div className="min-w-0 flex-1 space-y-2 pt-1">
@@ -246,9 +244,20 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
       ) : null}
 
       {feed.isError ? (
-        <p className="text-sm text-red-600">
-          {feed.error.message ?? "Could not load the feed."}
-        </p>
+        <div className="ot-surface-card flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <p className="text-sm text-[hsl(var(--destructive))]">
+            {feed.error.message || "Could not load the feed."}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void feed.refetch()}
+            disabled={feed.isFetching}
+          >
+            {feed.isFetching ? "Retrying…" : "Retry"}
+          </Button>
+        </div>
       ) : null}
 
       {first ? <HomeHero video={first} /> : null}
@@ -289,7 +298,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
           Scroll to load more rows.
         </p>
       ) : !isInitialLoading ? (
-        <p className="rounded-[14px] border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-14 text-center text-sm text-[hsl(var(--muted-foreground))]">
+        <p className="rounded-[var(--radius-card)] border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-14 text-center text-sm text-[hsl(var(--muted-foreground))]">
           No videos for now.
         </p>
       ) : null}
@@ -303,7 +312,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
           {LOAD_MORE_SKELETON_KEYS.slice(0, LOAD_MORE_SKELETON_COUNT).map(
             (k) => (
               <li key={`skeleton-${k}`} className="space-y-3">
-                <div className="aspect-video w-full animate-pulse rounded-[14px] bg-[hsl(var(--muted)_/_0.45)]" />
+                <div className="aspect-video w-full animate-pulse rounded-[var(--radius-card)] bg-[hsl(var(--muted)_/_0.45)]" />
                 <div className="flex gap-3">
                   <div className="h-9 w-9 shrink-0 animate-pulse rounded-full bg-[hsl(var(--muted)_/_0.45)]" />
                   <div className="min-w-0 flex-1 space-y-2 pt-1">
@@ -319,7 +328,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
 
       {isLoadingMore ? (
         <p className="text-center text-xs text-[hsl(var(--muted-foreground))]">
-          Loading more...
+          Loading more…
         </p>
       ) : null}
     </section>

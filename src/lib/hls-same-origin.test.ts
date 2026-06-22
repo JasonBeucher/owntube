@@ -14,9 +14,7 @@ describe("proxyUrlForHlsFetch", () => {
     const url =
       "https://rr1---sn-abc.googlevideo.com/videoplayback/id/x/seg.ts";
     const out = proxyUrlForHlsFetch(url, ORIGIN);
-    expect(out).toBe(
-      `${ORIGIN}/yt-hls?url=${encodeURIComponent(url)}`,
-    );
+    expect(out).toBe(`${ORIGIN}/yt-hls?url=${encodeURIComponent(url)}`);
   });
 
   it("rewrites mis-resolved same-origin videoplayback paths via yt-hls", () => {

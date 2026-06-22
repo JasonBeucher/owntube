@@ -20,6 +20,7 @@ import {
   HOME_RELATED_LIMITS,
 } from "../src/server/recommendation/collect-related-candidates";
 import { collectTaggedVideoCandidates } from "../src/server/recommendation/collect-tagged-candidates";
+import { dailyExploreSeed } from "../src/server/recommendation/deterministic-jitter";
 import { deriveRecommendationReason } from "../src/server/recommendation/reason";
 import {
   isUnvettedKeywordSpam,
@@ -27,12 +28,20 @@ import {
   type RecommendationScoreContext,
   scoreCandidateDetail,
 } from "../src/server/recommendation/scoring";
-import { collectUserSignals } from "../src/server/recommendation/signals";
 import {
+  collectUserSignals,
+  dislikeCorpusVideoIds,
+} from "../src/server/recommendation/signals";
+import {
+  buildKeywordCorpus,
+  buildTasteCorpusTitles,
   readCachedDetailTitlesForVideos,
   readCachedDislikeTitlesOrdered,
 } from "../src/server/recommendation/taste-corpus";
-import { buildTfidfModel, termFrequencyVector } from "../src/server/recommendation/tfidf";
+import {
+  buildTfidfModel,
+  termFrequencyVector,
+} from "../src/server/recommendation/tfidf";
 import type { ScoredVideo } from "../src/server/recommendation/types";
 import { fetchVideoDetail } from "../src/server/services/proxy";
 import type { UnifiedVideo } from "../src/server/services/proxy.types";
@@ -104,30 +113,24 @@ async function main() {
     new Set([...signals.likedVideoIds, ...signals.savedVideoIds]),
   );
   const tasteTitles = readCachedDetailTitlesForVideos(db, tasteVideoIds, 72);
-  const keywordCorpus: string[] = [];
-  for (const kw of userSettings.tasteKeywords) {
-    const k = kw.trim();
-    if (!k) continue;
-    keywordCorpus.push(k, k, k);
-  }
+  const keywordCorpus = buildKeywordCorpus(userSettings.tasteKeywords);
   const poolTitles = uniqueRaw.map((v) => v.title).slice(0, 200);
-  const corpusSeen = new Set<string>();
-  const corpusTitles: string[] = [];
-  for (const t of [...keywordCorpus, ...tasteTitles, ...poolTitles]) {
-    const low = t.trim().toLowerCase();
-    if (!low || corpusSeen.has(low)) continue;
-    corpusSeen.add(low);
-    corpusTitles.push(t.trim());
-    if (corpusTitles.length >= 240) break;
-  }
+  const corpusTitles = buildTasteCorpusTitles([
+    keywordCorpus,
+    tasteTitles,
+    poolTitles,
+  ]);
   const tasteModel = buildTfidfModel(corpusTitles, {
     groups: [keywordCorpus, tasteTitles],
   });
   const dislikeModel = buildTfidfModel(
-    readCachedDislikeTitlesOrdered(db, [...signals.dislikedVideoIds], 48),
+    readCachedDislikeTitlesOrdered(db, dislikeCorpusVideoIds(signals), 48),
   );
   const maxCh = Math.max(1, ...signals.channelWeights.values());
-  const scoreContext: RecommendationScoreContext = { recentCoverageByChannel };
+  const scoreContext: RecommendationScoreContext = {
+    recentCoverageByChannel,
+    exploreSeed: dailyExploreSeed(userId, Math.floor(Date.now() / 1000)),
+  };
   const interestChannelIds = new Set([
     ...signals.historyChannelIds,
     ...signals.interactionInterestChannelIds,
@@ -180,8 +183,8 @@ async function main() {
   });
   scored.sort((a, b) => b.rawScore - a.rawScore);
 
-  const { scored: expandedScored } = await expandScoredPoolWithRelatedCandidates(
-    {
+  const { scored: expandedScored } =
+    await expandScoredPoolWithRelatedCandidates({
       db,
       scored,
       coldStart,
@@ -193,8 +196,7 @@ async function main() {
       dislikeModel,
       maxCh,
       scoreContext,
-    },
-  );
+    });
   scored = expandedScored;
   scored.sort((a, b) => b.rawScore - a.rawScore);
 
@@ -257,7 +259,12 @@ async function main() {
   );
   const reason =
     pooled?.recommendationReason ??
-    deriveRecommendationReason(detail.breakdown, target, tasteModel, candidateSource);
+    deriveRecommendationReason(
+      detail.breakdown,
+      target,
+      tasteModel,
+      candidateSource,
+    );
   const keywordPenalty = keywordDiscoveryScorePenalty(
     target,
     signals,

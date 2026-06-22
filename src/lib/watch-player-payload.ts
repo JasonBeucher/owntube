@@ -1,8 +1,8 @@
 import {
+  type ProxiedPlayableVariant,
   toProxiedOrDirectPlayback,
   toProxiedOrDirectPoster,
   toProxiedOrDirectVariants,
-  type ProxiedPlayableVariant,
 } from "@/lib/invidious-proxy";
 import { buildWatchPlayback } from "@/lib/pick-playback";
 import type { VideoDetail } from "@/server/services/proxy.types";
@@ -15,12 +15,19 @@ export function buildVideoPlayerPayloadFromDetail(
   detail: VideoDetail,
   appOrigin: string,
   requestHost: string,
+  options?: {
+    /** iOS Safari: prefer HLS/muxed — split video+audio stalls there. */
+    avoidSplitAudioVideo?: boolean;
+  },
 ): {
   payload: WatchPlayerPayload | null;
   poster?: string;
   onlyDashOrUnsupported: boolean;
 } {
-  const rawPlayback = buildWatchPlayback(detail, { shorts: true });
+  const rawPlayback = buildWatchPlayback(detail, {
+    shorts: true,
+    avoidSplitAudioVideo: options?.avoidSplitAudioVideo,
+  });
   const onlyDashOrUnsupported =
     rawPlayback.kind === "none" && rawPlayback.onlyDashOrUnsupported;
   if (rawPlayback.kind === "hls") {

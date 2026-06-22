@@ -28,12 +28,28 @@ function betterSqliteNativePath(): string {
   return addon;
 }
 
+function isBetterSqliteBindingResolutionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Could not locate the bindings file");
+}
+
+function openSqlite(dbPath: string): Database.Database {
+  try {
+    return new Database(dbPath);
+  } catch (error) {
+    if (!isBetterSqliteBindingResolutionError(error)) {
+      throw error;
+    }
+    return new Database(dbPath, {
+      nativeBinding: betterSqliteNativePath(),
+    });
+  }
+}
+
 function createDb() {
   const dbPath = process.env.DATABASE_PATH ?? defaultPath;
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  const sqlite = new Database(dbPath, {
-    nativeBinding: betterSqliteNativePath(),
-  });
+  const sqlite = openSqlite(dbPath);
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
   runSqlMigrations(

@@ -16,6 +16,7 @@
   --primary-foreground: 0 0% 100%;
   --secondary: 0 0% 94%;
   --secondary-foreground: 0 0% 9%;
+  --destructive: 0 72% 42%;
   --border: 0 0% 88%;
   --ring: var(--brand);
   --radius: 0.625rem;
@@ -23,6 +24,7 @@
   --radius-card: 0.875rem;
   --sidebar: 0 0% 96%;
   --surface-border: 0 0% 0% / 0.1;
+  --shadow-card-hover: 0 20px 40px rgb(0 0 0 / 0.15);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -40,10 +42,12 @@
     --primary-foreground: 0 0% 100%;
     --secondary: 240 4% 12%;
     --secondary-foreground: 0 0% 96%;
+    --destructive: 0 91% 71%;
     --border: 240 3% 14%;
     --ring: var(--brand);
     --sidebar: 240 5% 5%;
     --surface-border: 0 0% 100% / 0.12;
+    --shadow-card-hover: 0 20px 40px rgb(0 0 0 / 0.45);
   }
 }
 
@@ -61,10 +65,12 @@
   --primary-foreground: 0 0% 100%;
   --secondary: 240 4% 12%;
   --secondary-foreground: 0 0% 96%;
+  --destructive: 0 91% 71%;
   --border: 240 3% 14%;
   --ring: var(--brand);
   --sidebar: 240 5% 5%;
   --surface-border: 0 0% 100% / 0.12;
+  --shadow-card-hover: 0 20px 40px rgb(0 0 0 / 0.45);
 }
 
 :root.light {
@@ -81,10 +87,118 @@
   --primary-foreground: 0 0% 100%;
   --secondary: 0 0% 94%;
   --secondary-foreground: 0 0% 9%;
+  --destructive: 0 72% 42%;
   --border: 0 0% 88%;
   --ring: var(--brand);
   --sidebar: 0 0% 96%;
   --surface-border: 0 0% 0% / 0.1;
+  --shadow-card-hover: 0 20px 40px rgb(0 0 0 / 0.15);
+}
+
+:root[data-visual-theme="terminal"] {
+  --background: 43 28% 89%;
+  --foreground: 150 4% 9%;
+  --card: 38 48% 94%;
+  --card-foreground: 150 4% 9%;
+  --muted: 42 28% 86%;
+  --muted-foreground: 156 4% 37%;
+  --accent: 42 25% 82%;
+  --accent-foreground: 150 4% 9%;
+  --brand: 1 100% 67%;
+  --primary: var(--brand);
+  --primary-foreground: 180 9% 3%;
+  --secondary: 42 25% 82%;
+  --secondary-foreground: 150 4% 9%;
+  --destructive: 0 72% 42%;
+  --border: 42 13% 75%;
+  --ring: var(--brand);
+  --radius: 0.25rem;
+  --radius-shell: 0.125rem;
+  --radius-card: 0.25rem;
+  --sidebar: 42 31% 87%;
+  --surface-border: 42 13% 75%;
+  --shadow-card-hover: 0 18px 0 hsl(180 9% 3% / 0.12);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-visual-theme="terminal"]:not(.light) {
+    --background: 180 7% 3%;
+    --foreground: 39 37% 93%;
+    --card: 180 10% 6%;
+    --card-foreground: 39 37% 93%;
+    --muted: 180 10% 8%;
+    --muted-foreground: 50 7% 64%;
+    --accent: 180 10% 12%;
+    --accent-foreground: 39 37% 93%;
+    --brand: 1 100% 67%;
+    --primary: var(--brand);
+    --primary-foreground: 180 9% 3%;
+    --secondary: 180 10% 8%;
+    --secondary-foreground: 39 37% 93%;
+    --destructive: 0 91% 71%;
+    --border: 180 8% 17%;
+    --ring: var(--brand);
+    --radius: 0.25rem;
+    --radius-shell: 0.125rem;
+    --radius-card: 0.25rem;
+    --sidebar: 180 10% 4%;
+    --surface-border: 180 8% 17%;
+    --shadow-card-hover: 0 18px 0 hsl(0 0% 0% / 0.3);
+    color-scheme: dark;
+  }
+}
+
+:root.light[data-visual-theme="terminal"] {
+  --background: 43 28% 89%;
+  --foreground: 150 4% 9%;
+  --card: 38 48% 94%;
+  --card-foreground: 150 4% 9%;
+  --muted: 42 28% 86%;
+  --muted-foreground: 156 4% 37%;
+  --accent: 42 25% 82%;
+  --accent-foreground: 150 4% 9%;
+  --brand: 1 100% 67%;
+  --primary: var(--brand);
+  --primary-foreground: 180 9% 3%;
+  --secondary: 42 25% 82%;
+  --secondary-foreground: 150 4% 9%;
+  --destructive: 0 72% 42%;
+  --border: 42 13% 75%;
+  --ring: var(--brand);
+  --radius: 0.25rem;
+  --radius-shell: 0.125rem;
+  --radius-card: 0.25rem;
+  --sidebar: 42 31% 87%;
+  --surface-border: 42 13% 75%;
+  --shadow-card-hover: 0 18px 0 hsl(180 9% 3% / 0.12);
+  color-scheme: light;
+}
+
+:root.dark[data-visual-theme="terminal"] {
+  --background: 180 7% 3%;
+  --foreground: 39 37% 93%;
+  --card: 180 10% 6%;
+  --card-foreground: 39 37% 93%;
+  --muted: 180 10% 8%;
+  --muted-foreground: 50 7% 64%;
+  --accent: 180 10% 12%;
+  --accent-foreground: 39 37% 93%;
+  --brand: 1 100% 67%;
+  --primary: var(--brand);
+  --primary-foreground: 180 9% 3%;
+  --secondary: 180 10% 8%;
+  --secondary-foreground: 39 37% 93%;
+  --destructive: 0 91% 71%;
+  --border: 180 8% 17%;
+  --ring: var(--brand);
+  --radius: 0.25rem;
+  --radius-shell: 0.125rem;
+  --radius-card: 0.25rem;
+  --sidebar: 180 10% 4%;
+  --surface-border: 180 8% 17%;
+  --shadow-card-hover: 0 18px 0 hsl(0 0% 0% / 0.3);
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -111,6 +225,18 @@
   box-shadow: 0 4px 12px hsl(var(--brand) / 0.3);
 }
 
+.ot-brand-mark-terminal {
+  display: none;
+}
+
+.ot-brand-pixel-ink {
+  fill: hsl(var(--primary-foreground));
+}
+
+.ot-brand-pixel-accent {
+  fill: hsl(var(--primary));
+}
+
 .ot-shell-nav-link {
   position: relative;
   display: flex;
@@ -128,6 +254,11 @@
 
 .ot-shell-nav-link:hover {
   background: hsl(var(--accent));
+}
+
+.ot-shell-nav-link:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: -2px;
 }
 
 .ot-shell-nav-link--active {
@@ -167,6 +298,257 @@ body {
   color: hsl(var(--foreground));
 }
 
+:root[data-visual-theme="terminal"] .ot-app-shell {
+  background:
+    linear-gradient(hsl(var(--border) / 0.38) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(var(--border) / 0.38) 1px, transparent 1px),
+    hsl(var(--background));
+  background-size: 64px 64px;
+}
+
+:root[data-visual-theme="terminal"] .ot-shell-topbar {
+  border-bottom-color: hsl(var(--border));
+  background: hsl(var(--background) / 0.96);
+  backdrop-filter: none;
+}
+
+:root[data-visual-theme="terminal"] .ot-brand-link {
+  border-radius: var(--radius-shell);
+}
+
+:root[data-visual-theme="terminal"] .ot-brand-word {
+  color: hsl(var(--foreground));
+  font-weight: 800;
+  text-transform: lowercase;
+}
+
+:root[data-visual-theme="terminal"] .ot-brand-mark-default {
+  display: none;
+}
+
+:root[data-visual-theme="terminal"] .ot-brand-mark-terminal {
+  display: inline;
+}
+
+:root[data-visual-theme="terminal"] .ot-brand-mark-tile {
+  shape-rendering: crispEdges;
+}
+
+:root[data-visual-theme="terminal"] .ot-brand-mark-tile-bg {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-visual-theme="terminal"]:not(.light) .ot-brand-pixel-ink {
+    fill: hsl(var(--foreground));
+  }
+}
+
+:root.dark[data-visual-theme="terminal"] .ot-brand-pixel-ink {
+  fill: hsl(var(--foreground));
+}
+
+:root[data-visual-theme="terminal"] .ot-brand-mark-tile-border {
+  display: none;
+}
+
+:root[data-visual-theme="terminal"] .ot-shell-sidebar,
+:root[data-visual-theme="terminal"] .ot-shell-sidebar-header {
+  background: hsl(var(--sidebar) / 0.94);
+}
+
+:root[data-visual-theme="terminal"] .ot-surface-card {
+  border-color: hsl(var(--border));
+  box-shadow: none;
+}
+
+:root[data-visual-theme="terminal"] .ot-brand-shadow {
+  box-shadow: none;
+}
+
+:root[data-visual-theme="terminal"] .ot-theme-toggle {
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+}
+
+:root[data-visual-theme="terminal"] .ot-shell-nav-link {
+  border: 1px solid transparent;
+  background: transparent;
+  text-transform: lowercase;
+  transition:
+    color 0.12s steps(2, end),
+    border-color 0.12s steps(2, end),
+    background-color 0.12s steps(2, end);
+}
+
+:root[data-visual-theme="terminal"] .ot-shell-nav-link svg,
+:root[data-visual-theme="terminal"] .ot-shell-bottom-nav-link svg,
+:root[data-visual-theme="terminal"] .ot-theme-toggle svg {
+  shape-rendering: crispEdges;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+}
+
+:root[data-visual-theme="terminal"] .ot-shell-nav-link:hover,
+:root[data-visual-theme="terminal"] .ot-shell-nav-link--active {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--card));
+}
+
+:root[data-visual-theme="terminal"]
+  .ot-shell-nav-link--active
+  .ot-shell-nav-label::after {
+  background: hsl(var(--primary));
+}
+
+:root[data-visual-theme="terminal"] .ot-topbar-search-form {
+  position: relative;
+  min-height: 3rem;
+  gap: 0.625rem;
+  border-color: hsl(var(--border));
+  background: hsl(var(--card));
+  box-shadow: none;
+}
+
+:root[data-visual-theme="terminal"] .ot-topbar-search-form::before {
+  content: ">";
+  display: grid;
+  width: 1rem;
+  place-items: center;
+  color: hsl(var(--primary));
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+:root[data-visual-theme="terminal"] .ot-topbar-search-form::after {
+  position: absolute;
+  inset: 3px;
+  pointer-events: none;
+  border: 1px solid transparent;
+  content: "";
+}
+
+:root[data-visual-theme="terminal"] .ot-topbar-search-form:focus-within {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--card));
+}
+
+:root[data-visual-theme="terminal"] .ot-topbar-search-form:focus-within::after {
+  border-color: hsl(var(--primary) / 0.6);
+}
+
+:root[data-visual-theme="terminal"] .ot-topbar-search-icon {
+  display: none;
+}
+
+:root[data-visual-theme="terminal"] .ot-topbar-search-input {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+}
+
+:root[data-visual-theme="terminal"] .ot-topbar-search-input::placeholder {
+  color: hsl(var(--muted-foreground) / 0.72);
+}
+
+:root[data-visual-theme="terminal"] .ot-topbar-search-shortcut {
+  border-radius: 0;
+  border-color: hsl(var(--border));
+  background: hsl(var(--muted));
+}
+
+:root[data-visual-theme="terminal"] .ot-topbar-search-panel {
+  border-color: hsl(var(--border));
+  background: hsl(var(--card));
+  box-shadow: 0 16px 0 hsl(var(--background) / 0.34);
+}
+
+:root[data-visual-theme="terminal"] .ot-topbar-search-option {
+  transition:
+    color 0.12s steps(2, end),
+    background-color 0.12s steps(2, end);
+}
+
+:root[data-visual-theme="terminal"] .ot-topbar-search-option:hover,
+:root[data-visual-theme="terminal"]
+  .ot-topbar-search-option[aria-selected="true"] {
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--foreground));
+}
+
+:root[data-visual-theme="terminal"] .ot-video-card {
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+  padding: 0.5rem;
+  transition:
+    border-color 0.12s steps(2, end),
+    background-color 0.12s steps(2, end);
+}
+
+:root[data-visual-theme="terminal"] .ot-video-card:hover,
+:root[data-visual-theme="terminal"] .ot-video-card:focus-within {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.035);
+}
+
+:root[data-visual-theme="terminal"] .ot-video-card--compact {
+  border-radius: var(--radius-card);
+}
+
+:root[data-visual-theme="terminal"] .ot-video-card-thumbnail {
+  border: 1px solid hsl(var(--border));
+  box-shadow: none;
+}
+
+:root[data-visual-theme="terminal"] .ot-video-card-thumbnail::after {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.16;
+  background:
+    linear-gradient(hsl(var(--border)) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(var(--border)) 1px, transparent 1px);
+  background-size: 16px 16px;
+  content: "";
+}
+
+:root[data-visual-theme="terminal"]
+  .ot-video-card:hover
+  .ot-video-card-thumbnail {
+  border-color: hsl(var(--primary));
+}
+
+:root[data-visual-theme="terminal"] .ot-video-card-byline {
+  color: hsl(var(--muted-foreground));
+}
+
+:root[data-visual-theme="terminal"] .ot-video-duration-badge {
+  border: 0;
+  border-radius: 0;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font-family: var(--font-mono);
+  font-weight: 800;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+:root[data-visual-theme="terminal"] .ot-shell-bottom-nav {
+  border-top-color: hsl(var(--border));
+  background: hsl(var(--background) / 0.96);
+}
+
+:root[data-visual-theme="terminal"] .ot-shell-bottom-nav-link {
+  border-top: 2px solid transparent;
+}
+
+:root[data-visual-theme="terminal"]
+  .ot-shell-bottom-nav-link[aria-current="page"] {
+  border-top-color: hsl(var(--primary));
+  background: hsl(var(--card));
+}
+
 /* UI scaling is handled dynamically by UiScale component */
 
 @keyframes ot-fade-slide {
@@ -189,8 +571,59 @@ body {
   }
 }
 
+/* Player center hint (play/pause): pop in, hold, fade out. */
+@keyframes ot-hint-fade {
+  0% {
+    opacity: 0;
+    transform: scale(0.88);
+  }
+  12% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  78% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.06);
+  }
+}
+
+/* Like/dislike/save icon pop on activation. */
+@keyframes ot-pop {
+  0% {
+    transform: scale(0.9);
+  }
+  60% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
 .ot-app-scroll {
   animation: ot-fade-slide 0.3s ease;
+}
+
+/* Honor the OS-level motion preference: collapse animations and transitions
+   to near-instant so content is still reachable without movement.
+   !important is required to override Tailwind utility declarations. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: must out-rank utility classes */
+    animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: must out-rank utility classes */
+    animation-iteration-count: 1 !important;
+    /* biome-ignore lint/complexity/noImportantStyles: must out-rank utility classes */
+    transition-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: must out-rank utility classes */
+    scroll-behavior: auto !important;
+  }
 }
 
 .ot-page {

@@ -11,6 +11,10 @@ import {
   SHORTS_RELATED_LIMITS,
 } from "@/server/recommendation/collect-related-candidates";
 import { collectShortsCandidates } from "@/server/recommendation/collect-shorts-candidates";
+import {
+  dailyExploreSeed,
+  deterministicColdStartJitter,
+} from "@/server/recommendation/deterministic-jitter";
 import { maximalMarginalRelevance } from "@/server/recommendation/diversity";
 import {
   keepCandidateForPersonalizedFeed,
@@ -19,9 +23,17 @@ import {
   scoreCandidateDetail,
   shortsDiscoveryScorePenalty,
 } from "@/server/recommendation/scoring";
-import { loadShortSeenVideoIds } from "@/server/recommendation/shorts-seen";
-import { collectUserSignals } from "@/server/recommendation/signals";
 import {
+  loadShortSeenVideoIds,
+  loadSoftSeenShortVideoIds,
+} from "@/server/recommendation/shorts-seen";
+import {
+  collectUserSignals,
+  dislikeCorpusVideoIds,
+} from "@/server/recommendation/signals";
+import {
+  buildKeywordCorpus,
+  buildTasteCorpusTitles,
   readCachedDetailTitlesForVideos,
   readCachedDislikeTitlesOrdered,
 } from "@/server/recommendation/taste-corpus";
@@ -48,28 +60,38 @@ type ShortsPoolCacheEntry = {
 };
 
 const SHORTS_POOL_CACHE_TTL_MS = 90_000;
+/**
+ * Flat down-rank for shorts seen 45–90 days ago that resurface from the soft
+ * window — roughly the freshness gap between a day-old and a month-old short,
+ * enough to prefer new content without burying recycled ids.
+ */
+const SHORTS_SEEN_SOFT_PENALTY = 0.12;
 const shortsPoolCache = new Map<string, ShortsPoolCacheEntry>();
 const shortsPoolInFlight = new Map<string, Promise<ShortsPoolCacheEntry>>();
-
-function deterministicColdStartJitter(userId: number, videoId: string): number {
-  let h = 0x811c9dc5;
-  const seed = `${userId}:${videoId}`;
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return ((h >>> 0) / 0x1_0000_0000 - 0.5) * 0.08;
-}
 
 function shortsPoolCacheKey(
   userId: number,
   opts: { pageSize: number; region: string; overrides?: ProxySourceOverrides },
 ): string {
-  const piped = opts.overrides?.pipedBaseUrl?.trim() ?? "";
-  const invidious = opts.overrides?.invidiousBaseUrl?.trim() ?? "";
+  const piped = (
+    opts.overrides?.pipedBaseUrls ?? [opts.overrides?.pipedBaseUrl ?? ""]
+  )
+    .map((url) => url.trim())
+    .filter(Boolean)
+    .join(",");
+  const invidious = (
+    opts.overrides?.invidiousBaseUrls ?? [
+      opts.overrides?.invidiousBaseUrl ?? "",
+    ]
+  )
+    .map((url) => url.trim())
+    .filter(Boolean)
+    .join(",");
   // `shorts seen` is deliberately NOT part of the key: it grows on every scroll
   // and would bust the 90s cache (forcing a full channel-tab refetch) on each
-  // short. Seen filtering happens downstream (`fetchShortsFeedForViewer`).
+  // short. Hard-window seen filtering happens downstream
+  // (`fetchShortsFeedForViewer`); the soft band (45–90d) only changes daily,
+  // so baking its penalty into the cached pool is safe.
   return `shorts|${userId}|${opts.region}|${opts.pageSize}|${piped}|${invidious}`;
 }
 
@@ -149,6 +171,7 @@ export async function getShortsRecommendations(
     for (const id of loadShortSeenVideoIds(db, userId)) {
       watchedEver.add(id);
     }
+    const softSeenShortIds = loadSoftSeenShortVideoIds(db, userId);
     if (opts.additionalExcludeVideoIds) {
       for (const id of opts.additionalExcludeVideoIds) {
         const trimmed = id.trim();
@@ -163,21 +186,11 @@ export async function getShortsRecommendations(
       new Set([...signals.likedVideoIds, ...signals.savedVideoIds]),
     );
     const tasteTitles = readCachedDetailTitlesForVideos(db, tasteVideoIds, 72);
-    const keywordCorpus: string[] = [];
-    for (const kw of userSettings.tasteKeywords) {
-      const k = kw.trim();
-      if (!k) continue;
-      keywordCorpus.push(k, k, k);
-    }
-    const preCorpusTitles: string[] = [];
-    const preSeen = new Set<string>();
-    for (const t of [...keywordCorpus, ...tasteTitles]) {
-      const low = t.trim().toLowerCase();
-      if (!low || preSeen.has(low)) continue;
-      preSeen.add(low);
-      preCorpusTitles.push(t.trim());
-      if (preCorpusTitles.length >= 120) break;
-    }
+    const keywordCorpus = buildKeywordCorpus(userSettings.tasteKeywords);
+    const preCorpusTitles = buildTasteCorpusTitles(
+      [keywordCorpus, tasteTitles],
+      120,
+    );
     const tasteDiscoveryQueries = shortsSearchQueriesForTaste(
       preCorpusTitles,
       region,
@@ -193,10 +206,11 @@ export async function getShortsRecommendations(
         maxChannels: opts.maxChannels,
       });
 
+    const nowSec = Math.floor(Date.now() / 1000);
     const scoreContext: RecommendationScoreContext = {
       recentCoverageByChannel,
+      exploreSeed: dailyExploreSeed(userId, nowSec),
     };
-    const nowSec = Math.floor(Date.now() / 1000);
 
     const { byId, sourceByVideoId } = mergeVideosByIdPreferNewer(
       tagged,
@@ -214,15 +228,7 @@ export async function getShortsRecommendations(
     );
 
     const poolTitles = uniqueRaw.map((v) => v.title).slice(0, 200);
-    const corpusSeen = new Set<string>();
-    const corpusTitles: string[] = [];
-    for (const t of [...preCorpusTitles, ...poolTitles]) {
-      const low = t.trim().toLowerCase();
-      if (!low || corpusSeen.has(low)) continue;
-      corpusSeen.add(low);
-      corpusTitles.push(t.trim());
-      if (corpusTitles.length >= 240) break;
-    }
+    const corpusTitles = buildTasteCorpusTitles([preCorpusTitles, poolTitles]);
     const interestChannelIds = new Set([
       ...signals.historyChannelIds,
       ...signals.interactionInterestChannelIds,
@@ -232,7 +238,7 @@ export async function getShortsRecommendations(
       groups: [keywordCorpus, tasteTitles],
     });
     const dislikeModel = buildTfidfModel(
-      readCachedDislikeTitlesOrdered(db, [...signals.dislikedVideoIds], 48),
+      readCachedDislikeTitlesOrdered(db, dislikeCorpusVideoIds(signals), 48),
     );
 
     let scored: ScoredVideo[] = uniqueRaw.map((v) => {
@@ -252,9 +258,13 @@ export async function getShortsRecommendations(
         source,
         interestChannelIds,
       );
+      /** Soft-band recycled shorts may resurface, but fresh content stays ahead. */
+      const softSeenPenalty = softSeenShortIds.has(v.videoId)
+        ? SHORTS_SEEN_SOFT_PENALTY
+        : 0;
       return {
         ...v,
-        rawScore: detail.score - penalty,
+        rawScore: detail.score - penalty - softSeenPenalty,
         scoreBreakdown: detail.breakdown,
         candidateSource: source,
         titleVector: termFrequencyVector(v.title),

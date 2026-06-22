@@ -172,7 +172,7 @@ describe("pickNewestVideoPerChannel", () => {
       maxPerChannel: 1,
     });
     expect(picked).toHaveLength(1);
-    expect(picked[0]!.videoId).toBe("new");
+    expect(picked[0]?.videoId).toBe("new");
   });
 
   it("default keeps up to maxPerChannel newest per channel", () => {

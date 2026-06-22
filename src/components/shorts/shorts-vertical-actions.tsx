@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useId, useRef, type ReactNode } from "react";
-import { VideoCardActionsPlaylistPanel } from "@/components/videos/video-card-actions-playlist-panel";
+import { type ReactNode, useEffect, useId, useRef } from "react";
 import { useVideoCardActions } from "@/components/videos/use-video-card-actions";
+import { VideoCardActionsPlaylistPanel } from "@/components/videos/video-card-actions-playlist-panel";
 import { cn } from "@/lib/utils";
 
 type ShortsVerticalActionsProps = {
@@ -61,6 +61,7 @@ function PlaylistIcon() {
       className="h-5 w-5"
       aria-hidden
     >
+      <title>Playlist</title>
       <path d="M4 6h16M4 12h10M4 18h6" />
       <path d="M17 10v8M13 14h8" />
     </svg>
@@ -75,6 +76,7 @@ function LikeIcon() {
       className="h-5 w-5"
       aria-hidden
     >
+      <title>Like</title>
       <path d="M2 21h4V9H2v12zm20-11a2 2 0 0 0-2-2h-6.31l.95-4.57.03-.32a1 1 0 0 0-.29-.7L13.17 1 7.59 6.59A2 2 0 0 0 7 8v10a2 2 0 0 0 2 2h8a2 2 0 0 0 1.9-1.37l3-9c.07-.2.1-.41.1-.63V10z" />
     </svg>
   );
@@ -88,6 +90,7 @@ function DislikeIcon() {
       className="h-5 w-5"
       aria-hidden
     >
+      <title>Dislike</title>
       <path d="M22 3h-4v12h4V3zM2 14a2 2 0 0 0 2 2h6.31l-.95 4.57-.03.32c0 .26.11.52.29.7L10.83 23l5.58-5.59A2 2 0 0 0 17 16V6a2 2 0 0 0-2-2H7a2 2 0 0 0-1.9 1.37l-3 9c-.07.2-.1.41-.1.63z" />
     </svg>
   );
@@ -103,6 +106,7 @@ function BlockIcon() {
       className="h-5 w-5"
       aria-hidden
     >
+      <title>Hide</title>
       <circle cx="12" cy="12" r="9" />
       <path d="M5 5l14 14" />
     </svg>

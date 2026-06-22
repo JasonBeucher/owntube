@@ -13,6 +13,8 @@ type NavItem = {
   href: string;
   label: string;
   icon: ReactNode;
+  /** Filled variant shown when the item is the current page. */
+  iconActive?: ReactNode;
 };
 
 const HomeIcon = (
@@ -30,6 +32,24 @@ const HomeIcon = (
   </svg>
 );
 
+const HomeIconActive = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    <title>Home</title>
+    <path
+      d="M3 9.6 12 3l9 6.6V20a1.5 1.5 0 0 1-1.5 1.5H15v-6.5a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v6.5H4.5A1.5 1.5 0 0 1 3 20z"
+      fill="currentColor"
+    />
+  </svg>
+);
+
 const ShortsIcon = (
   <svg
     viewBox="0 0 24 24"
@@ -43,6 +63,18 @@ const ShortsIcon = (
     <title>Shorts</title>
     <rect x="6.5" y="2.5" width="11" height="19" rx="3.5" />
     <path d="M10.4 8.7 15.4 12l-5 3.3z" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+const ShortsIconActive = (
+  <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+    <title>Shorts</title>
+    <path
+      fillRule="evenodd"
+      clipRule="evenodd"
+      fill="currentColor"
+      d="M10 2.5h4A3.5 3.5 0 0 1 17.5 6v12a3.5 3.5 0 0 1-3.5 3.5h-4A3.5 3.5 0 0 1 6.5 18V6A3.5 3.5 0 0 1 10 2.5Zm.4 6.2 5 3.3-5 3.3z"
+    />
   </svg>
 );
 
@@ -63,6 +95,18 @@ const ExploreIcon = (
   </svg>
 );
 
+const ExploreIconActive = (
+  <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+    <title>Explore</title>
+    <path
+      fillRule="evenodd"
+      clipRule="evenodd"
+      fill="currentColor"
+      d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm3.6 5.4-2.1 5.1-5.1 2.1 2.1-5.1z"
+    />
+  </svg>
+);
+
 const SubscriptionsIcon = (
   <svg
     viewBox="0 0 24 24"
@@ -78,6 +122,29 @@ const SubscriptionsIcon = (
     <path d="M4 8h16" />
     <rect x="2.5" y="11.5" width="19" height="9.5" rx="2.5" />
     <path d="M10 14.6 14 16.75l-4 2.15z" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+const SubscriptionsIconActive = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    <title>Subscriptions</title>
+    <path d="M6 4.5h12" />
+    <path d="M4 8h16" />
+    <path
+      fillRule="evenodd"
+      clipRule="evenodd"
+      fill="currentColor"
+      stroke="none"
+      d="M5 11.5h14a2.5 2.5 0 0 1 2.5 2.5v4.5a2.5 2.5 0 0 1-2.5 2.5H5a2.5 2.5 0 0 1-2.5-2.5V14A2.5 2.5 0 0 1 5 11.5Zm5 3.1 4 2.15-4 2.15z"
+    />
   </svg>
 );
 
@@ -118,6 +185,26 @@ const AlgorithmIcon = (
   </svg>
 );
 
+const AlgorithmIconActive = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    <title>Algorithm</title>
+    <path d="M5 3v6.2M5 13.8V21" />
+    <circle cx="5" cy="11.5" r="2.3" fill="currentColor" />
+    <path d="M12 3v3.2M12 10.8V21" />
+    <circle cx="12" cy="8.5" r="2.3" fill="currentColor" />
+    <path d="M19 3v9.2M19 16.8V21" />
+    <circle cx="19" cy="14.5" r="2.3" fill="currentColor" />
+  </svg>
+);
+
 const PlaylistsIcon = (
   <svg
     viewBox="0 0 24 24"
@@ -151,21 +238,43 @@ const SettingsIcon = (
 
 /** Full primary navigation list rendered in the desktop sidebar. */
 export const SIDEBAR_NAV: NavItem[] = [
-  { key: "home", href: "/", label: "Home", icon: HomeIcon },
-  { key: "shorts", href: "/shorts", label: "Shorts", icon: ShortsIcon },
-  { key: "explore", href: "/trending", label: "Explore", icon: ExploreIcon },
+  {
+    key: "home",
+    href: "/",
+    label: "Home",
+    icon: HomeIcon,
+    iconActive: HomeIconActive,
+  },
+  {
+    key: "shorts",
+    href: "/shorts",
+    label: "Shorts",
+    icon: ShortsIcon,
+    iconActive: ShortsIconActive,
+  },
+  {
+    key: "explore",
+    href: "/trending",
+    label: "Explore",
+    icon: ExploreIcon,
+    iconActive: ExploreIconActive,
+  },
   {
     key: "subs",
     href: "/subscriptions",
     label: "Subscriptions",
     icon: SubscriptionsIcon,
+    iconActive: SubscriptionsIconActive,
   },
+  // History stays outline when active: the glyph is an arc + arrow with no
+  // fillable body, so a filled variant would lose its identity.
   { key: "library", href: "/history", label: "History", icon: HistoryIcon },
   {
     key: "algorithm",
     href: "/dashboard",
     label: "Algorithm",
     icon: AlgorithmIcon,
+    iconActive: AlgorithmIconActive,
   },
 ];
 

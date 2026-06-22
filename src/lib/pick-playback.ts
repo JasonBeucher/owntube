@@ -275,10 +275,15 @@ function dedupeAudioOptionsByLanguage(
 
   const ordered = Array.from(bestByKey.values()).sort((a, b) => a.idx - b.idx);
 
-  const audioOptions = ordered.map((e) => ({
-    url: e.src.url!,
-    label: e.label,
-  }));
+  const audioOptions = ordered.flatMap((e) => {
+    if (!e.src.url) return [];
+    return [
+      {
+        url: e.src.url,
+        label: e.label,
+      },
+    ];
+  });
 
   const originals = ordered.filter((e) => e.isOriginal);
   let defaultPick: Enriched | undefined;
@@ -329,15 +334,20 @@ function buildAllSplitVariants(
     return scoreNativeVideoCodec(b.s) - scoreNativeVideoCodec(a.s);
   });
 
-  return videoCandidates.map(({ s, i }) => ({
-    t: "split" as const,
-    videoUrl: s.url!,
-    audioUrl: defaultAudioUrl,
-    label: labelForStream(s.quality, s.mimeType, i),
-    audioOptions,
-    defaultAudioIndex,
-    rankBitrate: s.bitrate,
-  }));
+  return videoCandidates.flatMap(({ s, i }) => {
+    if (!s.url) return [];
+    return [
+      {
+        t: "split" as const,
+        videoUrl: s.url,
+        audioUrl: defaultAudioUrl,
+        label: labelForStream(s.quality, s.mimeType, i),
+        audioOptions,
+        defaultAudioIndex,
+        rankBitrate: s.bitrate,
+      },
+    ];
+  });
 }
 
 /**
@@ -482,7 +492,15 @@ function firstHlsUrlFromDetail(detail: VideoDetail): string | undefined {
 
 export function buildWatchPlayback(
   detail: VideoDetail,
-  options?: { shorts?: boolean },
+  options?: {
+    shorts?: boolean;
+    /**
+     * iOS Safari: a second unmuted media element is blocked by the autoplay
+     * policy, so split video+audio stalls or plays silent. Prefer HLS (native
+     * on iOS), then muxed progressive; split stays as a last resort.
+     */
+    avoidSplitAudioVideo?: boolean;
+  },
 ): WatchPlayback {
   if (detail.isLive) {
     const hls = firstHlsUrlFromDetail(detail);
@@ -507,14 +525,29 @@ export function buildWatchPlayback(
   };
 
   if (options?.shorts) {
+    if (options.avoidSplitAudioVideo) {
+      const hls = firstHlsUrlFromDetail(detail);
+      if (hls) {
+        return { kind: "hls", url: hls, onlyDashOrUnsupported: false };
+      }
+    }
     let merged = buildMerged(sourceLooksLikeVideoPane);
     if (merged.length === 0) {
       merged = buildMerged(() => true);
     }
     if (merged.length > 0) {
+      let variants = preferPlaybackDefault(
+        buildFullQualitySelectorList(merged),
+      );
+      if (options.avoidSplitAudioVideo) {
+        variants = [
+          ...variants.filter((v) => v.t === "muxed"),
+          ...variants.filter((v) => v.t === "split"),
+        ];
+      }
       return {
         kind: "progressive",
-        variants: preferPlaybackDefault(buildFullQualitySelectorList(merged)),
+        variants,
         onlyDashOrUnsupported: false,
       };
     }

@@ -46,7 +46,7 @@ export function SidebarSubscriptions({ enabled }: Props) {
             <Link
               key={s.channelId}
               href={`/channel/${encodeURIComponent(s.channelId)}`}
-              className="group relative flex w-full items-center gap-3.5 rounded-[10px] px-3 py-2.5 text-left text-sm font-medium text-[hsl(var(--foreground))] transition hover:bg-[hsl(var(--accent))]"
+              className="group relative flex w-full items-center gap-3.5 rounded-[var(--radius-shell)] px-3 py-2.5 text-left text-sm font-medium text-[hsl(var(--foreground))] transition hover:bg-[hsl(var(--accent))]"
             >
               <ChannelAvatarCircle
                 imageUrl={s.avatarUrl ?? undefined}

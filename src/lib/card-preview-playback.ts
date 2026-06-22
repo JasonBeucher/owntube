@@ -71,6 +71,7 @@ function findPreviewMuxedUrl(detail: VideoDetail): string | null {
   let best: { url: string; score: number } | null = null;
   for (const s of detail.videoSources) {
     if (!isLikelyPreviewMuxed(s)) continue;
+    if (!s.url) continue;
     const height = streamHeightPx(s) ?? PREVIEW_MAX_HEIGHT_PX;
     const br =
       typeof s.bitrate === "number" && Number.isFinite(s.bitrate)
@@ -78,7 +79,7 @@ function findPreviewMuxedUrl(detail: VideoDetail): string | null {
         : height * 500_000;
     const score = height * 10_000 + br;
     if (!best || score < best.score) {
-      best = { url: s.url!, score };
+      best = { url: s.url, score };
     }
   }
   return best?.url ?? null;

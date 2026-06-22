@@ -35,6 +35,7 @@ function makeBreakdown(
       distinctVideosOnChannel: 0,
       distinctShareFromChannel: 0,
       recentPageCoverageOnChannel: 0,
+      catalogCoverageDamping: 0,
       recentChannelBoostRaw: 0,
       ...inputs,
     },

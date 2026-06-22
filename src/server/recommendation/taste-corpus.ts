@@ -58,6 +58,41 @@ export function readCachedDetailTitlesForVideos(
   return titles;
 }
 
+/** "Refine recommendations" keywords repeated 3× so they outweigh single titles in the TF-IDF corpus. */
+export function buildKeywordCorpus(tasteKeywords: readonly string[]): string[] {
+  const corpus: string[] = [];
+  for (const kw of tasteKeywords) {
+    const k = kw.trim();
+    if (!k) continue;
+    corpus.push(k, k, k);
+  }
+  return corpus;
+}
+
+/**
+ * Assembles the taste-model corpus from ordered title sources (keywords first,
+ * then liked/saved titles, then pool titles), case-insensitively de-duplicated
+ * and capped. Shared by the home/shorts/deck pools and the explain script.
+ */
+export function buildTasteCorpusTitles(
+  parts: readonly (readonly string[])[],
+  max = 240,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of parts) {
+    for (const t of part) {
+      const trimmed = t.trim();
+      const low = trimmed.toLowerCase();
+      if (!low || seen.has(low)) continue;
+      seen.add(low);
+      out.push(trimmed);
+      if (out.length >= max) return out;
+    }
+  }
+  return out;
+}
+
 /** One title per dislike row (allows duplicates) for token mining. */
 export function readCachedDislikeTitlesOrdered(
   db: AppDb,

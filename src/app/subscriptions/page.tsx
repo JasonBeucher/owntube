@@ -29,7 +29,7 @@ export default async function SubscriptionsPage() {
       </PageHeader>
 
       {list.length === 0 ? (
-        <p className="rounded-[14px] border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-10 text-center text-sm text-[hsl(var(--muted-foreground))]">
+        <p className="rounded-[var(--radius-card)] border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-10 text-center text-sm text-[hsl(var(--muted-foreground))]">
           You are not subscribed to any channel yet. Open a channel page and
           press Subscribe, or paste a channel ID you know.
         </p>

@@ -184,7 +184,8 @@ function splitCsvRow(line: string): string[] {
   let cur = "";
   let inQuotes = false;
   for (let i = 0; i < line.length; i++) {
-    const c = line[i]!;
+    const c = line[i];
+    if (c === undefined) continue;
     if (c === '"') {
       inQuotes = !inQuotes;
       continue;

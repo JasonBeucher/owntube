@@ -324,6 +324,8 @@ async function fetchShortsShelfFeed(
     input.excludeVideoIds,
   );
   let videos: UnifiedVideo[] = [];
+  /** Tracks whether the watched/seen filter actually removed shelf candidates. */
+  let exclusionDroppedAny = false;
 
   if (userId) {
     const personalized = await getShortsRecommendations(db, userId, {
@@ -334,10 +336,9 @@ async function fetchShortsShelfFeed(
       additionalExcludeVideoIds: input.excludeVideoIds,
       maxChannels: SHORTS_SHELF_MAX_CHANNELS,
     });
-    videos = filterUnwatchedShorts(
-      filterShortsFeedVideos(personalized.videos),
-      watchedEver,
-    );
+    const shortsOnly = filterShortsFeedVideos(personalized.videos);
+    videos = filterUnwatchedShorts(shortsOnly, watchedEver);
+    if (videos.length < shortsOnly.length) exclusionDroppedAny = true;
   }
 
   if (videos.length >= limit) {
@@ -374,11 +375,10 @@ async function fetchShortsShelfFeed(
       sourceUsed = page.sourceUsed;
       warning = page.warning;
       stale = page.stale;
-      videos = mergeShortsLists(
-        limit,
-        videos,
-        filterUnwatchedShorts(filterShortsFeedVideos(page.videos), watchedEver),
-      );
+      const pageShorts = filterShortsFeedVideos(page.videos);
+      const pageUnwatched = filterUnwatchedShorts(pageShorts, watchedEver);
+      if (pageUnwatched.length < pageShorts.length) exclusionDroppedAny = true;
+      videos = mergeShortsLists(limit, videos, pageUnwatched);
       if (videos.length >= limit) break;
       if (!page.continuation) {
         continuation = undefined;
@@ -387,29 +387,36 @@ async function fetchShortsShelfFeed(
       continuation = page.continuation;
     }
 
-    // Shelf fallback: when seen/watched filtering leaves nothing, serve the
-    // upstream pool without any exclusion so the home shelf never stays empty.
-    if (videos.length === 0) {
+    // Shelf top-up: when seen/watched filtering starves the row (heavy watch
+    // histories exclude most of regional trending), refill from the upstream
+    // pool without the watched/seen exclusion — only home-feed duplicates stay
+    // excluded. Re-showing an already-seen short beats rendering a 2-item row.
+    // Skipped when nothing was filtered out: a refetch could not add anything.
+    if (videos.length < limit && exclusionDroppedAny) {
       try {
         const fallback = await fetchShortsFeed(
           db,
           { region, limit: Math.min(40, limit * 2), purpose: "shelf" },
           overrides,
         );
-        const fallbackVideos = filterShortsFeedVideos(fallback.videos).slice(
-          0,
-          limit,
+        const homeFeedIds = new Set(
+          (input.excludeVideoIds ?? []).map((id) => id.trim()),
         );
-        if (fallbackVideos.length > 0) {
-          return {
-            videos: fallbackVideos,
-            sourceUsed: fallback.sourceUsed,
-            warning: fallback.warning,
-            stale: fallback.stale,
-          };
+        const hadFreshVideos = videos.length > 0;
+        videos = mergeShortsLists(
+          limit,
+          videos,
+          filterShortsFeedVideos(fallback.videos).filter(
+            (v) => !homeFeedIds.has(v.videoId),
+          ),
+        );
+        if (!hadFreshVideos) {
+          sourceUsed = fallback.sourceUsed;
+          warning = fallback.warning;
+          stale = fallback.stale;
         }
       } catch (_) {
-        // Fallback failed silently — empty shelf is acceptable
+        // Top-up failed silently — a partial shelf is acceptable
       }
     }
 

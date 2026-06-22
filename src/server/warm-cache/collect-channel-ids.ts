@@ -77,8 +77,7 @@ export function collectWarmChannelIds(
 ): string[] {
   const subscriptionLimit =
     options.subscriptionLimit ?? DEFAULT_WARM_SUBSCRIPTION_CHANNELS;
-  const historyLimit =
-    options.historyLimit ?? DEFAULT_WARM_HISTORY_CHANNELS;
+  const historyLimit = options.historyLimit ?? DEFAULT_WARM_HISTORY_CHANNELS;
 
   const seen = new Set<string>();
   const out: string[] = [];

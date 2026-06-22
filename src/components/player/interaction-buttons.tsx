@@ -17,7 +17,7 @@ function LikeIcon() {
       viewBox="0 0 24 24"
       fill="currentColor"
       className="h-4 w-4"
-      aria-hidden
+      aria-hidden="true"
     >
       <path d="M2 21h4V9H2v12zm20-11a2 2 0 0 0-2-2h-6.31l.95-4.57.03-.32a1 1 0 0 0-.29-.7L13.17 1 7.59 6.59A2 2 0 0 0 7 8v10a2 2 0 0 0 2 2h8a2 2 0 0 0 1.9-1.37l3-9c.07-.2.1-.41.1-.63V10z" />
     </svg>
@@ -30,7 +30,7 @@ function DislikeIcon() {
       viewBox="0 0 24 24"
       fill="currentColor"
       className="h-4 w-4"
-      aria-hidden
+      aria-hidden="true"
     >
       <path d="M22 3h-4v12h4V3zM2 14a2 2 0 0 0 2 2h6.31l-.95 4.57-.03.32c0 .26.11.52.29.7L10.83 23l5.58-5.59A2 2 0 0 0 17 16V6a2 2 0 0 0-2-2H7a2 2 0 0 0-1.9 1.37l-3 9c-.07.2-.1.41-.1.63z" />
     </svg>
@@ -45,7 +45,7 @@ function SaveIcon() {
       stroke="currentColor"
       strokeWidth="1.8"
       className="h-4 w-4"
-      aria-hidden
+      aria-hidden="true"
     >
       <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z" />
     </svg>
@@ -103,7 +103,7 @@ export function InteractionButtons({
             "transition-transform duration-200 group-hover:scale-110",
             state.like ? "animate-[ot-pop_250ms_ease-out]" : "",
           )}
-          aria-hidden
+          aria-hidden="true"
         >
           <LikeIcon />
         </span>
@@ -133,7 +133,7 @@ export function InteractionButtons({
             "transition-transform duration-200 group-hover:scale-110",
             state.dislike ? "animate-[ot-pop_250ms_ease-out]" : "",
           )}
-          aria-hidden
+          aria-hidden="true"
         >
           <DislikeIcon />
         </span>
@@ -163,19 +163,12 @@ export function InteractionButtons({
             "transition-transform duration-200 group-hover:scale-110",
             state.save ? "animate-[ot-pop_250ms_ease-out]" : "",
           )}
-          aria-hidden
+          aria-hidden="true"
         >
           <SaveIcon />
         </span>
         <span>{state.save ? "Saved" : "Save"}</span>
       </Button>
-      <style jsx>{`
-        @keyframes ot-pop {
-          0% { transform: scale(0.9); }
-          60% { transform: scale(1.18); }
-          100% { transform: scale(1); }
-        }
-      `}</style>
     </div>
   );
 }

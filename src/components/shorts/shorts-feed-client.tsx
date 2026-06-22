@@ -356,7 +356,10 @@ export function ShortsFeedClient({
 
   useEffect(() => {
     if (!initialVideoId || items.length === 0) return;
-    const idx = items.findIndex((v) => v.videoId === initialVideoId);
+    const idx = Array.prototype.findIndex.call(
+      items,
+      (v) => v.videoId === initialVideoId,
+    );
     if (idx < 0) return;
     const root = scrollRef.current;
     if (!root) return;
@@ -364,7 +367,7 @@ export function ShortsFeedClient({
     if (slideHeight <= 0) return;
     root.scrollTo({ top: idx * slideHeight, behavior: "auto" });
     setActiveIndex((prev) => (prev === idx ? prev : idx));
-  }, [initialVideoId, items.length]);
+  }, [initialVideoId, items]);
 
   const activeVideoId = items[activeIndex]?.videoId;
 
@@ -578,6 +581,7 @@ export function ShortsFeedClient({
             className="h-6 w-6"
             aria-hidden
           >
+            <title>Previous short</title>
             <path d="M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z" />
           </svg>
         </button>
@@ -593,6 +597,7 @@ export function ShortsFeedClient({
             className="h-6 w-6"
             aria-hidden
           >
+            <title>Next short</title>
             <path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z" />
           </svg>
         </button>

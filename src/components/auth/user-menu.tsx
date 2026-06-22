@@ -58,7 +58,7 @@ export function UserMenu({
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-[calc(100%+0.5rem)] z-50 w-60 origin-top-right overflow-hidden rounded-[14px] border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl shadow-black/10 [animation:ot-fade-slide_0.12s_ease-out]"
+          className="absolute right-0 top-[calc(100%+0.5rem)] z-50 w-60 origin-top-right overflow-hidden rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl shadow-black/10 [animation:ot-fade-slide_0.12s_ease-out]"
         >
           <div className="flex items-center gap-3 border-b border-[hsl(var(--border))] px-3.5 py-3">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full ot-brand-gradient text-sm font-bold text-white">

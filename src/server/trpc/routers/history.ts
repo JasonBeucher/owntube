@@ -17,6 +17,13 @@ const historyEventInputSchema = z.object({
     .max(60 * 60 * 24)
     .default(0),
   completed: z.boolean().default(false),
+  /** Total video length; 0 = unknown. Rows with 0 are excluded from engagement-weighted signals. */
+  videoDurationSeconds: z
+    .number()
+    .int()
+    .min(0)
+    .max(60 * 60 * 24)
+    .default(0),
   /** Recorded from the Shorts feed — kept out of the long-form recommendation signal. */
   isShort: z.boolean().default(false),
 });
@@ -64,6 +71,10 @@ export const historyRouter = router({
           .set({
             durationWatched: duration,
             completed,
+            videoDurationSeconds: Math.max(
+              recent.videoDurationSeconds,
+              input.videoDurationSeconds,
+            ),
             createdAt: ts,
           })
           .where(eq(watchHistory.id, recent.id))
@@ -83,6 +94,7 @@ export const historyRouter = router({
           startedAt: ts,
           durationWatched: input.durationWatched,
           completed: input.completed ? 1 : 0,
+          videoDurationSeconds: input.videoDurationSeconds,
           isDeleted: 0,
           isShort: input.isShort ? 1 : 0,
           createdAt: ts,

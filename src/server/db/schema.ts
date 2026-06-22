@@ -34,6 +34,10 @@ export const watchHistory = sqliteTable(
     startedAt: integer("started_at").notNull(),
     durationWatched: integer("duration_watched").notNull().default(0),
     completed: integer("completed").notNull().default(0),
+    /** Total video length when the watch was recorded; 0 = unknown (pre-tracking rows, engagement signals ignore them). */
+    videoDurationSeconds: integer("video_duration_seconds")
+      .notNull()
+      .default(0),
     isDeleted: integer("is_deleted").notNull().default(0),
     /** 1 when recorded from the Shorts feed — excluded from the long-form recommendation signal. */
     isShort: integer("is_short").notNull().default(0),
@@ -124,7 +128,7 @@ export const playlistItems = sqliteTable(
   ],
 );
 
-/** Shorts the user scrolled past in the vertical feed (lifetime, separate from long-form history). */
+/** Shorts the user scrolled past in the vertical feed (separate from long-form history; loaders apply a seen window so old rows recycle). */
 export const shortsSeen = sqliteTable(
   "shorts_seen",
   {

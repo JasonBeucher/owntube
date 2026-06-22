@@ -25,6 +25,7 @@ function emptySignals(): UserSignals {
     dislikedVideoIds: new Set(),
     savedVideoIds: new Set(),
     interactionInterestChannelIds: new Set(),
+    quickSkipVideoIds: new Set(),
   };
 }
 

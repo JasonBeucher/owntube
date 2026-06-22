@@ -1,3 +1,4 @@
+import { deterministicUnitInterval } from "@/server/recommendation/deterministic-jitter";
 import type { UserSignals } from "@/server/recommendation/signals";
 import type { TfidfModel } from "@/server/recommendation/tfidf";
 import type { UnifiedVideo } from "@/server/services/proxy.types";
@@ -18,6 +19,8 @@ const W_RECENT_CH = 0.14;
 const W_DISLIKE = 0.2;
 const FORMAT_BIAS_SHORT = -0.055;
 const FORMAT_BIAS_LONG = 0.06;
+/** Distinct watched videos on a channel needed for full catalog-coverage credit. */
+const CATALOG_COVERAGE_DISTINCT_SATURATION = 4;
 
 /**
  * Raw TF-IDF cosine of short titles is small (~0.02–0.18), which left the
@@ -38,6 +41,11 @@ export type RecommendationScoreContext = {
    * has already watched (0–1). High values mean strong interest in that channel.
    */
   recentCoverageByChannel: Map<string, number>;
+  /**
+   * Seed for the deterministic explore bonus. Absent = no explore component
+   * (tests and contexts where reproducible scores matter).
+   */
+  exploreSeed?: string;
 };
 
 /** Maps an age in hours to the freshness score buckets (shared by both inputs). */
@@ -78,8 +86,9 @@ export function publicationFreshnessScore(
   const m = p.match(
     /(\d+)\s*(second|minute|hour|day|week|month)s?\s*(ago|before)?/,
   );
-  if (m) {
-    const n = Math.min(999, Math.max(0, Number.parseInt(m[1]!, 10)));
+  const amount = m?.[1];
+  if (amount) {
+    const n = Math.min(999, Math.max(0, Number.parseInt(amount, 10)));
     const unit = m[2];
     let approxHours = 0;
     if (unit === "second") approxHours = n / 3600;
@@ -105,11 +114,13 @@ export function isLikelyShortVideo(video: UnifiedVideo): boolean {
   return t.includes("#shorts");
 }
 
-const WATCH_REPEAT_TAU_SEC = 6 * 24 * 3600;
+const WATCH_REPEAT_TAU_SEC = 21 * 24 * 3600;
+/** Any video watched inside the signal window stays slightly behind an equivalent unwatched one. */
+const WATCH_REPEAT_PENALTY_FLOOR = 0.04;
 
 /**
  * Penalty for recommending a video the user already watched; strongest right
- * after the play, then decays (surface again after several days).
+ * after the play, then decays (surface again after several weeks).
  */
 export function watchedRepeatPenalty(
   videoId: string,
@@ -120,7 +131,10 @@ export function watchedRepeatPenalty(
   if (last === undefined) return 0;
   const ageSec = Math.max(0, nowSec - last);
   const maxPen = 0.92;
-  return maxPen * Math.exp(-ageSec / WATCH_REPEAT_TAU_SEC);
+  return Math.max(
+    WATCH_REPEAT_PENALTY_FLOOR,
+    maxPen * Math.exp(-ageSec / WATCH_REPEAT_TAU_SEC),
+  );
 }
 
 /**
@@ -152,6 +166,33 @@ export function keepCandidateForPersonalizedFeed(
     return tag >= 0.048 || ch >= 0.034;
   }
   return tag >= 0.04 || ch >= 0.03;
+}
+
+/**
+ * Looser variant for the home trending tail (deep-scroll fallback). The tail is
+ * deliberately a discovery surface, so only clearly off-taste rows — foreign
+ * regional trending with zero topic/channel overlap — are demoted. Thresholds
+ * sit ~60% below the loosest personalized tier.
+ */
+const TRENDING_TAIL_TAG_MIN = 0.035;
+const TRENDING_TAIL_CHANNEL_MIN = 0.025;
+
+export function keepCandidateForTrendingTail(
+  video: UnifiedVideo,
+  signals: UserSignals,
+  tasteModel: TfidfModel,
+  interestChannelIds: ReadonlySet<string>,
+): boolean {
+  if (signals.totalWatches < 14) return true;
+  if (video.channelId && interestChannelIds.has(video.channelId)) {
+    return true;
+  }
+  const maxCh = Math.max(1, ...signals.channelWeights.values());
+  const ch = video.channelId
+    ? (signals.channelWeights.get(video.channelId) ?? 0) / maxCh
+    : 0;
+  const tag = tasteModel.similarity(video.title);
+  return tag >= TRENDING_TAIL_TAG_MIN || ch >= TRENDING_TAIL_CHANNEL_MIN;
 }
 
 /** Gate regional shorts_discovery rows — always on for discovery source, softer when history is thin. */
@@ -324,6 +365,8 @@ export type RecommendationScoreBreakdown = {
     distinctVideosOnChannel: number;
     distinctShareFromChannel: number;
     recentPageCoverageOnChannel: number;
+    /** Damping applied to catalog coverage (distinct watches / saturation, capped at 1). */
+    catalogCoverageDamping: number;
     recentChannelBoostRaw: number;
   };
 };
@@ -344,7 +387,9 @@ export function scoreCandidateDetail(
   scoreContext?: RecommendationScoreContext,
   dislikeModel?: TfidfModel,
 ): RecommendationScoreDetail {
-  const ctx = scoreContext ?? { recentCoverageByChannel: new Map() };
+  const ctx: RecommendationScoreContext = scoreContext ?? {
+    recentCoverageByChannel: new Map(),
+  };
   const nowSec = Math.floor(Date.now() / 1000);
   const ch = video.channelId
     ? (signals.channelWeights.get(video.channelId) ?? 0) / maxChannelCount
@@ -365,8 +410,12 @@ export function scoreCandidateDetail(
   );
   const short = isLikelyShortVideo(video);
   const formatBias = short ? FORMAT_BIAS_SHORT : FORMAT_BIAS_LONG;
+  /** Deterministic per-(seed, video) explore bonus — stable across pool rebuilds, rotates with the seed. */
+  const exploreUnit = ctx.exploreSeed
+    ? deterministicUnitInterval(`${ctx.exploreSeed}:${video.videoId}`)
+    : 0;
   const explore =
-    signals.totalWatches >= 16 ? Math.random() * 0.04 : Math.random() * 0.1;
+    signals.totalWatches >= 16 ? exploreUnit * 0.04 : exploreUnit * 0.1;
   const distinctFromCh =
     video.channelId != null
       ? (signals.distinctWatchesByChannel.get(video.channelId) ?? 0)
@@ -393,7 +442,16 @@ export function scoreCandidateDetail(
   const wRepeat = -watchedPen;
   const wDislike = -W_DISLIKE * dislikeSim;
   const wShare = W_SHARE * Math.min(1, shareFromChannel);
-  const wCatalog = W_CATALOG * Math.min(1, catalogCoverage);
+  /**
+   * Coverage is a ratio over the channel's latest page (≤12 rows), so a single
+   * watch on a tiny channel saturates it. Damp by distinct watched videos so
+   * full credit requires demonstrated appetite, not a small catalog.
+   */
+  const catalogDamping = Math.min(
+    1,
+    distinctFromCh / CATALOG_COVERAGE_DISTINCT_SATURATION,
+  );
+  const wCatalog = W_CATALOG * Math.min(1, catalogCoverage) * catalogDamping;
   const wRecentCh = W_RECENT_CH * recentChannelBoostRaw;
   const score =
     wTitle +
@@ -435,6 +493,7 @@ export function scoreCandidateDetail(
         distinctVideosOnChannel: distinctFromCh,
         distinctShareFromChannel: shareFromChannel,
         recentPageCoverageOnChannel: catalogCoverage,
+        catalogCoverageDamping: catalogDamping,
         recentChannelBoostRaw,
       },
     },

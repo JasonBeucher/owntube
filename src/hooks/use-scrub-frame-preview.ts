@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import {
+  type ScrubFrameStyle,
   scrubFrameMarkers,
   scrubFrameStyleAt,
-  type ScrubFrameStyle,
 } from "@/lib/video-scrub-frames";
 import type { VideoStoryboard } from "@/server/services/proxy.types";
 

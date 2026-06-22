@@ -3,10 +3,14 @@ import { invidiousPortCollidesWithNextApp } from "@/lib/invidious-port-collision
 import { logger } from "@/lib/logger";
 import {
   type ProxySourceOverrides,
-  resolveProxyBases,
+  resolveProxyBaseCandidates,
 } from "@/server/services/proxy";
 import { acquireUpstreamSlot } from "@/server/services/rate-limiter";
 import { upstreamGetText } from "@/server/services/upstream-get";
+import {
+  recordUpstreamFailure,
+  recordUpstreamSuccess,
+} from "@/server/services/upstream-health";
 
 const FETCH_TIMEOUT_MS = 8_000;
 const MAX_SUGGESTIONS = 10;
@@ -55,19 +59,30 @@ function parseInvidiousSuggestions(json: unknown): string[] {
   return sanitizeSuggestionStrings(suggestions);
 }
 
-async function fetchSuggestionsJson(url: string): Promise<unknown> {
+async function fetchSuggestionsJson(
+  url: string,
+  source: "piped" | "invidious",
+  baseUrl: string,
+): Promise<unknown> {
   acquireUpstreamSlot();
-  const { status, ok, text } = await upstreamGetText(url, FETCH_TIMEOUT_MS);
-  const trimmed = text.trim();
-  if (!ok) {
-    throw new Error(
-      trimmed
-        ? `HTTP ${status}: ${trimmed.slice(0, 120)}`
-        : `HTTP ${status} (empty body)`,
-    );
+  const startedAt = Date.now();
+  try {
+    const { status, ok, text } = await upstreamGetText(url, FETCH_TIMEOUT_MS);
+    const trimmed = text.trim();
+    if (!ok) {
+      throw new Error(
+        trimmed
+          ? `HTTP ${status}: ${trimmed.slice(0, 120)}`
+          : `HTTP ${status} (empty body)`,
+      );
+    }
+    recordUpstreamSuccess(source, baseUrl, Date.now() - startedAt);
+    if (!trimmed) return [];
+    return JSON.parse(trimmed) as unknown;
+  } catch (error) {
+    recordUpstreamFailure(source, baseUrl, error, Date.now() - startedAt);
+    throw error;
   }
-  if (!trimmed) return [];
-  return JSON.parse(trimmed) as unknown;
 }
 
 export async function fetchSearchQuerySuggestions(
@@ -82,13 +97,17 @@ export async function fetchSearchQuerySuggestions(
     });
   }
 
-  const { pipedBase, invidiousBase } = resolveProxyBases(overrides);
+  const { pipedBases, invidiousBases } = resolveProxyBaseCandidates(overrides);
 
-  if (pipedBase) {
+  for (const pipedBase of pipedBases) {
     try {
       const url = new URL("/suggestions", `${normalizeBaseUrl(pipedBase)}/`);
       url.searchParams.set("query", q);
-      const json = await fetchSuggestionsJson(url.toString());
+      const json = await fetchSuggestionsJson(
+        url.toString(),
+        "piped",
+        pipedBase,
+      );
       const suggestions = sanitizeSuggestionStrings(json);
       if (suggestions.length > 0) {
         return searchSuggestionsResultSchema.parse({
@@ -103,7 +122,8 @@ export async function fetchSearchQuerySuggestions(
     }
   }
 
-  if (invidiousBase && !invidiousPortCollidesWithNextApp(invidiousBase)) {
+  for (const invidiousBase of invidiousBases) {
+    if (invidiousPortCollidesWithNextApp(invidiousBase)) continue;
     try {
       const url = new URL(
         "/api/v1/search/suggestions",
@@ -113,7 +133,11 @@ export async function fetchSearchQuerySuggestions(
       if (input.region) {
         url.searchParams.set("region", input.region.toUpperCase());
       }
-      const json = await fetchSuggestionsJson(url.toString());
+      const json = await fetchSuggestionsJson(
+        url.toString(),
+        "invidious",
+        invidiousBase,
+      );
       const suggestions = parseInvidiousSuggestions(json);
       if (suggestions.length > 0) {
         return searchSuggestionsResultSchema.parse({

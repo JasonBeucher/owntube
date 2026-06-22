@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { WatchRichText } from "@/components/watch/watch-rich-text";
 import { ChannelAvatarCircle } from "@/components/videos/channel-avatar-circle";
+import { WatchRichText } from "@/components/watch/watch-rich-text";
 import { formatCompactCount } from "@/lib/video-display";
 import type { CommentSort } from "@/server/services/proxy.types";
 import { trpc } from "@/trpc/react";

@@ -11,7 +11,22 @@ export function faviconUrls(isDark: boolean) {
   };
 }
 
-function upsertLink(rel: string, href: string, type?: string, sizes?: string) {
+function updateLink(link: HTMLLinkElement, href: string, sizes?: string) {
+  if (sizes) link.setAttribute("sizes", sizes);
+  link.href = href;
+}
+
+function upsertThemeIcon(href: string) {
+  const links = document.querySelectorAll<HTMLLinkElement>(
+    'link[rel="icon"]:not([type]), link[rel="shortcut icon"]:not([type])',
+  );
+
+  for (const link of links) {
+    updateLink(link, href, "any");
+  }
+}
+
+function upsertLink(rel: string, href: string, type: string, sizes?: string) {
   const selector = type
     ? `link[rel="${rel}"][type="${type}"]`
     : `link[rel="${rel}"]:not([type])`;
@@ -21,23 +36,16 @@ function upsertLink(rel: string, href: string, type?: string, sizes?: string) {
     link = document.createElement("link");
     link.rel = rel;
     if (type) link.type = type;
-    if (sizes) link.sizes = sizes;
     document.head.appendChild(link);
   }
 
-  link.href = href;
+  updateLink(link, href, sizes);
 }
 
 export function applyFaviconForTheme(theme: ThemeMode) {
   const urls = faviconUrls(resolveIsDarkTheme(theme));
 
-  for (const link of document.querySelectorAll<HTMLLinkElement>(
-    'link[rel="icon"], link[rel="shortcut icon"]',
-  )) {
-    link.remove();
-  }
-
-  upsertLink("icon", urls.ico);
+  upsertThemeIcon(urls.ico);
   upsertLink("icon", urls.png, "image/png", "192x192");
 }
 
@@ -46,10 +54,12 @@ export function faviconMatchesTheme(theme: ThemeMode): boolean {
   const links = document.querySelectorAll<HTMLLinkElement>(
     'link[rel="icon"], link[rel="shortcut icon"]',
   );
-  if (links.length === 0) return false;
+  const themeIconLinks = Array.from(links).filter((link) =>
+    /\/favicon-(dark|light)\.ico/.test(link.href),
+  );
+  if (themeIconLinks.length === 0) return false;
 
-  for (const link of links) {
-    if (link.href.includes(`/favicon-${variant}.ico`)) return true;
-  }
-  return false;
+  return themeIconLinks.every((link) =>
+    link.href.includes(`/favicon-${variant}.ico`),
+  );
 }

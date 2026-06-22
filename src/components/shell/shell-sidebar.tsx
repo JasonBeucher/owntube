@@ -27,7 +27,7 @@ export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
       aria-hidden={!open}
       style={{ width: open ? SHELL_SIDEBAR_WIDTH_PX : 0 }}
       className={cn(
-        "hidden h-full shrink-0 flex-col overflow-hidden bg-[hsl(var(--sidebar))] transition-[width,border-color] duration-200 ease-out min-[901px]:flex",
+        "ot-shell-sidebar hidden h-full shrink-0 flex-col overflow-hidden bg-[hsl(var(--sidebar))] transition-[width,border-color] duration-200 ease-out min-[901px]:flex",
         open ? "border-r border-[hsl(var(--border))]" : "border-r-0",
       )}
     >
@@ -35,10 +35,10 @@ export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
         className="flex h-full min-h-0 flex-col"
         style={{ width: SHELL_SIDEBAR_WIDTH_PX }}
       >
-        <div className="flex min-w-0 shrink-0 items-center gap-1 bg-[hsl(var(--sidebar))] px-3 pb-4 pt-5">
+        <div className="ot-shell-sidebar-header flex min-w-0 shrink-0 items-center gap-1.5 bg-[hsl(var(--sidebar))] px-3 pb-4 pt-5">
           <button
             type="button"
-            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--radius-shell)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
             aria-label="Close menu"
             onClick={onClose}
           >
@@ -57,7 +57,7 @@ export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
               <line x1="3" y1="18" x2="21" y2="18" />
             </svg>
           </button>
-          <BrandLogo compact className="min-w-0 shrink" />
+          <BrandLogo compact tile className="min-w-0 shrink" />
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden px-2.5 pb-4 pt-3">
@@ -68,13 +68,14 @@ export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
                 <Link
                   key={n.key}
                   href={n.href}
+                  aria-current={active ? "page" : undefined}
                   className={cn(
                     "ot-shell-nav-link",
                     active && "ot-shell-nav-link--active",
                   )}
                 >
                   <span className="inline-flex h-5 w-5 shrink-0 [&_svg]:h-full [&_svg]:w-full">
-                    {n.icon}
+                    {active ? (n.iconActive ?? n.icon) : n.icon}
                   </span>
                   <span className="ot-shell-nav-label">{n.label}</span>
                 </Link>
@@ -89,6 +90,7 @@ export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
               <Link
                 key={n.href}
                 href={n.href}
+                aria-current={pathname.startsWith(n.href) ? "page" : undefined}
                 className={cn(
                   "ot-shell-nav-link",
                   pathname.startsWith(n.href) && "ot-shell-nav-link--active",

@@ -131,10 +131,11 @@ export function TopbarSearch() {
   }, [activeIndex, navigateToQuery, q, router, suggestions]);
 
   return (
-    <search className="relative block w-full min-w-0 max-w-2xl">
+    <div className="relative block w-full min-w-0 max-w-2xl">
       <form
+        aria-label="Global search"
         className={cn(
-          "flex w-full min-w-0 items-center gap-2 rounded-[var(--radius-shell)] border px-3 py-2 transition-[border-color,box-shadow,background] sm:px-3.5 md:gap-2",
+          "ot-topbar-search-form flex w-full min-w-0 items-center gap-2 rounded-[var(--radius-shell)] border px-3 py-2 transition-[border-color,box-shadow,background] sm:px-3.5 md:gap-2",
           focus
             ? "border-[hsl(var(--primary)_/_0.5)] bg-[hsl(var(--muted)_/_0.85)] shadow-[0_0_0_4px_hsl(var(--primary)_/_0.08)]"
             : "border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.55)]",
@@ -151,7 +152,7 @@ export function TopbarSearch() {
           fill="none"
           stroke="currentColor"
           strokeWidth="2"
-          className="shrink-0 text-[hsl(var(--muted-foreground))]"
+          className="ot-topbar-search-icon shrink-0 text-[hsl(var(--muted-foreground))]"
           aria-hidden
         >
           <title>Search</title>
@@ -216,9 +217,9 @@ export function TopbarSearch() {
               setActiveIndex((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
             }
           }}
-          className="min-w-0 flex-1 bg-transparent text-sm text-[hsl(var(--foreground))] outline-none placeholder:text-[hsl(var(--muted-foreground))]"
+          className="ot-topbar-search-input min-w-0 flex-1 bg-transparent text-sm text-[hsl(var(--foreground))] outline-none placeholder:text-[hsl(var(--muted-foreground))]"
         />
-        <kbd className="hidden rounded border border-[hsl(var(--border))] bg-[hsl(var(--muted))] px-2 py-0.5 font-mono text-[11px] text-[hsl(var(--muted-foreground))] sm:inline-block">
+        <kbd className="ot-topbar-search-shortcut hidden rounded border border-[hsl(var(--border))] bg-[hsl(var(--muted))] px-2 py-0.5 font-mono text-[11px] text-[hsl(var(--muted-foreground))] sm:inline-block">
           /
         </kbd>
       </form>
@@ -226,7 +227,7 @@ export function TopbarSearch() {
       {showPanel ? (
         <div
           ref={panelRef}
-          className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 overflow-hidden rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--popover))] py-1 shadow-lg"
+          className="ot-topbar-search-panel absolute left-0 right-0 top-[calc(100%+6px)] z-50 overflow-hidden rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--card))] py-1 shadow-lg"
         >
           <div
             id={listboxId}
@@ -251,7 +252,7 @@ export function TopbarSearch() {
                   role="option"
                   aria-selected={activeIndex === index}
                   className={cn(
-                    "flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[hsl(var(--foreground))] hover:bg-[hsl(var(--accent))]",
+                    "ot-topbar-search-option flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[hsl(var(--foreground))] hover:bg-[hsl(var(--accent))]",
                     activeIndex === index && "bg-[hsl(var(--accent))]",
                   )}
                   onMouseDown={(e) => e.preventDefault()}
@@ -295,6 +296,6 @@ export function TopbarSearch() {
           </div>
         </div>
       ) : null}
-    </search>
+    </div>
   );
 }

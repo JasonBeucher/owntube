@@ -5,11 +5,11 @@ import { auth } from "@/server/auth";
 import { getDb } from "@/server/db/client";
 import { UpstreamUnavailableError } from "@/server/errors/upstream-unavailable";
 import { searchVideos } from "@/server/services/proxy";
-import { getUserProxyOverrides } from "@/server/settings/profile";
 import {
   type SearchVideosResult,
   searchVideosInputSchema,
 } from "@/server/services/proxy.types";
+import { getUserProxyOverrides } from "@/server/settings/profile";
 
 type SearchResultsProps = {
   query: string;

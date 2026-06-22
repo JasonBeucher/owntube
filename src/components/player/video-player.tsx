@@ -19,20 +19,19 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import type { MediaPlayerElement } from "vidstack";
+import type { MediaPlayerElement, MediaProvider } from "vidstack";
+import { HlsSameOriginBinder } from "@/components/player/hls-same-origin-binder";
 import { useWatchCinema } from "@/components/watch/watch-cinema-context";
+import { useLiveHlsPlayback } from "@/hooks/use-live-hls-playback";
 import {
   mergeScrubPreview,
   type ScrubFramePreview,
   type ScrubPreviewConfig,
   useScrubFramePreview,
 } from "@/hooks/use-scrub-frame-preview";
-import { HlsSameOriginBinder } from "@/components/player/hls-same-origin-binder";
-import { useLiveHlsPlayback } from "@/hooks/use-live-hls-playback";
-import { applyHlsSameOriginToVidstackProvider } from "@/lib/hls-same-origin";
-import type { MediaProvider } from "vidstack";
 import { useSponsorBlockAutoSkip } from "@/hooks/use-sponsorblock-auto-skip";
 import { useSponsorBlockSegments } from "@/hooks/use-sponsorblock-segments";
+import { attachPeakLimiter, resumePeakLimiter } from "@/lib/audio-peak-limiter";
 import {
   audioTrackLanguageInfo,
   languageFirstAudioMenuLabel,
@@ -47,31 +46,25 @@ import {
   readDefaultPlaybackQuality,
   variantIndexForDefaultQuality,
 } from "@/lib/default-playback-quality";
+import { applyHlsSameOriginToVidstackProvider } from "@/lib/hls-same-origin";
 import {
   isDirectProgressiveVideoUrl,
   sourceFromUrl,
 } from "@/lib/media-source-from-url";
 import { nextPlaybackVariantIndex } from "@/lib/playback-variant-fallback";
-import { alternateLiveUpstream } from "@/lib/upstream-playback-catalog";
 import {
   readPlayerMediaPrefs,
   writePlayerMediaPrefs,
   writePlayerVolumeOnly,
 } from "@/lib/player-media-prefs";
-import {
-  uiVolumeToGain,
-  volumeGainFor,
-} from "@/lib/player-volume-gain";
-import {
-  attachPeakLimiter,
-  resumePeakLimiter,
-} from "@/lib/audio-peak-limiter";
+import { volumeGainFor } from "@/lib/player-volume-gain";
 import {
   categoryLabel,
   type SponsorBlockSegment,
   segmentAtTime,
 } from "@/lib/sponsorblock";
 import type { SponsorBlockPrefs } from "@/lib/sponsorblock-prefs";
+import { alternateLiveUpstream } from "@/lib/upstream-playback-catalog";
 import { cn } from "@/lib/utils";
 import { chapterIndexAt, type VideoChapter } from "@/lib/video-chapters";
 import { applyVideoThumbnailImgError } from "@/lib/video-thumbnail-url";
@@ -512,7 +505,11 @@ function applyPseudoFullscreen(el: HTMLElement, on: boolean) {
       el.style.setProperty(prop, value, "important");
     }
     const dvhSupported = window.CSS?.supports?.("height", "100dvh") ?? false;
-    el.style.setProperty("height", dvhSupported ? "100dvh" : "100vh", "important");
+    el.style.setProperty(
+      "height",
+      dvhSupported ? "100dvh" : "100vh",
+      "important",
+    );
     document.documentElement.style.setProperty("overflow", "hidden");
   } else {
     for (const [prop] of PSEUDO_FULLSCREEN_STYLES) {
@@ -723,7 +720,14 @@ function useVidstackAdapter(
     ensureLimiter();
     pushElementVolume(uiVolume, state.playbackRate);
     // Only re-run on transition into playable/playing.
-  }, [state.paused, state.canPlay, ensureLimiter, pushElementVolume, uiVolume, state.playbackRate]);
+  }, [
+    state.paused,
+    state.canPlay,
+    ensureLimiter,
+    pushElementVolume,
+    uiVolume,
+    state.playbackRate,
+  ]);
 
   return {
     paused: state.paused,
@@ -822,7 +826,9 @@ function useNativeAdapter(opts: {
       const rate = v?.playbackRate ?? 1;
       try {
         a.muted = m;
-        a.volume = m ? 0 : Math.min(1, volumeGainFor(volUi, rate, limiterActiveRef.current));
+        a.volume = m
+          ? 0
+          : Math.min(1, volumeGainFor(volUi, rate, limiterActiveRef.current));
       } catch {
         /* ignore */
       }
@@ -840,7 +846,10 @@ function useNativeAdapter(opts: {
       try {
         v.muted = m || volUi <= 0;
         if (!v.muted) {
-          v.volume = Math.min(1, volumeGainFor(volUi, rate, limiterActiveRef.current));
+          v.volume = Math.min(
+            1,
+            volumeGainFor(volUi, rate, limiterActiveRef.current),
+          );
         }
       } catch {
         /* ignore */
@@ -860,7 +869,12 @@ function useNativeAdapter(opts: {
     };
     v.addEventListener("ratechange", onRate);
     return () => v.removeEventListener("ratechange", onRate);
-  }, [syncCompanionVolume, applyVideoElementVolume, audioRef]);
+  }, [
+    syncCompanionVolume,
+    applyVideoElementVolume,
+    audioRef,
+    videoRef.current,
+  ]);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -900,7 +914,13 @@ function useNativeAdapter(opts: {
       v.removeEventListener("playing", onStart);
       a?.removeEventListener("playing", onStart);
     };
-  }, [videoRef, audioRef, ensureLimiter, syncCompanionVolume, applyVideoElementVolume]);
+  }, [
+    videoRef,
+    audioRef,
+    ensureLimiter,
+    syncCompanionVolume,
+    applyVideoElementVolume,
+  ]);
 
   useEffect(() => {
     const onPiPChange = () => {
@@ -1217,7 +1237,7 @@ function useHlsQualityModel(
         }));
   const items: { label: string; selected: boolean; idx: number }[] = [
     {
-      label: "Meilleure",
+      label: "Auto",
       selected: state.autoQuality,
       idx: -1,
     },
@@ -1482,9 +1502,8 @@ function SettingsMenu({
                   </li>
                 ))
               : null}
-            {quality.kind === "hls-managed" ? (
-              <>
-                {quality.items.map((it) => (
+            {quality.kind === "hls-managed"
+              ? quality.items.map((it) => (
                   <li key={`${it.label}-${it.idx}`}>
                     <button
                       type="button"
@@ -1513,9 +1532,8 @@ function SettingsMenu({
                       ) : null}
                     </button>
                   </li>
-                ))}
-              </>
-            ) : null}
+                ))
+              : null}
           </ul>
         </div>
       ) : null}
@@ -1600,14 +1618,17 @@ function ScrubPreviewVisual({
   const [frameFailed, setFrameFailed] = useState(false);
   const [videoSeekReady, setVideoSeekReady] = useState(false);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: frame URL changes reset the probe state for the current storyboard frame.
   useEffect(() => {
     setFrameFailed(false);
   }, [frame?.url]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: preview source/seek key changes reset readiness before the next preview seek.
   useEffect(() => {
     setVideoSeekReady(false);
   }, [previewSeekKey, scrubPreview.streamSrc]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: previewRef.current is sampled after render; ref mutations do not drive renders.
   useEffect(() => {
     if (frame || !scrubPreview.streamSrc || previewVideoFailed) return;
     const v = previewRef.current;
@@ -1709,6 +1730,7 @@ function ScrubPreviewOverlay({
   const previewFailedRef = useRef(false);
   const seekTimerRef = useRef<number | null>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: preview source changes reset the stream-preview failure latch.
   useEffect(() => {
     previewFailedRef.current = false;
     setPreviewVideoFailed(false);
@@ -2196,7 +2218,7 @@ function ShortsProgressBar({
           style={{ width: `${pct(buffered)}%` }}
         />
         <div
-          className="absolute inset-y-0 left-0 bg-red-600"
+          className="absolute inset-y-0 left-0 ot-brand-gradient"
           style={{ width: `${pct(current)}%` }}
         />
       </div>
@@ -2343,6 +2365,7 @@ function ShortsQualityPicker({
           aria-label="Quality"
           className="absolute right-0 top-full z-40 mt-1 max-h-64 w-44 overflow-y-auto rounded-lg border border-white/10 bg-zinc-950/95 py-1 text-sm shadow-xl backdrop-blur-md"
           onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
         >
           {quality.kind === "progressive"
             ? quality.items.map((it, i) => (
@@ -2789,6 +2812,7 @@ function PlayerChrome({
     settingsOpen,
     shellRef,
     toggleFs,
+    onSettingsOpenChange,
   ]);
 
   const onSurfaceClick = (e: ReactMouseEvent) => {
@@ -2858,7 +2882,7 @@ function PlayerChrome({
           key={(centerHint ?? autoCenterHint)?.tick}
           className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
         >
-          <div className="flex h-16 w-16 animate-[hintFade_1000ms_ease-in-out_forwards] items-center justify-center rounded-full bg-black/55 text-white">
+          <div className="flex h-16 w-16 animate-[ot-hint-fade_1000ms_ease-in-out_forwards] items-center justify-center rounded-full bg-black/55 text-white">
             {(centerHint ?? autoCenterHint)?.kind === "play" ? (
               <BigPlayOverlayIcon className="h-10 w-10" />
             ) : (
@@ -3186,7 +3210,7 @@ function PlayerChrome({
                 </button>
               ) : null}
 
-              {adapter.canPictureInPicture ? (
+              {hydrated && adapter.canPictureInPicture ? (
                 <button
                   type="button"
                   onClick={() => adapter.togglePictureInPicture()}
@@ -3224,15 +3248,6 @@ function PlayerChrome({
           onClose={() => onSettingsOpenChange(false)}
         />
       ) : null}
-
-      <style jsx>{`
-        @keyframes hintFade {
-          0% { opacity: 0; transform: scale(0.88); }
-          12% { opacity: 1; transform: scale(1); }
-          78% { opacity: 1; transform: scale(1); }
-          100% { opacity: 0; transform: scale(1.06); }
-        }
-      `}</style>
     </>
   );
 }
@@ -3332,6 +3347,7 @@ function VidstackPlayerChrome({
     restoredMuted,
   );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reactKey/startAtSeconds reset the one-shot initial seek latch for a new source.
   useEffect(() => {
     initialSeekAppliedRef.current = false;
   }, [reactKey, startAtSeconds]);
@@ -3353,6 +3369,7 @@ function VidstackPlayerChrome({
     return () => window.clearTimeout(id);
   }, [adapter.canPlay, remote, startAtSeconds]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reactKey lets source swaps retry shorts/mini autoplay even when adapter booleans match.
   useEffect(() => {
     if (shortsMode) {
       if (!adapter.canPlay || !adapter.paused) return;
@@ -3424,7 +3441,7 @@ function VidstackPlayerChrome({
       initialMediaPrefsAppliedRef.current = true;
     }, 0);
     return () => window.clearTimeout(id);
-  }, [adapter, mediaPrefs, persistStore.canPlay, remote, shortsMode]);
+  }, [adapter, mediaPrefs, persistStore.canPlay, remote, shortsMode, miniMode]);
 
   const quality: QualityModel = progressiveQualityMenu
     ? withProgressiveQualitySetter(
@@ -3468,11 +3485,19 @@ function VidstackPlayerChrome({
   );
 }
 
+/**
+ * Branch component: live and VOD render entirely different hook trees, so each
+ * lives in its own component — an early return above hooks would crash React
+ * if `isLive` ever flipped on a mounted instance.
+ */
 function VidstackBlock(props: VidstackBlockProps) {
   if (props.isLive) {
     return <LiveHlsDirectBlock {...props} />;
   }
+  return <VodVidstackBlock {...props} />;
+}
 
+function VodVidstackBlock(props: VidstackBlockProps) {
   const {
     src,
     title,
@@ -3495,6 +3520,7 @@ function VidstackBlock(props: VidstackBlockProps) {
     window.setTimeout(() => onPlaybackError(), 0);
   }, [onPlaybackError]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reactKey delays chrome until the remounted media element exists.
   useEffect(() => {
     setChromeReady(false);
     const id = requestAnimationFrame(() => setChromeReady(true));
@@ -3502,6 +3528,7 @@ function VidstackBlock(props: VidstackBlockProps) {
   }, [reactKey]);
 
   const onVideoIntrinsics = props.onVideoIntrinsics;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reactKey rebinds metadata listeners after the Vidstack media element remounts.
   useEffect(() => {
     if (!onVideoIntrinsics) return;
     const video = shellRef.current?.querySelector("video");
@@ -3633,10 +3660,20 @@ function LiveHlsDirectBlock({
     setVolume(restoredVolume);
   }, [restoredVolume]);
 
+  // Autoplay the broadcast once per source; the guard keeps the effect from
+  // re-playing after a deliberate user pause.
+  const liveAutoplayTriedRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reactKey resets live autoplay once per broadcast source.
   useEffect(() => {
-    if (!adapter.canPlay || adapter.paused) return;
-    void adapter.play();
-  }, [adapter.canPlay, adapter.paused, reactKey]);
+    liveAutoplayTriedRef.current = false;
+  }, [reactKey]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reactKey retries live autoplay after a source remount.
+  useEffect(() => {
+    if (liveAutoplayTriedRef.current) return;
+    if (!adapter.canPlay || !adapter.paused) return;
+    liveAutoplayTriedRef.current = true;
+    adapter.play();
+  }, [adapter.canPlay, adapter.paused, adapter.play, reactKey]);
 
   return (
     <div
@@ -3649,6 +3686,7 @@ function LiveHlsDirectBlock({
           : "aspect-video w-full",
       )}
     >
+      {/* biome-ignore lint/a11y/useMediaCaption: upstream live HLS captions are not exposed as local text tracks here. */}
       <video
         key={reactKey}
         ref={videoRef}
@@ -3727,6 +3765,7 @@ function useShortsNativeAutoplay(
   streamKey: string,
   muteForAutoplayPolicy = false,
 ) {
+  // biome-ignore lint/correctness/useExhaustiveDependencies: streamKey retriggers autoplay for a remounted native media source.
   useEffect(() => {
     if (!enabled) return;
     const el = videoRef.current;
@@ -3826,6 +3865,7 @@ function NativeMuxedBlock({
     window.setTimeout(() => onPlaybackError(), 0);
   }, [onPlaybackError]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reactKey/startAtSeconds reset the one-shot initial seek latch for a new native source.
   useEffect(() => {
     initialSeekAppliedRef.current = false;
   }, [reactKey, startAtSeconds]);
@@ -4035,10 +4075,12 @@ function SplitBlock({
     window.setTimeout(() => onPlaybackError(), 0);
   }, [onPlaybackError]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: split video/audio defaults reset when the selected variant changes.
   useEffect(() => {
     setSplitAudioIdx(safeDefaultIdx);
   }, [video, audioTracks, safeDefaultIdx]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: video/startAtSeconds reset the one-shot initial seek latch for a new split source.
   useEffect(() => {
     initialSeekAppliedRef.current = false;
   }, [video, startAtSeconds]);
@@ -4046,12 +4088,14 @@ function SplitBlock({
   const activeAudioSrc =
     audioTracks[splitAudioIdx]?.src ?? audioTracks[0]?.src ?? "";
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: source or audio-track changes clear split playback latches.
   useEffect(() => {
     videoStalledRef.current = false;
     videoHasPaintedRef.current = false;
   }, [video, activeAudioSrc]);
 
   // Stuck on split HD: no `playing` after user pressed play → trigger variant fallback.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: rebind stuck-playback watchdog when split video/audio sources change.
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -4082,6 +4126,7 @@ function SplitBlock({
 
   // Unlock companion audio on user gesture via adapter.play(), but keep it paused
   // until the video track is actually painting (avoids audible loop while buffering).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: rebind companion-audio pause guard when split sources change.
   useEffect(() => {
     const v = videoRef.current;
     const a = audioRef.current;
@@ -4093,6 +4138,7 @@ function SplitBlock({
     return () => v.removeEventListener("play", onPlay);
   }, [video, activeAudioSrc]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeAudioSrc remounts/reloads the companion audio element.
   useEffect(() => {
     const a = audioRef.current;
     if (!a) return;
@@ -4100,6 +4146,7 @@ function SplitBlock({
     a.load();
   }, [activeAudioSrc]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: rebind split sync listeners when video/audio source pair changes.
   useEffect(() => {
     const v = videoRef.current;
     const a = audioRef.current;
@@ -4267,13 +4314,21 @@ function SplitBlock({
     restoredMuted,
   );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeAudioSrc reapplies volume to a newly mounted companion audio element.
   useEffect(() => {
     const a = audioRef.current;
-    if (a) a.volume = adapter.muted ? 0 : uiVolumeToGain(volume);
+    if (!a) return;
+    // Same gain law as the adapter's companion sync: above 1× without the peak
+    // limiter, raw UI gain would skip the rate attenuation and clip.
+    const rate = videoRef.current?.playbackRate ?? 1;
+    a.volume = adapter.muted
+      ? 0
+      : Math.min(1, volumeGainFor(volume, rate, false));
   }, [activeAudioSrc, adapter.muted, volume]);
 
   // Resume companion audio when the audio source is swapped mid-playback (track
   // change). Wait until the video track is actually painting again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeAudioSrc resumes a newly mounted companion audio element when needed.
   useEffect(() => {
     const v = videoRef.current;
     const a = audioRef.current;
@@ -4644,7 +4699,7 @@ export function VideoPlayer({
       return { kind: "variant" as const, v };
     }
     return { kind: "empty" as const };
-  }, [effectivePayload, progressiveMobileSafe, qualityIndex, shortsMode]);
+  }, [effectivePayload, progressiveMobileSafe, qualityIndex]);
 
   const effectiveStartAt =
     typeof resumeSeekSeconds === "number" ? resumeSeekSeconds : startAtSeconds;

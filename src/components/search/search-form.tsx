@@ -8,10 +8,11 @@ type SearchFormProps = {
 
 export function SearchForm({ defaultQuery = "" }: SearchFormProps) {
   return (
-    <search className="flex w-full max-w-2xl flex-col gap-2 sm:flex-row sm:items-center">
+    <div className="flex w-full max-w-2xl flex-col gap-2 sm:flex-row sm:items-center">
       <form
         action="/search"
         method="get"
+        aria-label="Search videos"
         className="flex w-full flex-1 flex-col gap-2 sm:flex-row sm:items-center"
       >
         <label className="sr-only" htmlFor="search-query">
@@ -34,6 +35,6 @@ export function SearchForm({ defaultQuery = "" }: SearchFormProps) {
       <Button variant="outline" asChild className="shrink-0">
         <Link href="/">Home</Link>
       </Button>
-    </search>
+    </div>
   );
 }

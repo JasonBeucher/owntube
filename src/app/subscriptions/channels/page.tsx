@@ -29,7 +29,7 @@ export default async function SubscriptionChannelsPage() {
       </PageHeader>
 
       {channels.length === 0 ? (
-        <p className="rounded-[14px] border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-12 text-center text-sm text-[hsl(var(--muted-foreground))]">
+        <p className="rounded-[var(--radius-card)] border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-12 text-center text-sm text-[hsl(var(--muted-foreground))]">
           You are not following any channels yet.
         </p>
       ) : (

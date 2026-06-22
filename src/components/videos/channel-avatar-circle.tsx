@@ -1,10 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import {
-  gradientForChannelId,
-  initialsFromLabel,
-} from "@/lib/channel-avatar";
+import { useState } from "react";
+import { gradientForChannelId, initialsFromLabel } from "@/lib/channel-avatar";
 import { toBrowserChannelAvatarUrl } from "@/lib/channel-avatar-proxy";
 
 type ChannelAvatarCircleProps = {
@@ -19,11 +16,8 @@ export function ChannelAvatarCircle({
   label,
   size = "md",
 }: ChannelAvatarCircleProps) {
-  const [failed, setFailed] = useState(false);
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
   const resolvedImageUrl = toBrowserChannelAvatarUrl(imageUrl);
-  useEffect(() => {
-    setFailed(false);
-  }, [resolvedImageUrl]);
   const initials = initialsFromLabel(label);
   const avatarBg = gradientForChannelId(label);
   const sizeClass =
@@ -32,7 +26,8 @@ export function ChannelAvatarCircle({
       : size === "lg"
         ? "h-10 w-10 text-sm"
         : "h-9 w-9 text-xs";
-  const showImg = Boolean(resolvedImageUrl) && !failed;
+  const showImg =
+    Boolean(resolvedImageUrl) && failedImageUrl !== resolvedImageUrl;
 
   return (
     <span
@@ -48,7 +43,7 @@ export function ChannelAvatarCircle({
           className="h-full w-full object-cover"
           loading="lazy"
           referrerPolicy="no-referrer"
-          onError={() => setFailed(true)}
+          onError={() => setFailedImageUrl(resolvedImageUrl ?? null)}
         />
       ) : (
         initials

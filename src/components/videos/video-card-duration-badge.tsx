@@ -18,7 +18,7 @@ export function VideoCardDurationBadge({
     return (
       <span
         className={cn(
-          "pointer-events-none absolute bottom-2 right-2 z-10 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white ot-brand-gradient shadow-sm",
+          "ot-video-duration-badge pointer-events-none absolute bottom-2 right-2 z-10 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white ot-brand-gradient shadow-sm",
           className,
         )}
       >
@@ -33,7 +33,7 @@ export function VideoCardDurationBadge({
   return (
     <span
       className={cn(
-        "pointer-events-none absolute rounded-md font-mono font-semibold tabular-nums backdrop-blur-sm",
+        "ot-video-duration-badge pointer-events-none absolute rounded-md font-mono font-semibold tabular-nums backdrop-blur-sm",
         upcomingAccent
           ? "bg-[hsl(var(--primary))] text-white"
           : "border border-white/10 bg-black/85 text-white",

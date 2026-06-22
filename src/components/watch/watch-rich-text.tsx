@@ -8,6 +8,21 @@ type WatchRichTextProps = {
   className?: string;
 };
 
+function keyForRichTextPart(
+  part: ReturnType<typeof compactRichTextParts>[number],
+  partOccurrences: Map<string, number>,
+) {
+  const base =
+    part.kind === "time"
+      ? `${part.kind}:${part.value}:${part.seconds}`
+      : part.kind === "url"
+        ? `${part.kind}:${part.value}:${part.label ?? ""}`
+        : `${part.kind}:${part.value}`;
+  const occurrence = partOccurrences.get(base) ?? 0;
+  partOccurrences.set(base, occurrence + 1);
+  return `${base}:${occurrence}`;
+}
+
 export function WatchRichText({
   videoId,
   text,
@@ -20,16 +35,18 @@ export function WatchRichText({
 
   if (parts.length === 0) return null;
 
+  const partOccurrences = new Map<string, number>();
   return (
     <span className={className}>
-      {parts.map((part, partIdx) => {
+      {parts.map((part) => {
+        const partKey = keyForRichTextPart(part, partOccurrences);
         if (part.kind === "text") {
-          return <span key={`text-${partIdx}`}>{part.value}</span>;
+          return <span key={partKey}>{part.value}</span>;
         }
         if (part.kind === "url") {
           return (
             <a
-              key={`url-${partIdx}`}
+              key={partKey}
               href={part.value}
               target="_blank"
               rel="noreferrer"
@@ -41,7 +58,7 @@ export function WatchRichText({
         }
         return (
           <Link
-            key={`time-${partIdx}`}
+            key={partKey}
             href={`/watch/${encodeURIComponent(videoId)}?t=${part.seconds}`}
             className="font-medium text-[hsl(var(--foreground))] underline decoration-[hsl(var(--primary)_/_0.45)] underline-offset-2 hover:text-[hsl(var(--primary))]"
           >

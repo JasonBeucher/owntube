@@ -49,9 +49,13 @@ export function LoginForm() {
     >
       <Input type="email" name="email" placeholder="you@example.com" required />
       <Input type="password" name="password" placeholder="Password" required />
-      {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      {error ? (
+        <p className="text-sm text-[hsl(var(--destructive))]" role="alert">
+          {error}
+        </p>
+      ) : null}
       <Button className="w-full" type="submit" disabled={loading}>
-        {loading ? "Signing in..." : "Sign in"}
+        {loading ? "Signing in…" : "Sign in"}
       </Button>
     </form>
   );

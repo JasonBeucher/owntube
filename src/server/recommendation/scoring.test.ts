@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   isLikelyShortVideo,
   isUnvettedKeywordSpam,
+  keepCandidateForTrendingTail,
   keywordDiscoveryScorePenalty,
   publicationFreshnessScore,
   scoreCandidate,
@@ -26,6 +27,7 @@ function emptySignals(overrides: Partial<UserSignals> = {}): UserSignals {
     dislikedVideoIds: new Set(),
     savedVideoIds: new Set(),
     interactionInterestChannelIds: new Set(),
+    quickSkipVideoIds: new Set(),
     ...overrides,
   };
 }
@@ -56,7 +58,6 @@ describe("scoring", () => {
   });
 
   it("amplifies on-topic title similarity (content gain)", () => {
-    vi.spyOn(Math, "random").mockReturnValue(0);
     const signals = emptySignals({ totalWatches: 20 });
     const corpus = buildTfidfModel([
       "rust async runtime tokio",
@@ -82,7 +83,6 @@ describe("scoring", () => {
   });
 
   it("penalizes titles resembling disliked titles", () => {
-    vi.spyOn(Math, "random").mockReturnValue(0);
     const signals = emptySignals({ totalWatches: 20 });
     const taste = buildTfidfModel(["cooking pasta", "garden tips"]);
     // TF-IDF needs ≥2 docs with distinguishing tokens to produce non-zero idf.
@@ -134,10 +134,27 @@ describe("scoring", () => {
     );
     expect(fresh).toBeGreaterThan(old);
     expect(watchedRepeatPenalty("unknown", last, now)).toBe(0);
+    // Slow decay: a 3-week-old watch still carries a meaningful penalty.
+    expect(
+      watchedRepeatPenalty(
+        "vid1",
+        new Map([["vid1", now - 21 * 24 * 3600]]),
+        now,
+      ),
+    ).toBeGreaterThanOrEqual(0.3);
+    // Floor: even a watch from months ago never fully disappears...
+    expect(
+      watchedRepeatPenalty(
+        "vid1",
+        new Map([["vid1", now - 90 * 24 * 3600]]),
+        now,
+      ),
+    ).toBeGreaterThanOrEqual(0.04);
+    // ...but the floor only applies to videos actually in the watch window.
+    expect(watchedRepeatPenalty("neverWatched", last, now)).toBe(0);
   });
 
   it("scoreCandidateDetail score matches scoreCandidate", () => {
-    vi.spyOn(Math, "random").mockReturnValue(0.5);
     const video = {
       videoId: "v",
       channelId: "UC1",
@@ -170,7 +187,6 @@ describe("scoring", () => {
   });
 
   it("prefers long-form over shorts when other signals match", () => {
-    vi.spyOn(Math, "random").mockReturnValue(0.5);
     const base = {
       videoId: "x",
       channelId: "UCsame",
@@ -198,7 +214,6 @@ describe("scoring", () => {
   });
 
   it("boosts channels that dominate distinct watch share and recent upload coverage", () => {
-    vi.spyOn(Math, "random").mockReturnValue(0);
     const video = {
       videoId: "newVid",
       channelId: "UCfan",
@@ -231,6 +246,145 @@ describe("scoring", () => {
       recentCoverageByChannel: new Map(),
     });
     expect(fanShare).toBeGreaterThan(lowShare);
+  });
+
+  it("damps catalog coverage for channels with few distinct watches", () => {
+    const video = {
+      videoId: "v",
+      channelId: "UCsmall",
+      title: "Topic",
+      viewCount: 100,
+      publishedText: "1 day ago",
+    };
+    const ctx = { recentCoverageByChannel: new Map([["UCsmall", 0.8]]) };
+    const corpus = buildTfidfModel(["other topic entirely"]);
+    const oneWatch = scoreCandidateDetail(
+      video,
+      emptySignals({
+        channelWeights: new Map([["UCsmall", 1]]),
+        distinctWatchesByChannel: new Map([["UCsmall", 1]]),
+        totalDistinctVideosWatched: 50,
+      }),
+      corpus,
+      1,
+      ctx,
+    );
+    const manyWatches = scoreCandidateDetail(
+      video,
+      emptySignals({
+        channelWeights: new Map([["UCsmall", 1]]),
+        distinctWatchesByChannel: new Map([["UCsmall", 4]]),
+        totalDistinctVideosWatched: 50,
+      }),
+      corpus,
+      1,
+      ctx,
+    );
+    // One distinct watch only earns a quarter of the saturated coverage credit.
+    expect(oneWatch.breakdown.components.catalogCoverage).toBeCloseTo(
+      manyWatches.breakdown.components.catalogCoverage / 4,
+      10,
+    );
+    expect(oneWatch.breakdown.inputs.catalogCoverageDamping).toBeCloseTo(
+      0.25,
+      10,
+    );
+  });
+
+  it("explore bonus is deterministic per seed and zero without one", () => {
+    const video = {
+      videoId: "v1",
+      title: "Topic",
+      viewCount: 100,
+      publishedText: "1 day ago",
+    };
+    const signals = emptySignals({ totalWatches: 20 });
+    const corpus = buildTfidfModel(["unrelated corpus"]);
+    const seeded = {
+      recentCoverageByChannel: new Map<string, number>(),
+      exploreSeed: "7:20000",
+    };
+    const a = scoreCandidateDetail(video, signals, corpus, 1, seeded);
+    const b = scoreCandidateDetail(video, signals, corpus, 1, seeded);
+    expect(a.score).toBe(b.score);
+    expect(a.breakdown.components.explore).toBe(b.breakdown.components.explore);
+    const otherVideo = scoreCandidateDetail(
+      { ...video, videoId: "v2" },
+      signals,
+      corpus,
+      1,
+      seeded,
+    );
+    expect(otherVideo.breakdown.components.explore).not.toBe(
+      a.breakdown.components.explore,
+    );
+    const unseeded = scoreCandidateDetail(video, signals, corpus, 1, {
+      recentCoverageByChannel: new Map(),
+    });
+    expect(unseeded.breakdown.components.explore).toBe(0);
+  });
+
+  describe("keepCandidateForTrendingTail", () => {
+    const taste = buildTfidfModel([
+      "rust async runtime tokio",
+      "rust ownership and borrowing",
+    ]);
+
+    it("keeps everything during cold start", () => {
+      expect(
+        keepCandidateForTrendingTail(
+          { videoId: "v", title: "totally unrelated regional hit" },
+          emptySignals({ totalWatches: 5 }),
+          taste,
+          new Set(),
+        ),
+      ).toBe(true);
+    });
+
+    it("rejects off-taste trending rows once history is established", () => {
+      expect(
+        keepCandidateForTrendingTail(
+          { videoId: "v", channelId: "UCnew", title: "pasta carbonara recipe" },
+          emptySignals({ totalWatches: 20 }),
+          taste,
+          new Set(),
+        ),
+      ).toBe(false);
+    });
+
+    it("keeps on-taste rows and watched-channel rows", () => {
+      const signals = emptySignals({
+        totalWatches: 20,
+        channelWeights: new Map([["UCfan", 5]]),
+      });
+      expect(
+        keepCandidateForTrendingTail(
+          { videoId: "v", title: "rust async runtime explained" },
+          signals,
+          taste,
+          new Set(),
+        ),
+      ).toBe(true);
+      expect(
+        keepCandidateForTrendingTail(
+          { videoId: "v", channelId: "UCfan", title: "unrelated title" },
+          signals,
+          taste,
+          new Set(),
+        ),
+      ).toBe(true);
+    });
+
+    it("bypasses the gate for interest channels", () => {
+      expect(
+        keepCandidateForTrendingTail(
+          { videoId: "v", channelId: "UCliked", title: "unrelated title" },
+          emptySignals({ totalWatches: 30 }),
+          taste,
+          new Set(["UCliked"]),
+        ),
+      ).toBe(true);
+    });
   });
 
   describe("keywordDiscoveryScorePenalty", () => {
@@ -330,8 +484,4 @@ describe("scoring", () => {
       expect(isUnvettedKeywordSpam(...args)).toBe(false);
     });
   });
-});
-
-afterEach(() => {
-  vi.restoreAllMocks();
 });

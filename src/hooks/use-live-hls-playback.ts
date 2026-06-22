@@ -19,7 +19,12 @@ export function useLiveHlsPlayback(
   onFatalError?: () => void,
 ): void {
   const hlsRef = useRef<Hls | null>(null);
+  // Held in a ref: a new error-callback identity (parent re-render) must not
+  // tear down and rebuild the Hls instance mid-broadcast.
+  const onFatalErrorRef = useRef(onFatalError);
+  onFatalErrorRef.current = onFatalError;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: streamKey forces a fresh hls.js instance when the player swaps streams without changing the URL.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return;
@@ -51,7 +56,7 @@ export function useLiveHlsPlayback(
       hlsRef.current = hls;
 
       hls.on(HlsCtor.Events.ERROR, (_event, data) => {
-        if (data.fatal) onFatalError?.();
+        if (data.fatal) onFatalErrorRef.current?.();
       });
 
       hls.loadSource(src);
@@ -69,5 +74,5 @@ export function useLiveHlsPlayback(
         v.load();
       }
     };
-  }, [videoRef, src, streamKey, onFatalError]);
+  }, [videoRef, src, streamKey]);
 }

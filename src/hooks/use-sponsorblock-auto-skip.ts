@@ -19,10 +19,12 @@ export function useSponsorBlockAutoSkip(input: {
   videoId: string;
 }): void {
   const skippedRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
+  const skipScopeKey = `${input.videoId}:${input.segments.length}`;
+  const skipScopeKeyRef = useRef(skipScopeKey);
+  if (skipScopeKeyRef.current !== skipScopeKey) {
     skippedRef.current.clear();
-  }, [input.videoId, input.segments.length]);
+    skipScopeKeyRef.current = skipScopeKey;
+  }
 
   const { currentTime, paused, seek } = input.adapter;
 

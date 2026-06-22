@@ -23,14 +23,14 @@ export async function UserNav() {
           variant="ghost"
           size="sm"
           asChild
-          className="h-8 rounded-[10px] px-3 font-medium text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
+          className="h-8 rounded-[var(--radius-shell)] px-3 font-medium text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
         >
           <Link href="/login">Sign in</Link>
         </Button>
         <Button
           size="sm"
           asChild
-          className="h-8 rounded-[10px] px-3 font-semibold"
+          className="h-8 rounded-[var(--radius-shell)] px-3 font-semibold"
         >
           <Link href="/register">Register</Link>
         </Button>

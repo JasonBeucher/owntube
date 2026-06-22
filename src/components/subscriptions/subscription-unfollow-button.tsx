@@ -23,7 +23,7 @@ export function SubscriptionUnfollowButton({ channelId }: Props) {
       type="button"
       size="sm"
       variant="ghost"
-      className="shrink-0 text-xs text-[hsl(var(--muted-foreground))] hover:text-red-500"
+      className="shrink-0 text-xs text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--destructive))]"
       disabled={remove.isPending}
       onClick={(e) => {
         e.preventDefault();

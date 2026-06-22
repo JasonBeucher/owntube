@@ -47,7 +47,7 @@ export function SubscriptionVideosInfinite() {
 
   if (query.isError) {
     return (
-      <p className="rounded-[14px] border border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-8 text-center text-sm text-[hsl(var(--muted-foreground))]">
+      <p className="rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-8 text-center text-sm text-[hsl(var(--muted-foreground))]">
         Could not load subscription videos. Try again later.
       </p>
     );

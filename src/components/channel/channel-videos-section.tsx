@@ -125,7 +125,7 @@ export function ChannelVideosSection({
       ) : null}
 
       {query.isError && videos.length === 0 ? (
-        <p className="rounded-[14px] border border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-8 text-center text-sm text-[hsl(var(--muted-foreground))]">
+        <p className="rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-8 text-center text-sm text-[hsl(var(--muted-foreground))]">
           Could not load {tab === "shorts" ? "shorts" : "videos"}. Try again
           later.
         </p>
@@ -138,7 +138,7 @@ export function ChannelVideosSection({
           variant={tab === "shorts" ? "short" : "video"}
         />
       ) : !query.isPending && !query.isError ? (
-        <p className="rounded-[14px] border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-14 text-center text-sm text-[hsl(var(--muted-foreground))]">
+        <p className="rounded-[var(--radius-card)] border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] py-14 text-center text-sm text-[hsl(var(--muted-foreground))]">
           No {tab === "shorts" ? "shorts" : "videos"} found for this channel.
         </p>
       ) : null}

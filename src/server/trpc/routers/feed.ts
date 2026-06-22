@@ -6,6 +6,20 @@ import { watchHistory } from "@/server/db/schema";
 import { RateLimitExceededError } from "@/server/errors/rate-limit-exceeded";
 import { UpstreamUnavailableError } from "@/server/errors/upstream-unavailable";
 import { getPersonalizedFeedVideos } from "@/server/recommendation/engine";
+import { keepCandidateForTrendingTail } from "@/server/recommendation/scoring";
+import {
+  collectUserSignals,
+  type UserSignals,
+} from "@/server/recommendation/signals";
+import {
+  buildKeywordCorpus,
+  buildTasteCorpusTitles,
+  readCachedDetailTitlesForVideos,
+} from "@/server/recommendation/taste-corpus";
+import {
+  buildTfidfModel,
+  type TfidfModel,
+} from "@/server/recommendation/tfidf";
 import { fetchTrendingVideos } from "@/server/services/proxy";
 import {
   trendingVideoCategorySchema,
@@ -48,9 +62,47 @@ function trendingTailCacheKey(
   hideRestricted: boolean,
   overrides: ReturnType<typeof getUserProxyOverrides>,
 ): string {
-  const piped = overrides?.pipedBaseUrl?.trim() ?? "";
-  const invidious = overrides?.invidiousBaseUrl?.trim() ?? "";
+  const piped = (overrides?.pipedBaseUrls ?? [overrides?.pipedBaseUrl ?? ""])
+    .map((url) => url.trim())
+    .filter(Boolean)
+    .join(",");
+  const invidious = (
+    overrides?.invidiousBaseUrls ?? [overrides?.invidiousBaseUrl ?? ""]
+  )
+    .map((url) => url.trim())
+    .filter(Boolean)
+    .join(",");
   return `tail|${userId ?? "anon"}|${region}|${hideRestricted ? 1 : 0}|${piped}|${invidious}`;
+}
+
+/**
+ * Reorders the tail so rows matching the user's taste (or watched/interacted
+ * channels) come first and clearly off-taste regional trending sinks to the
+ * end. Reorder rather than drop: deep scroll should never dead-end.
+ */
+export function partitionTrendingTailByTaste(
+  pool: UnifiedVideo[],
+  signals: UserSignals,
+  tasteModel: TfidfModel,
+  interestChannelIds: ReadonlySet<string>,
+): UnifiedVideo[] {
+  const kept: UnifiedVideo[] = [];
+  const rejected: UnifiedVideo[] = [];
+  for (const video of pool) {
+    if (
+      keepCandidateForTrendingTail(
+        video,
+        signals,
+        tasteModel,
+        interestChannelIds,
+      )
+    ) {
+      kept.push(video);
+    } else {
+      rejected.push(video);
+    }
+  }
+  return [...kept, ...rejected];
 }
 
 async function buildTrendingTailPoolUncached(
@@ -83,6 +135,37 @@ async function buildTrendingTailPoolUncached(
       .all();
     const seen = new Set(seenRows.map((r) => r.videoId));
     pool = pool.filter((v) => !seen.has(v.videoId));
+
+    // Taste-sort the tail for users past cold start. DB + in-memory only (the
+    // TF-IDF corpus is ≤240 short docs); the 90s per-user cache amortizes it.
+    const signals = collectUserSignals(db, userId, { excludeShorts: true });
+    if (signals.totalWatches >= 14) {
+      const userSettings = getUserSettings(db, userId);
+      const keywordCorpus = buildKeywordCorpus(userSettings.tasteKeywords);
+      const tasteVideoIds = Array.from(
+        new Set([...signals.likedVideoIds, ...signals.savedVideoIds]),
+      );
+      const tasteTitles = readCachedDetailTitlesForVideos(
+        db,
+        tasteVideoIds,
+        72,
+      );
+      const poolTitles = pool.map((v) => v.title).slice(0, 200);
+      const tasteModel = buildTfidfModel(
+        buildTasteCorpusTitles([keywordCorpus, tasteTitles, poolTitles]),
+        { groups: [keywordCorpus, tasteTitles] },
+      );
+      const interestChannelIds = new Set([
+        ...signals.historyChannelIds,
+        ...signals.interactionInterestChannelIds,
+      ]);
+      pool = partitionTrendingTailByTaste(
+        pool,
+        signals,
+        tasteModel,
+        interestChannelIds,
+      );
+    }
   }
   return pool;
 }
