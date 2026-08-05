@@ -89,7 +89,7 @@ export function VideoCard({
           />
         </div>
       ) : (
-        <Link href={href} className="block">
+        <Link href={href} prefetch={false} className="block">
           <div className={thumbShell}>
             {thumbnailUrl ? (
               <VideoCardThumbnailImg
@@ -145,7 +145,7 @@ export function VideoCard({
         )}
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="relative min-w-0 pr-8">
-            <Link href={href} className="block min-w-0">
+            <Link href={href} prefetch={false} className="block min-w-0">
               <h2 className="ot-video-card-title m-0 text-[15px] font-semibold leading-snug tracking-tight text-[hsl(var(--foreground))] transition group-hover:text-[hsl(var(--primary))]">
                 {title}
               </h2>
@@ -264,7 +264,7 @@ export function VideoCardShort({
   return (
     <article className="ot-video-card ot-video-card--short group flex flex-col gap-2 text-left text-[hsl(var(--foreground))]">
       <div className={thumbShellClass}>
-        <Link href={href} className="block">
+        <Link href={href} prefetch={false} className="block">
           <div className="ot-video-card-thumbnail relative aspect-[9/16] w-full overflow-hidden rounded-[var(--radius-card)] bg-[hsl(var(--muted))] shadow-none transition duration-300 group-hover:-translate-y-0.5 group-hover:shadow-[var(--shadow-card-hover)]">
             {thumbnailUrl ? (
               <VideoCardThumbnailImg
@@ -305,7 +305,7 @@ export function VideoCardShort({
       </div>
       <div className="px-0.5">
         <div className="relative min-w-0 pr-8">
-          <Link href={href} className="block min-w-0">
+          <Link href={href} prefetch={false} className="block min-w-0">
             <p className={titleClass}>{title}</p>
           </Link>
           {videoId ? (
@@ -419,7 +419,7 @@ export function VideoCardCompact({
   return (
     <article className="ot-video-card ot-video-card--compact group rounded-xl p-2 transition hover:bg-[hsl(var(--muted)_/_0.45)]">
       <div className="flex items-start gap-3 text-left">
-        <Link href={href} className="block shrink-0">
+        <Link href={href} prefetch={false} className="block shrink-0">
           <div
             className={`ot-video-card-thumbnail relative aspect-video overflow-hidden rounded-xl bg-[hsl(var(--muted))] ${thumbSizeClass}`}
           >
@@ -470,7 +470,7 @@ export function VideoCardCompact({
                 </span>
               )
             ) : null}
-            <Link href={href} className="min-w-0">
+            <Link href={href} prefetch={false} className="min-w-0">
               <p className={titleClass}>{title}</p>
             </Link>
             {videoId ? (

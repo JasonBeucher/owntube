@@ -14,6 +14,7 @@ export function HomeHero({ video }: HomeHeroProps) {
   return (
     <Link
       href={`/watch/${encodeURIComponent(video.videoId)}`}
+      prefetch={false}
       className="group relative mb-7 block aspect-[21/8] max-h-[min(52vw,420px)] min-h-[200px] w-full overflow-hidden rounded-[20px] border border-[hsl(var(--border))] shadow-[0_30px_80px_rgba(0,0,0,0.35)] transition-transform hover:-translate-y-0.5 max-sm:aspect-[4/3] max-sm:max-h-none"
     >
       {video.thumbnailUrl ? (

@@ -39,7 +39,7 @@ function withChannelAvatarFallback(
  * blends regional trending — same sources as the home recommendation pool.
  * After a trending blend, loads the channel “videos” tab for trending-only
  * channels so newer unwatched uploads can replace stale trending rows.
- * Channel pages use the SQLite cache (10 min TTL) to avoid bursting the
+ * Channel pages use the SQLite cache (25 min TTL) to avoid bursting the
  * process upstream rate limiter on every home feed load.
  */
 export async function collectTaggedVideoCandidates(

@@ -98,6 +98,7 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const loadMoreInFlightRef = useRef(false);
   const sentinelWasVisibleRef = useRef(false);
+  const personalizedRefreshAttemptsRef = useRef(0);
   const queryRef = useRef<ReturnType<
     typeof trpc.feed.home.useInfiniteQuery
   > | null>(null);
@@ -128,6 +129,21 @@ export function HomeFeedClient({ region, isAuthed }: HomeFeedClientProps) {
   );
 
   const lastPage = feed.data?.pages[feed.data.pages.length - 1];
+
+  useEffect(() => {
+    if (!lastPage?.refreshing) {
+      personalizedRefreshAttemptsRef.current = 0;
+      return;
+    }
+    if (personalizedRefreshAttemptsRef.current >= 6) return;
+
+    const timeoutId = window.setTimeout(() => {
+      if (feed.isFetching) return;
+      personalizedRefreshAttemptsRef.current += 1;
+      void feed.refetch();
+    }, 2_000);
+    return () => window.clearTimeout(timeoutId);
+  }, [feed.isFetching, feed.refetch, lastPage?.refreshing]);
 
   const tryLoadMore = useCallback(() => {
     const q = queryRef.current;

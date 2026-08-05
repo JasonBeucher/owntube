@@ -5,11 +5,13 @@ import { UpstreamUnavailableError } from "@/server/errors/upstream-unavailable";
 import {
   fetchChannelPage,
   fetchRelatedVideos,
+  fetchShortsFeed,
   fetchTrendingVideos,
   fetchVideoComments,
   fetchVideoDetail,
   searchVideos,
 } from "@/server/services/proxy";
+import { shortsFeedCacheKey } from "@/server/services/proxy/cache";
 import * as rateLimiter from "@/server/services/rate-limiter";
 import { resetRateLimiterForTests } from "@/server/services/rate-limiter";
 import { createTestDb } from "@/test/db";
@@ -28,6 +30,33 @@ describe("searchVideos", () => {
     delete process.env.PIPED_BASE_URL;
     delete process.env.INVIDIOUS_BASE_URL;
     delete process.env.PORT;
+  });
+
+  it("serves a thin fresh Shorts shelf cache without refetching upstream", async () => {
+    const { db, sqlite } = createTestDb();
+    const now = Math.floor(Date.now() / 1000);
+    const input = { region: "FR", limit: 18, purpose: "shelf" as const };
+    db.insert(videoCache)
+      .values({
+        cacheKey: shortsFeedCacheKey(input),
+        source: "piped",
+        kind: "shorts",
+        payloadJson: JSON.stringify({
+          videos: [{ videoId: "abcdefghijk", title: "Cached short" }],
+          continuation: null,
+          sourceUsed: "piped",
+        }),
+        fetchedAt: now,
+        expiresAt: now + 600,
+      })
+      .run();
+
+    const result = await fetchShortsFeed(db, input);
+
+    expect(result.sourceUsed).toBe("cache");
+    expect(result.videos).toHaveLength(1);
+    expect(fetch).not.toHaveBeenCalled();
+    sqlite.close();
   });
 
   it("parses Piped channel items from search (url + title)", async () => {

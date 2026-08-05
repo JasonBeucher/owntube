@@ -284,7 +284,7 @@ export const feedRouter = router({
     try {
       if (ctx.userId && !category) {
         const settings = getUserSettings(ctx.db, ctx.userId);
-        const [{ videos: personalized, coldStart }, tailPool] =
+        const [{ videos: personalized, coldStart, refreshing }, tailPool] =
           await Promise.all([
             getPersonalizedFeedVideos(ctx.db, ctx.userId, {
               pageSize,
@@ -310,6 +310,7 @@ export const feedRouter = router({
           kind: "personalized" as const,
           videos,
           coldStart,
+          refreshing,
           hasMore,
           region,
           category: null as null,
@@ -348,6 +349,7 @@ export const feedRouter = router({
         kind: "trending" as const,
         videos,
         coldStart: true,
+        refreshing: false,
         hasMore,
         region,
         category: category ?? null,

@@ -21,6 +21,10 @@ import {
   deterministicColdStartJitter,
 } from "@/server/recommendation/deterministic-jitter";
 import { maximalMarginalRelevance } from "@/server/recommendation/diversity";
+import {
+  readPersistedRecommendationPool,
+  writePersistedRecommendationPool,
+} from "@/server/recommendation/persistent-pool-cache";
 import { deriveRecommendationReason } from "@/server/recommendation/reason";
 import {
   isUnvettedKeywordSpam,
@@ -63,12 +67,15 @@ type RecommendationPoolCacheEntry = {
   diversified: ScoredVideo[];
 };
 
-const RECOMMENDATION_POOL_CACHE_TTL_MS = 90_000;
+const RECOMMENDATION_POOL_CACHE_TTL_MS = 10 * 60_000;
 const recommendationPoolCache = new Map<string, RecommendationPoolCacheEntry>();
 const recommendationPoolInFlight = new Map<
   string,
   Promise<RecommendationPoolCacheEntry>
 >();
+const recommendationPoolDirtyUserIds = new Set<number>();
+const recommendationPoolGenerationByUserId = new Map<number, number>();
+let recommendationPoolGlobalGeneration = 0;
 
 function recommendationPoolCacheKey(
   userId: number,
@@ -199,15 +206,18 @@ export function clearRecommendationCachesForUser(userId?: number): void {
   clearShortsRecommendationCacheForUser(userId);
   if (typeof userId !== "number" || !Number.isFinite(userId) || userId <= 0) {
     recommendationPoolCache.clear();
-    recommendationPoolInFlight.clear();
+    recommendationPoolDirtyUserIds.clear();
+    recommendationPoolGlobalGeneration += 1;
     return;
   }
+  recommendationPoolDirtyUserIds.add(userId);
+  recommendationPoolGenerationByUserId.set(
+    userId,
+    (recommendationPoolGenerationByUserId.get(userId) ?? 0) + 1,
+  );
   const prefix = `${userId}|`;
   for (const key of recommendationPoolCache.keys()) {
     if (key.startsWith(prefix)) recommendationPoolCache.delete(key);
-  }
-  for (const key of recommendationPoolInFlight.keys()) {
-    if (key.startsWith(prefix)) recommendationPoolInFlight.delete(key);
   }
 }
 
@@ -219,12 +229,85 @@ export async function getPersonalizedFeedVideos(
     region?: string;
     overrides?: ProxySourceOverrides;
   },
-): Promise<{ videos: UnifiedVideo[]; coldStart: boolean }> {
-  const entry = await ensureRecommendationPool(db, userId, opts);
-  return {
-    videos: diversifiedToVideos(entry),
-    coldStart: entry.coldStart,
-  };
+): Promise<{
+  videos: UnifiedVideo[];
+  coldStart: boolean;
+  refreshing: boolean;
+}> {
+  const cacheIdentity = recommendationPoolCacheKey(userId, opts);
+  const cached = recommendationPoolCache.get(cacheIdentity);
+  if (cached) {
+    const refreshing = cached.expiresAt <= Date.now();
+    const entry = await ensureRecommendationPool(db, userId, opts);
+    return {
+      videos: diversifiedToVideos(entry),
+      coldStart: entry.coldStart,
+      refreshing,
+    };
+  }
+
+  const persisted = readPersistedRecommendationPool(db, cacheIdentity);
+  const dirty = recommendationPoolDirtyUserIds.has(userId);
+  if (persisted) {
+    if (!persisted.fresh || dirty) {
+      startRecommendationPoolRefresh(db, userId, opts);
+    }
+    return {
+      videos: filterPersistedRecommendationVideos(db, userId, persisted.videos),
+      coldStart: persisted.coldStart,
+      refreshing: !persisted.fresh || dirty,
+    };
+  }
+
+  startRecommendationPoolRefresh(db, userId, opts);
+  return { videos: [], coldStart: true, refreshing: true };
+}
+
+function filterPersistedRecommendationVideos(
+  db: AppDb,
+  userId: number,
+  videos: UnifiedVideo[],
+): UnifiedVideo[] {
+  const watchedRows = db
+    .select({ videoId: watchHistory.videoId })
+    .from(watchHistory)
+    .where(and(eq(watchHistory.userId, userId), eq(watchHistory.isDeleted, 0)))
+    .limit(10_000)
+    .all();
+  const excludedVideoIds = new Set(watchedRows.map((row) => row.videoId));
+  const signals = collectUserSignals(db, userId, { excludeShorts: true });
+  for (const videoId of signals.dislikedVideoIds) {
+    excludedVideoIds.add(videoId);
+  }
+  const blockedChannelIds = new Set(
+    getUserSettings(db, userId).blockedRecommendationChannels,
+  );
+  return stripRestrictedListVideos(
+    videos.filter(
+      (video) =>
+        !excludedVideoIds.has(video.videoId) &&
+        !(video.channelId && blockedChannelIds.has(video.channelId)),
+    ),
+  );
+}
+
+function startRecommendationPoolRefresh(
+  db: AppDb,
+  userId: number,
+  opts: {
+    pageSize: number;
+    region?: string;
+    overrides?: ProxySourceOverrides;
+  },
+): void {
+  const cacheIdentity = recommendationPoolCacheKey(userId, opts);
+  if (recommendationPoolInFlight.has(cacheIdentity)) return;
+  void ensureRecommendationPool(db, userId, opts).catch((error: unknown) => {
+    logger.warn("recommendation.pool_refresh_failed", {
+      userId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 /** Maps a raw `candidateSource` (e.g. `history_channel:UC123`) to its broad kind. */
@@ -257,7 +340,7 @@ export type RecommendationInsights = {
 /**
  * Read-only transparency view of the personalized pool: source mix, dominant
  * taste topics, and the current head of the feed. Reuses the per-user pool
- * cache (~90s), so it is cheap to call alongside the home feed.
+ * cache (~10 min), so it is cheap to call alongside the home feed.
  */
 export async function getRecommendationInsights(
   db: AppDb,
@@ -325,6 +408,9 @@ async function ensureRecommendationPool(
   },
 ): Promise<RecommendationPoolCacheEntry> {
   const cacheKey = recommendationPoolCacheKey(userId, opts);
+  const buildGlobalGeneration = recommendationPoolGlobalGeneration;
+  const buildUserGeneration =
+    recommendationPoolGenerationByUserId.get(userId) ?? 0;
   const now = Date.now();
   const cached = recommendationPoolCache.get(cacheKey);
   if (cached && cached.expiresAt > now) {
@@ -571,14 +657,25 @@ async function ensureRecommendationPool(
   recommendationPoolInFlight.set(cacheKey, task);
   const settled = task
     .then((pool) => {
-      recommendationPoolCache.set(cacheKey, pool);
+      const buildIsCurrent =
+        buildGlobalGeneration === recommendationPoolGlobalGeneration &&
+        buildUserGeneration ===
+          (recommendationPoolGenerationByUserId.get(userId) ?? 0);
+      if (buildIsCurrent) {
+        recommendationPoolCache.set(cacheKey, pool);
+        writePersistedRecommendationPool(db, cacheKey, {
+          videos: diversifiedToVideos(pool),
+          coldStart: pool.coldStart,
+        });
+        recommendationPoolDirtyUserIds.delete(userId);
+      }
       return pool;
     })
     .finally(() => {
       recommendationPoolInFlight.delete(cacheKey);
     });
   // Stale-while-revalidate: a rebuild can take dozens of upstream fetches when
-  // the 10-min channel caches are cold, so an expired pool is served instantly
+  // the channel caches are cold, so an expired pool is served instantly
   // and the fresh one lands in the background for the next load.
   if (cached) {
     settled.catch((error: unknown) => {

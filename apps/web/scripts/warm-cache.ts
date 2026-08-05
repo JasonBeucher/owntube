@@ -162,7 +162,9 @@ async function warmChannelPages(
     channelIds,
     async (channelId) => {
       try {
-        const page = await fetchChannelPage(db, { channelId });
+        const page = await fetchChannelPage(db, { channelId }, undefined, {
+          bypassChannelCache: true,
+        });
         return { skipped: page.videos.length === 0 };
       } catch (error) {
         if (

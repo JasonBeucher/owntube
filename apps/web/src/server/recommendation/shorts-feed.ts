@@ -30,7 +30,7 @@ const SHORTS_SHELF_MAX_LIMIT = 20;
 /** Channel Shorts tab fetches when building the home shelf pool (cold). */
 const SHORTS_SHELF_MAX_CHANNELS = 6;
 
-const SHORTS_SHELF_DISCOVERY_PAGES = 3;
+const SHORTS_SHELF_DISCOVERY_PAGES = 1;
 
 const MAX_EMPTY_REC_PAGE_SKIPS = 10;
 

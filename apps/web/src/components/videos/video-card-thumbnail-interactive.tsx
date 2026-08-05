@@ -345,6 +345,7 @@ export function VideoCardThumbnailInteractive({
     >
       <Link
         href={href}
+        prefetch={false}
         className="relative block h-full w-full min-h-0"
         onClick={onThumbClick}
       >

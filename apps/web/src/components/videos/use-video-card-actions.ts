@@ -38,12 +38,21 @@ export function useVideoCardActions({
 
   const utils = trpc.useUtils();
   const queryClient = useQueryClient();
-  const interactionState = trpc.interactions.state.useQuery({ videoId });
+  const interactionState = trpc.interactions.state.useQuery(
+    { videoId },
+    {
+      enabled: loadPlaylists,
+      retry: false,
+      refetchOnWindowFocus: false,
+    },
+  );
   const playlists = trpc.playlists.list.useQuery(undefined, {
     enabled: loadPlaylists || (playlistOpen && view !== "main"),
   });
   const settings = trpc.settings.get.useQuery(undefined, {
-    enabled: Boolean(channelId),
+    enabled: loadPlaylists && Boolean(channelId),
+    retry: false,
+    refetchOnWindowFocus: false,
   });
 
   const setInteraction = trpc.interactions.set.useMutation({
