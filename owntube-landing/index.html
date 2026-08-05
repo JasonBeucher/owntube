@@ -1,0 +1,1171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>owntube — your video feed, under your own sky</title>
+    <meta
+      name="description"
+      content="Self-hosted, privacy-first YouTube frontend. No Google APIs, no tracking, no telemetry. Streams come from Piped and Invidious; your history and recommendations stay in your own SQLite file."
+    />
+    <link rel="icon" href="../apps/web/public/favicon-light.ico" />
+    <style>
+      /* ---- sky-painting palette: navy depths -> cream impasto ---- */
+      :root {
+        --ink: #08111f;
+        --deep: #0e1f36;
+        --mid: #1d3450;
+        --slate: #3f6390;
+        --steel: #6b8db5;
+        --haze: #9db9d6;
+        --mist: #cbdbec;
+        --veil: #e6eef7;
+        --cream: #f5f0e6;
+        --paper: #fbfaf7;
+
+        --text-on-dark: #eef4fb;
+        --text-on-dark-dim: #a9c0d8;
+        --text: #16273d;
+        --text-dim: #4a6483;
+
+        --radius: 18px;
+        --shadow-soft: 0 1px 2px rgb(13 32 56 / 0.06),
+          0 12px 32px -12px rgb(13 32 56 / 0.18);
+        --shadow-lift: 0 2px 4px rgb(13 32 56 / 0.08),
+          0 28px 56px -20px rgb(13 32 56 / 0.32);
+
+        --font-display: ui-serif, "Iowan Old Style", "Palatino Linotype",
+          Palatino, Georgia, serif;
+        --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        --font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo,
+          Consolas, monospace;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--text);
+        font-family: var(--font-sans);
+        font-size: 17px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+
+      h1,
+      h2,
+      h3 {
+        font-family: var(--font-display);
+        font-weight: 600;
+        letter-spacing: -0.015em;
+        line-height: 1.12;
+        margin: 0;
+        text-wrap: balance;
+      }
+
+      p {
+        margin: 0;
+        text-wrap: pretty;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      img,
+      svg {
+        display: block;
+        max-width: 100%;
+      }
+
+      .wrap {
+        width: min(1120px, 100% - 3rem);
+        margin-inline: auto;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+
+      /* ---------------- brand ---------------- */
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        text-decoration: none;
+        font-family: var(--font-sans);
+        font-size: 1.2rem;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+      }
+
+      .brand svg {
+        width: 24px;
+        height: 24px;
+        flex: none;
+      }
+
+      /* ---------------- hero ---------------- */
+
+      .hero {
+        position: relative;
+        isolation: isolate;
+        /* exactly one viewport: the next section never peeks above the fold */
+        height: 100svh;
+        min-height: 600px;
+        display: flex;
+        flex-direction: column;
+        color: var(--text-on-dark);
+        overflow: hidden;
+      }
+
+      /* Painted sky. The gradient is the floor: if hero-sky.webp is missing the
+         hero still reads as a dark blue sky rather than a bare box. */
+      .hero::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -2;
+        background-color: var(--ink);
+        background-image: url("painted-reference-1920.webp"),
+          radial-gradient(
+            120% 90% at 78% 12%,
+            rgb(197 214 233 / 0.55) 0%,
+            transparent 55%
+          ),
+          radial-gradient(
+            80% 70% at 92% 78%,
+            rgb(160 186 214 / 0.35) 0%,
+            transparent 60%
+          ),
+          linear-gradient(150deg, #060d18 0%, #0e2036 48%, #1b3450 100%);
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        /* Guarantees text contrast whatever the photo does behind it. */
+        background: linear-gradient(
+            105deg,
+            rgb(6 13 24 / 0.9) 0%,
+            rgb(6 13 24 / 0.72) 38%,
+            rgb(6 13 24 / 0.15) 72%,
+            transparent 100%
+          ),
+          linear-gradient(to top, rgb(6 13 24 / 0.75) 0%, transparent 45%),
+          /* keeps the nav legible where the cream brushstroke runs behind it */
+            linear-gradient(
+              to bottom,
+              rgb(6 13 24 / 0.78) 0%,
+              rgb(6 13 24 / 0.35) 9%,
+              transparent 16%
+            );
+      }
+
+      .hero-top {
+        padding-block: 1.6rem;
+      }
+
+      .hero-nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1.5rem;
+      }
+
+      .hero-links {
+        display: flex;
+        align-items: center;
+        gap: 1.75rem;
+        font-size: 0.95rem;
+      }
+
+      .hero-links a {
+        color: var(--text-on-dark-dim);
+        text-decoration: none;
+        transition: color 0.18s ease;
+      }
+
+      .hero-links a:hover {
+        color: var(--text-on-dark);
+      }
+
+      .hero-body {
+        flex: 1;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: clamp(2rem, 5vw, 4rem);
+        padding-block: clamp(2rem, 5vw, 4rem);
+      }
+
+      .hero-copy {
+        flex: 1 1 30rem;
+        max-width: 41rem;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        margin-bottom: 1.6rem;
+        padding: 0.4rem 0.95rem 0.4rem 0.75rem;
+        border: 1px solid rgb(205 219 236 / 0.28);
+        border-radius: 999px;
+        background: rgb(205 219 236 / 0.09);
+        backdrop-filter: blur(8px);
+        font-size: 0.78rem;
+        font-weight: 500;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+        color: var(--mist);
+      }
+
+      .eyebrow::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--haze);
+        box-shadow: 0 0 0 4px rgb(157 185 214 / 0.22);
+      }
+
+      .hero h1 {
+        font-size: clamp(2.9rem, 7.2vw, 5rem);
+        letter-spacing: -0.03em;
+      }
+
+      .hero h1 em {
+        font-style: italic;
+        color: var(--mist);
+      }
+
+      .hero-sub {
+        margin-top: 1.6rem;
+        max-width: 34rem;
+        font-size: clamp(1.05rem, 1.6vw, 1.22rem);
+        color: var(--text-on-dark-dim);
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.85rem;
+        margin-top: 2.4rem;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.55rem;
+        padding: 0.85rem 1.6rem;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        font: inherit;
+        font-size: 0.98rem;
+        font-weight: 600;
+        text-decoration: none;
+        cursor: pointer;
+        transition: transform 0.18s ease, background-color 0.18s ease,
+          border-color 0.18s ease, box-shadow 0.18s ease;
+      }
+
+      .btn:hover {
+        transform: translateY(-2px);
+      }
+
+      .btn-primary {
+        background: var(--cream);
+        color: var(--ink);
+        box-shadow: 0 18px 40px -18px rgb(245 240 230 / 0.7);
+      }
+
+      .btn-primary:hover {
+        background: #fffdf8;
+      }
+
+      .btn-ghost {
+        border-color: rgb(205 219 236 / 0.38);
+        background: rgb(205 219 236 / 0.08);
+        color: var(--text-on-dark);
+        backdrop-filter: blur(8px);
+      }
+
+      .btn-ghost:hover {
+        border-color: rgb(205 219 236 / 0.7);
+        background: rgb(205 219 236 / 0.16);
+      }
+
+      /* Sits in the large dark band of the painting, right of the headline. */
+      .monitor {
+        flex: 0 1 20rem;
+        margin-left: auto;
+        border: 1px solid rgb(205 219 236 / 0.2);
+        border-radius: 14px;
+        background: rgb(8 17 31 / 0.5);
+        backdrop-filter: blur(10px);
+        box-shadow: 0 30px 60px -30px rgb(3 8 16 / 0.9);
+        overflow: hidden;
+      }
+
+      .monitor-head {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid rgb(205 219 236 / 0.14);
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--steel);
+      }
+
+      .monitor-head::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #6ee7a8;
+        box-shadow: 0 0 0 3px rgb(110 231 168 / 0.18);
+      }
+
+      .monitor ul {
+        padding: 0.4rem 0;
+      }
+
+      .monitor li {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.5rem 1rem;
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        color: var(--mist);
+      }
+
+      .monitor li b {
+        font-weight: 500;
+        color: var(--steel);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .monitor-foot {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.8rem 1rem;
+        border-top: 1px solid rgb(205 219 236 / 0.14);
+        background: rgb(205 219 236 / 0.05);
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        color: var(--haze);
+      }
+
+      .monitor-foot b {
+        font-weight: 600;
+        color: var(--cream);
+      }
+
+      /* ---------------- shared section furniture ---------------- */
+
+      section {
+        padding-block: clamp(4.5rem, 10vw, 8rem);
+      }
+
+      .section-head {
+        max-width: 44rem;
+        margin-bottom: 3.5rem;
+      }
+
+      .section-label {
+        display: block;
+        margin-bottom: 1rem;
+        font-size: 0.76rem;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--slate);
+      }
+
+      .section-head h2 {
+        font-size: clamp(2rem, 4vw, 2.9rem);
+      }
+
+      .section-head p {
+        margin-top: 1.1rem;
+        font-size: 1.08rem;
+        color: var(--text-dim);
+      }
+
+      .on-dark .section-label {
+        color: var(--steel);
+      }
+
+      .on-dark .section-head p {
+        color: var(--haze);
+      }
+
+      /* ---------------- features ---------------- */
+
+      .features {
+        background: linear-gradient(to bottom, var(--paper), var(--veil));
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+        gap: 1.25rem;
+      }
+
+      .card {
+        padding: 2rem 1.75rem;
+        border: 1px solid rgb(155 182 212 / 0.32);
+        border-radius: var(--radius);
+        background: rgb(255 255 255 / 0.72);
+        backdrop-filter: blur(6px);
+        box-shadow: var(--shadow-soft);
+        transition: transform 0.22s ease, box-shadow 0.22s ease,
+          border-color 0.22s ease;
+      }
+
+      .card:hover {
+        transform: translateY(-4px);
+        border-color: rgb(63 99 144 / 0.45);
+        box-shadow: var(--shadow-lift);
+      }
+
+      .card svg {
+        width: 26px;
+        height: 26px;
+        margin-bottom: 1.1rem;
+        color: var(--slate);
+      }
+
+      .card h3 {
+        font-size: 1.22rem;
+      }
+
+      .card p {
+        margin-top: 0.6rem;
+        font-size: 0.97rem;
+        color: var(--text-dim);
+      }
+
+      /* ---------------- flow (dark band) ---------------- */
+
+      .flow {
+        position: relative;
+        isolation: isolate;
+        background: var(--deep);
+        color: var(--text-on-dark);
+        overflow: hidden;
+      }
+
+      /* soft cloud light bleeding in from the top-right, like the hero photo */
+      .flow::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        background: radial-gradient(
+            90% 70% at 88% 0%,
+            rgb(157 185 214 / 0.3) 0%,
+            transparent 62%
+          ),
+          radial-gradient(
+            70% 60% at 6% 100%,
+            rgb(63 99 144 / 0.35) 0%,
+            transparent 60%
+          );
+      }
+
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+        gap: 1.5rem;
+        counter-reset: step;
+      }
+
+      .step {
+        padding-top: 1.6rem;
+        border-top: 1px solid rgb(157 185 214 / 0.28);
+      }
+
+      .step::before {
+        counter-increment: step;
+        content: "0" counter(step);
+        display: block;
+        margin-bottom: 0.9rem;
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        letter-spacing: 0.1em;
+        color: var(--steel);
+      }
+
+      .step h3 {
+        font-size: 1.25rem;
+      }
+
+      .step p {
+        margin-top: 0.65rem;
+        font-size: 0.97rem;
+        color: var(--haze);
+      }
+
+      /* ---------------- recommender split ---------------- */
+
+      .reco {
+        background: var(--paper);
+      }
+
+      .split {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+        gap: clamp(2.5rem, 6vw, 5rem);
+        align-items: center;
+      }
+
+      .split h2 {
+        font-size: clamp(1.9rem, 3.6vw, 2.6rem);
+      }
+
+      .split > div > p {
+        margin-top: 1.1rem;
+        color: var(--text-dim);
+      }
+
+      .pipeline {
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+        padding: 1.75rem;
+        border: 1px solid rgb(155 182 212 / 0.35);
+        border-radius: var(--radius);
+        background: linear-gradient(160deg, #ffffff, var(--veil));
+        box-shadow: var(--shadow-soft);
+      }
+
+      .pipeline li {
+        display: flex;
+        align-items: baseline;
+        gap: 0.9rem;
+        padding: 0.7rem 0;
+        font-size: 0.96rem;
+      }
+
+      .pipeline li + li {
+        border-top: 1px dashed rgb(155 182 212 / 0.5);
+      }
+
+      .pipeline code {
+        flex: none;
+        min-width: 7.5rem;
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        color: var(--slate);
+      }
+
+      ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      /* ---------------- quick start ---------------- */
+
+      .start {
+        background: linear-gradient(to bottom, var(--veil), var(--paper));
+      }
+
+      .terminal {
+        max-width: 46rem;
+        margin-inline: auto;
+        border: 1px solid rgb(30 52 80 / 0.6);
+        border-radius: var(--radius);
+        background: var(--ink);
+        box-shadow: var(--shadow-lift);
+        overflow: hidden;
+      }
+
+      .terminal-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.85rem 1.1rem;
+        border-bottom: 1px solid rgb(157 185 214 / 0.16);
+        background: rgb(157 185 214 / 0.05);
+      }
+
+      .terminal-bar i {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: rgb(157 185 214 / 0.3);
+      }
+
+      .terminal-bar span {
+        margin-left: 0.6rem;
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        color: var(--steel);
+      }
+
+      .terminal pre {
+        margin: 0;
+        padding: 1.5rem 1.6rem;
+        overflow-x: auto;
+        font-family: var(--font-mono);
+        font-size: 0.86rem;
+        line-height: 1.85;
+        color: var(--mist);
+      }
+
+      .terminal .c {
+        color: var(--slate);
+      }
+
+      .terminal .p {
+        color: var(--steel);
+        user-select: none;
+      }
+
+      .start-note {
+        max-width: 46rem;
+        margin: 1.5rem auto 0;
+        text-align: center;
+        font-size: 0.92rem;
+        color: var(--text-dim);
+      }
+
+      /* ---------------- stack ---------------- */
+
+      .stack {
+        background: var(--paper);
+        padding-block: clamp(3rem, 6vw, 4.5rem);
+        border-top: 1px solid rgb(155 182 212 / 0.35);
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-top: 1.5rem;
+      }
+
+      .chips li {
+        padding: 0.4rem 0.9rem;
+        border: 1px solid rgb(155 182 212 / 0.45);
+        border-radius: 999px;
+        background: rgb(255 255 255 / 0.7);
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        color: var(--text-dim);
+      }
+
+      /* ---------------- closing + footer ---------------- */
+
+      .closing {
+        position: relative;
+        isolation: isolate;
+        background-color: var(--ink);
+        /* scrim first so it paints over the artwork and keeps the CTA readable */
+        background-image: linear-gradient(
+            rgb(8 17 31 / 0.86),
+            rgb(8 17 31 / 0.92)
+          ),
+          url("painted-clouds-1536.webp");
+        background-size: cover;
+        background-position: center;
+        color: var(--text-on-dark);
+        text-align: center;
+        overflow: hidden;
+      }
+
+      .closing::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        background: radial-gradient(
+          100% 80% at 50% 120%,
+          rgb(157 185 214 / 0.32) 0%,
+          transparent 65%
+        );
+      }
+
+      .closing h2 {
+        font-size: clamp(2.1rem, 4.4vw, 3.1rem);
+      }
+
+      .closing p {
+        max-width: 34rem;
+        margin: 1.2rem auto 0;
+        color: var(--haze);
+      }
+
+      .closing .hero-actions {
+        justify-content: center;
+      }
+
+      footer {
+        padding-block: 2.5rem;
+        background: var(--ink);
+        border-top: 1px solid rgb(157 185 214 / 0.14);
+        color: var(--steel);
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+      }
+
+      .foot-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem 1.75rem;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      footer a {
+        text-decoration: none;
+        transition: color 0.18s ease;
+      }
+
+      footer a:hover {
+        color: var(--mist);
+      }
+
+      /* ---------------- native scroll reveal ---------------- */
+
+      @supports (animation-timeline: view()) {
+        @media (prefers-reduced-motion: no-preference) {
+          .reveal {
+            animation: rise linear both;
+            animation-timeline: view();
+            animation-range: entry 5% cover 26%;
+          }
+
+          @keyframes rise {
+            from {
+              opacity: 0;
+              transform: translateY(22px);
+            }
+            to {
+              opacity: 1;
+              transform: none;
+            }
+          }
+        }
+      }
+
+      /* once the monitor wraps under the copy, let the hero grow past one screen
+         rather than clipping it against the fixed height */
+      @media (max-width: 900px) {
+        .hero {
+          height: auto;
+          min-height: 100svh;
+        }
+
+        .monitor {
+          margin-left: 0;
+          width: 100%;
+          max-width: 22rem;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .hero-links {
+          display: none;
+        }
+
+        .hero-actions .btn {
+          flex: 1 1 auto;
+          justify-content: center;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ================= HERO ================= -->
+    <header class="hero">
+      <div class="hero-top wrap">
+        <nav class="hero-nav">
+          <a class="brand" href="#top" style="color: var(--text-on-dark)">
+            <!-- pixel terminal prompt, redrawn from the 8x8 brand grid.
+                 viewBox is cropped to the glyph so it needs no tile to sit on. -->
+            <svg viewBox="3 3 10 10" fill="none" aria-hidden="true">
+              <g fill="currentColor">
+                <rect x="3" y="3" width="2" height="2" />
+                <rect x="5" y="5" width="2" height="2" />
+                <rect x="7" y="7" width="2" height="2" />
+                <rect x="5" y="9" width="2" height="2" />
+                <rect x="3" y="11" width="2" height="2" />
+              </g>
+              <rect x="9" y="12" width="4" height="1" fill="#7fb0dc" />
+            </svg>
+            owntube
+          </a>
+
+          <div class="hero-links">
+            <a href="#features">Features</a>
+            <a href="#how">How it works</a>
+            <a href="#reco">Recommendations</a>
+            <a href="#start">Self-host</a>
+          </div>
+
+          <a
+            class="btn btn-ghost"
+            href="https://github.com/spookiss/owntube"
+            style="padding: 0.6rem 1.2rem; font-size: 0.9rem"
+            >GitHub</a
+          >
+        </nav>
+      </div>
+
+      <div class="hero-body wrap">
+        <div class="hero-copy">
+          <span class="eyebrow">Self-hosted · MIT licensed</span>
+          <h1>Your video feed,<br /><em>under your own sky.</em></h1>
+          <p class="hero-sub">
+            A privacy-first YouTube frontend you run yourself. Metadata and
+            streams come from Piped and Invidious. Your history, your
+            playlists and your recommendations never leave your machine.
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="#start">Start self-hosting</a>
+            <a class="btn btn-ghost" href="#features">See what it does</a>
+          </div>
+        </div>
+
+        <aside class="monitor">
+          <div class="monitor-head">Outbound, per session</div>
+          <ul>
+            <li>Google APIs <b>0</b></li>
+            <li>Analytics <b>0</b></li>
+            <li>Trackers <b>0</b></li>
+            <li>Telemetry <b>0</b></li>
+          </ul>
+          <div class="monitor-foot">
+            Your data <b>SQLite, on your disk</b>
+          </div>
+        </aside>
+      </div>
+    </header>
+
+    <!-- ================= FEATURES ================= -->
+    <section class="features" id="features">
+      <div class="wrap">
+        <div class="section-head reveal">
+          <span class="section-label">What you get</span>
+          <h2>Everything you actually watch for, nothing that watches back.</h2>
+          <p>
+            A full viewing client — search, player, subscriptions, playlists,
+            history — built on a deliberately small and boring stack so one
+            person can keep maintaining it.
+          </p>
+        </div>
+
+        <ul class="grid">
+          <li class="card reveal">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+            <h3>Search &amp; watch</h3>
+            <p>
+              Full search, channel pages, regional trending and shorts, with a
+              Vidstack player that has picture-in-picture and keyboard
+              shortcuts.
+            </p>
+          </li>
+
+          <li class="card reveal">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 3 3 8v8l9 5 9-5V8Z" />
+              <path d="M3 8l9 5 9-5M12 13v8" />
+            </svg>
+            <h3>Two upstreams, one shape</h3>
+            <p>
+              Piped and Invidious are normalized into a single unified API.
+              Either can be disabled, and each user can point at their own
+              instances.
+            </p>
+          </li>
+
+          <li class="card reveal">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 3 4 6v6c0 4.4 3.4 8.2 8 9 4.6-.8 8-4.6 8-9V6Z" />
+              <path d="m9 12 2 2 4-4" />
+            </svg>
+            <h3>Accounts that stay local</h3>
+            <p>
+              Auth.js with credentials and bcrypt, multi-user out of the box.
+              No third-party identity provider is ever contacted.
+            </p>
+          </li>
+
+          <li class="card reveal">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M4 7h16M4 12h16M4 17h10" />
+              <circle cx="18" cy="17" r="2.5" />
+            </svg>
+            <h3>Playlists &amp; history</h3>
+            <p>
+              Local playlists, watch history, likes and saves, plus a personal
+              stats dashboard — all rows in your own database file.
+            </p>
+          </li>
+
+          <li class="card reveal">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 15V3m0 12-4-4m4 4 4-4" />
+              <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+            </svg>
+            <h3>Import &amp; export</h3>
+            <p>
+              Bring years of YouTube Takeout history in, and take everything
+              back out as JSON whenever you want. No lock-in by design.
+            </p>
+          </li>
+
+          <li class="card reveal">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="3" y="4" width="18" height="13" rx="2" />
+              <path d="M8 21h8M12 17v4" />
+            </svg>
+            <h3>Installable, anywhere</h3>
+            <p>
+              A PWA with manifest and service worker, a Docker Compose setup
+              with healthchecks, and a work-in-progress TV client.
+            </p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ================= HOW IT WORKS ================= -->
+    <section class="flow on-dark" id="how">
+      <div class="wrap">
+        <div class="section-head reveal">
+          <span class="section-label">How it works</span>
+          <h2>Three hops, and none of them belong to Google.</h2>
+          <p>
+            Every video request funnels through one proxy layer with keep-alive
+            connection pooling, response caching and rate limiting in front of
+            it.
+          </p>
+        </div>
+
+        <ul class="steps">
+          <li class="step reveal">
+            <h3>You ask</h3>
+            <p>
+              The browser calls your own server over end-to-end typed tRPC. No
+              request ever leaves for an analytics or ad endpoint, because
+              there aren't any.
+            </p>
+          </li>
+          <li class="step reveal">
+            <h3>The proxy fetches</h3>
+            <p>
+              Your server talks to Piped and Invidious — public instances or the
+              ones you host — and normalizes their two different shapes into one
+              unified model.
+            </p>
+          </li>
+          <li class="step reveal">
+            <h3>SQLite remembers</h3>
+            <p>
+              Responses are cached and your signals are written to a single
+              SQLite file you can back up, move or delete. That file is the
+              whole of your data.
+            </p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ================= RECOMMENDATIONS ================= -->
+    <section class="reco" id="reco">
+      <div class="wrap split">
+        <div class="reveal">
+          <span class="section-label">Recommendations</span>
+          <h2>A feed built from your history, not from other people's.</h2>
+          <p>
+            The recommender is content-based only — there is no collaborative
+            filtering, so nothing about you is ever inferred from, or compared
+            against, anyone else. It reads what you watched, builds a small
+            model of it, and diversifies the result so the feed doesn't collapse
+            into one topic.
+          </p>
+          <p style="margin-top: 1rem">
+            On a cold start it simply falls back to trending, then gets more
+            yours with every video.
+          </p>
+        </div>
+
+        <ul class="pipeline reveal">
+          <li><code>signals</code> Collect watch history</li>
+          <li><code>tf-idf</code> Model titles and tags</li>
+          <li><code>scoring</code> Rank the candidates</li>
+          <li><code>mmr</code> Diversify with maximal marginal relevance</li>
+          <li><code>coldstart</code> Fall back to trending when empty</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ================= QUICK START ================= -->
+    <section class="start" id="start">
+      <div class="wrap">
+        <div class="section-head reveal" style="margin-inline: auto; text-align: center">
+          <span class="section-label">Self-host</span>
+          <h2>Up and running in five commands.</h2>
+          <p>
+            Node 22+ and a reachable Piped or Invidious instance. That's the
+            whole dependency list.
+          </p>
+        </div>
+
+        <div class="terminal reveal">
+          <div class="terminal-bar">
+            <i></i><i></i><i></i>
+            <span>~/owntube</span>
+          </div>
+          <pre><code><span class="p">$</span> cp apps/web/.env.example apps/web/.env
+<span class="p">$</span> corepack enable && corepack prepare pnpm@9.15.9 --activate
+<span class="p">$</span> pnpm install
+<span class="p">$</span> pnpm run db:migrate
+<span class="p">$</span> pnpm dev
+
+<span class="c"># open http://localhost:3000, register on /register</span>
+<span class="c"># or: docker compose up --build</span></code></pre>
+        </div>
+
+        <p class="start-note reveal">
+          Deploying on Unraid or running a fully local Invidious? Both paths are
+          documented in <code>docs/</code>.
+        </p>
+      </div>
+    </section>
+
+    <!-- ================= STACK ================= -->
+    <section class="stack">
+      <div class="wrap reveal">
+        <span class="section-label">Built with</span>
+        <ul class="chips">
+          <li>Next.js 15</li>
+          <li>TypeScript</li>
+          <li>tRPC v11</li>
+          <li>TanStack Query</li>
+          <li>Drizzle ORM</li>
+          <li>SQLite</li>
+          <li>Auth.js v5</li>
+          <li>Tailwind v4</li>
+          <li>Zustand</li>
+          <li>Zod</li>
+          <li>Vitest</li>
+          <li>Playwright</li>
+          <li>Biome</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ================= CLOSING ================= -->
+    <section class="closing">
+      <div class="wrap reveal">
+        <h2>Clear skies, no watchers.</h2>
+        <p>
+          It's a solo side-project, MIT licensed, and the whole point is that it
+          runs on your hardware. Clone it and see.
+        </p>
+        <div class="hero-actions">
+          <a
+            class="btn btn-primary"
+            href="https://github.com/spookiss/owntube"
+            >Get it on GitHub</a
+          >
+          <a class="btn btn-ghost" href="#start">Read the quick start</a>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <div class="wrap foot-row">
+        <span>owntube — MIT</span>
+        <span>
+          <a href="https://github.com/spookiss/owntube">Source</a> ·
+          <a href="https://github.com/spookiss/owntube/issues">Issues</a> ·
+          <a href="https://github.com/spookiss/owntube#readme">Docs</a>
+        </span>
+      </div>
+    </footer>
+  </body>
+</html>

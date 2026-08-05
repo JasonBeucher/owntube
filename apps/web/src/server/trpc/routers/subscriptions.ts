@@ -817,8 +817,10 @@ export const subscriptionsRouter = router({
         .all();
 
       if (subs.length === 0) {
+        // Must carry `watched` too: otherwise the procedure's inferred output is
+        // a union and callers can't read the flag off the videos at all.
         return {
-          videos: [] as UnifiedVideo[],
+          videos: [] as (UnifiedVideo & { watched: boolean })[],
           nextCursor: null as string | null,
         };
       }

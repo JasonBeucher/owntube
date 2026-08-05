@@ -2,6 +2,7 @@ import { router } from "@/server/trpc/init";
 import { authRouter } from "@/server/trpc/routers/auth";
 import { channelRouter } from "@/server/trpc/routers/channel";
 import { feedRouter } from "@/server/trpc/routers/feed";
+import { friendsRouter } from "@/server/trpc/routers/friends";
 import { historyRouter } from "@/server/trpc/routers/history";
 import { interactionsRouter } from "@/server/trpc/routers/interactions";
 import { playlistsRouter } from "@/server/trpc/routers/playlists";
@@ -20,6 +21,7 @@ export const appRouter = router({
   auth: authRouter,
   channel: channelRouter,
   feed: feedRouter,
+  friends: friendsRouter,
   history: historyRouter,
   interactions: interactionsRouter,
   playlists: playlistsRouter,

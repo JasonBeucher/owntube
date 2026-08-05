@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { FriendsUnseenBadge } from "@/components/friends/friends-unseen-badge";
 import { BrandLogo } from "@/components/shell/brand-logo";
 import {
   activeForPath,
@@ -78,6 +79,9 @@ export function ShellSidebar({ open, onClose, isLoggedIn }: ShellSidebarProps) {
                     {active ? (n.iconActive ?? n.icon) : n.icon}
                   </span>
                   <span className="ot-shell-nav-label">{n.label}</span>
+                  {n.key === "friends" ? (
+                    <FriendsUnseenBadge enabled={isLoggedIn} />
+                  ) : null}
                 </Link>
               );
             })}

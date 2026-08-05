@@ -19,6 +19,11 @@ import {
   toggleSponsorBlockCategory,
   writeSponsorBlockPrefs,
 } from "@/lib/sponsorblock-prefs";
+import {
+  VISUAL_THEME_DESCRIPTIONS,
+  VISUAL_THEME_LABELS,
+  VISUAL_THEMES,
+} from "@/lib/theme-appearance";
 import { TRENDING_REGION_OPTIONS } from "@/lib/trending-regions";
 import { writeWatchMiniEnabled } from "@/lib/watch-mini-player-state";
 import type {
@@ -307,6 +312,15 @@ export function SettingsPanel({
     enabled: false,
   });
 
+  const persistAppearance = useMemo(
+    () => (patch: { theme?: ThemeMode; visualTheme?: VisualTheme }) => {
+      updateMutation.mutate(patch, {
+        onSuccess: () => setMessage(null),
+      });
+    },
+    [updateMutation],
+  );
+
   const appearanceButtons = useMemo(
     () =>
       (["system", "light", "dark"] as const).map((value) => (
@@ -318,31 +332,34 @@ export function SettingsPanel({
           onClick={() => {
             setThemeLocal(value);
             setTheme(value);
+            persistAppearance({ theme: value });
           }}
         >
           {value === "system" ? "System" : value === "light" ? "Light" : "Dark"}
         </Button>
       )),
-    [setTheme, theme],
+    [persistAppearance, setTheme, theme],
   );
 
   const visualThemeButtons = useMemo(
     () =>
-      (["default", "terminal"] as const).map((value) => (
+      VISUAL_THEMES.map((value) => (
         <Button
           key={value}
           type="button"
           variant={visualTheme === value ? "default" : "outline"}
           size="sm"
+          title={VISUAL_THEME_DESCRIPTIONS[value]}
           onClick={() => {
             setVisualThemeLocal(value);
             setVisualTheme(value);
+            persistAppearance({ visualTheme: value });
           }}
         >
-          {value === "default" ? "Default" : "Terminal"}
+          {VISUAL_THEME_LABELS[value]}
         </Button>
       )),
-    [setVisualTheme, visualTheme],
+    [persistAppearance, setVisualTheme, visualTheme],
   );
 
   async function onSave() {
@@ -441,7 +458,7 @@ export function SettingsPanel({
 
   return (
     <div className="space-y-8">
-      <section className="space-y-3">
+      <section className="ot-surface-card space-y-3 p-5">
         <h2 className="text-lg font-semibold">Theme</h2>
         <div className="space-y-3">
           <div className="space-y-2">
@@ -451,11 +468,15 @@ export function SettingsPanel({
           <div className="space-y-2">
             <p className="text-sm font-medium">Style</p>
             <div className="flex flex-wrap gap-2">{visualThemeButtons}</div>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">
+              {VISUAL_THEME_DESCRIPTIONS[visualTheme]} · Appearance choices are
+              saved automatically.
+            </p>
           </div>
         </div>
       </section>
 
-      <section className="space-y-3">
+      <section className="ot-surface-card space-y-3 p-5">
         <h2 className="text-lg font-semibold">Home / trending region</h2>
         <p className="text-sm text-[hsl(var(--muted-foreground))]">
           Used for the trending slice of your feed and the Explore page when no{" "}
@@ -473,7 +494,7 @@ export function SettingsPanel({
           </label>
           <select
             id="settings-trending-region"
-            className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm"
+            className="w-full rounded-[var(--radius-shell)] border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm"
             value={trendingRegion}
             onChange={(e) => setTrendingRegion(e.target.value)}
           >
@@ -486,7 +507,7 @@ export function SettingsPanel({
         </div>
       </section>
 
-      <section className="space-y-3">
+      <section className="ot-surface-card space-y-3 p-5">
         <h2 className="text-lg font-semibold">Video source instances</h2>
         <p className="text-sm text-[hsl(var(--muted-foreground))]">
           Optional per-account override. Leave blank to use the server{" "}
@@ -512,9 +533,6 @@ export function SettingsPanel({
             onUrlsChange={setInvidiousBaseUrls}
             onPreferredChange={setPreferredInvidiousBaseUrl}
           />
-          <Button type="button" onClick={onSave} disabled={saving}>
-            Save settings
-          </Button>
           <Button type="button" variant="outline" onClick={onCheckInstances}>
             Check instances health
           </Button>
@@ -526,7 +544,7 @@ export function SettingsPanel({
         </div>
       </section>
 
-      <section className="space-y-3">
+      <section className="ot-surface-card space-y-3 p-5">
         <h2 className="text-lg font-semibold">Watch and feed behavior</h2>
         <div className="space-y-2">
           <label className="flex items-center gap-2 text-sm">
@@ -562,7 +580,7 @@ export function SettingsPanel({
             </label>
             <select
               id="settings-default-playback-quality"
-              className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm"
+              className="w-full rounded-[var(--radius-shell)] border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm"
               value={defaultPlaybackQuality}
               onChange={(e) =>
                 setDefaultPlaybackQuality(
@@ -585,7 +603,7 @@ export function SettingsPanel({
         </div>
       </section>
 
-      <section className="space-y-3">
+      <section className="ot-surface-card space-y-3 p-5">
         <h2 className="text-lg font-semibold">SponsorBlock</h2>
         <p className="text-sm text-[hsl(var(--muted-foreground))]">
           Community-submitted segments (sponsors, intros, outros) from{" "}
@@ -635,7 +653,7 @@ export function SettingsPanel({
         </fieldset>
       </section>
 
-      <section className="space-y-3">
+      <section className="ot-surface-card space-y-3 p-5">
         <h2 className="text-lg font-semibold">Cache maintenance</h2>
         <p className="text-sm text-[hsl(var(--muted-foreground))]">
           Force-clear server-side caches after major imports or upstream issues.
@@ -653,7 +671,7 @@ export function SettingsPanel({
         </Button>
       </section>
 
-      <section className="space-y-3">
+      <section className="ot-surface-card space-y-3 p-5">
         <h2 className="text-lg font-semibold">Data export / import</h2>
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -685,7 +703,7 @@ export function SettingsPanel({
           value={importJson}
           onChange={(e) => setImportJson(e.currentTarget.value)}
           placeholder="Paste export JSON here"
-          className="min-h-48 w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-3 text-sm"
+          className="min-h-48 w-full rounded-[var(--radius-shell)] border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-3 text-sm"
         />
         <Button
           type="button"
@@ -696,9 +714,20 @@ export function SettingsPanel({
         </Button>
       </section>
 
-      {message ? (
-        <p className="text-sm text-[hsl(var(--muted-foreground))]">{message}</p>
-      ) : null}
+      <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center gap-3 border-t border-[hsl(var(--border))] bg-[hsl(var(--background)_/_0.92)] px-1 py-3 backdrop-blur">
+        <Button type="button" onClick={onSave} disabled={saving}>
+          {saving ? "Saving…" : "Save settings"}
+        </Button>
+        <p className="text-xs text-[hsl(var(--muted-foreground))]">
+          Applies to region, instances, watch behavior, and SponsorBlock. Theme
+          changes save instantly.
+        </p>
+        {message ? (
+          <output className="block w-full text-sm text-[hsl(var(--muted-foreground))]">
+            {message}
+          </output>
+        ) : null}
+      </div>
     </div>
   );
 }

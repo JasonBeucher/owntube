@@ -4,6 +4,7 @@ import { signIn } from "next-auth/react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { resolveSignInOutcome } from "@/lib/sign-in-result";
 
 export function LoginForm({ callbackUrl = "/" }: { callbackUrl?: string }) {
   const [error, setError] = useState<string | null>(null);
@@ -26,22 +27,9 @@ export function LoginForm({ callbackUrl = "/" }: { callbackUrl?: string }) {
           callbackUrl,
         });
         setLoading(false);
-        if (result?.ok) {
-          // Stay on the current origin. `result.url` is resolved against
-          // AUTH_URL and may point to a different host (e.g. the LAN IP), where
-          // the freshly-set session cookie does not exist — navigating there
-          // lands the user on the home page still logged out. Keep only the
-          // path so login works from localhost, the LAN IP, Tailscale, etc.
-          let dest = "/";
-          if (result.url) {
-            try {
-              const parsed = new URL(result.url);
-              dest = `${parsed.pathname}${parsed.search}` || "/";
-            } catch {
-              dest = "/";
-            }
-          }
-          window.location.href = dest;
+        const outcome = resolveSignInOutcome(result, callbackUrl);
+        if (outcome.status === "success") {
+          window.location.href = outcome.destination;
           return;
         }
         setError("Invalid credentials.");

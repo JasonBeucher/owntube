@@ -32,7 +32,10 @@ export const watchHistory = sqliteTable(
     videoId: text("video_id").notNull(),
     channelId: text("channel_id").notNull(),
     startedAt: integer("started_at").notNull(),
+    /** Engagement signal: seconds actually spent watching, accumulated. Not a seek offset. */
     durationWatched: integer("duration_watched").notNull().default(0),
+    /** Where playback left off, for "continue watching". Latest value wins, so rewinding moves it back. */
+    positionSeconds: integer("position_seconds").notNull().default(0),
     completed: integer("completed").notNull().default(0),
     /** Total video length when the watch was recorded; 0 = unknown (pre-tracking rows, engagement signals ignore them). */
     videoDurationSeconds: integer("video_duration_seconds")
@@ -63,6 +66,9 @@ export const interactions = sqliteTable(
     videoId: text("video_id").notNull(),
     channelId: text("channel_id"),
     type: text("type").notNull(),
+    /** Denormalized at write time so the liked/saved lists render without an upstream fan-out. */
+    videoTitle: text("video_title"),
+    channelName: text("channel_name"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [
@@ -123,6 +129,9 @@ export const playlistItems = sqliteTable(
       .references(() => playlists.id, { onDelete: "cascade" }),
     videoId: text("video_id").notNull(),
     channelId: text("channel_id"),
+    /** Denormalized at write time so playlist rows render without an upstream fan-out. */
+    videoTitle: text("video_title"),
+    channelName: text("channel_name"),
     addedAt: integer("added_at").notNull(),
   },
   (t) => [
@@ -146,6 +155,57 @@ export const shortsSeen = sqliteTable(
   (t) => [
     uniqueIndex("shorts_seen_user_video_uidx").on(t.userId, t.videoId),
     index("shorts_seen_user_seen_idx").on(t.userId, t.seenAt),
+  ],
+);
+
+/**
+ * Friend edges between instance accounts. A row starts as a pending request
+ * from requesterId to addresseeId; accepting flips status to "accepted".
+ * At most one row exists per user pair (either direction) — enforced in the
+ * friends router since SQLite cannot index min/max pairs declaratively.
+ */
+export const friendships = sqliteTable(
+  "friendships",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    requesterId: integer("requester_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    addresseeId: integer("addressee_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("pending"),
+    createdAt: integer("created_at").notNull(),
+    respondedAt: integer("responded_at"),
+  },
+  (t) => [
+    uniqueIndex("friendships_pair_uidx").on(t.requesterId, t.addresseeId),
+    index("friendships_addressee_idx").on(t.addresseeId),
+  ],
+);
+
+/** Videos sent between friends; title/channel denormalized at send time so the inbox renders without upstream fetches. */
+export const videoShares = sqliteTable(
+  "video_shares",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    senderId: integer("sender_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    recipientId: integer("recipient_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    videoId: text("video_id").notNull(),
+    channelId: text("channel_id"),
+    videoTitle: text("video_title"),
+    channelName: text("channel_name"),
+    note: text("note"),
+    createdAt: integer("created_at").notNull(),
+    seenAt: integer("seen_at"),
+  },
+  (t) => [
+    index("video_shares_recipient_idx").on(t.recipientId, t.createdAt),
+    index("video_shares_sender_idx").on(t.senderId, t.createdAt),
   ],
 );
 

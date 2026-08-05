@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { FriendsUnseenBadge } from "@/components/friends/friends-unseen-badge";
 import { ACCOUNT_LINKS } from "@/components/shell/nav-config";
 import { cn } from "@/lib/utils";
 
@@ -94,6 +95,9 @@ export function UserMenu({
                   {link.icon}
                 </span>
                 {link.label}
+                {link.href === "/friends" ? (
+                  <FriendsUnseenBadge enabled />
+                ) : null}
               </Link>
             ))}
           </div>

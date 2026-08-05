@@ -12,8 +12,8 @@ export function ThemeSync() {
     root.classList.remove("light", "dark");
     if (theme === "light") root.classList.add("light");
     if (theme === "dark") root.classList.add("dark");
-    if (visualTheme === "terminal") {
-      root.dataset.visualTheme = "terminal";
+    if (visualTheme !== "default") {
+      root.dataset.visualTheme = visualTheme;
     } else {
       delete root.dataset.visualTheme;
     }

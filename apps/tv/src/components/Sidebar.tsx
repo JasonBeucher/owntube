@@ -4,7 +4,14 @@ import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { LOGO, LOGO_WORDMARK } from "@/assets";
 import { colors, focus, fontSize, monoFont, radius, spacing } from "@/theme";
 
-export type Section = "home" | "search" | "subscriptions" | "history";
+export type Section =
+  | "home"
+  | "search"
+  | "shorts"
+  | "subscriptions"
+  | "library"
+  | "history"
+  | "settings";
 
 export const RAIL_WIDTH = 68;
 const EXPANDED_WIDTH = 228;
@@ -14,17 +21,19 @@ type FeatherName = keyof typeof Feather.glyphMap;
 const SECTIONS: { key: Section; label: string; icon: FeatherName }[] = [
   { key: "home", label: "Home", icon: "home" },
   { key: "search", label: "Search", icon: "search" },
+  { key: "shorts", label: "Shorts", icon: "zap" },
   { key: "subscriptions", label: "Subscriptions", icon: "tv" },
+  { key: "library", label: "Library", icon: "bookmark" },
   { key: "history", label: "History", icon: "clock" },
+  { key: "settings", label: "Settings", icon: "settings" },
 ];
 
 type Props = {
   active: Section;
   onSelect: (section: Section) => void;
-  onSignOut: () => void;
 };
 
-export function Sidebar({ active, onSelect, onSignOut }: Props) {
+export function Sidebar({ active, onSelect }: Props) {
   const [expanded, setExpanded] = useState(false);
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -69,15 +78,6 @@ export function Sidebar({ active, onSelect, onSignOut }: Props) {
         ))}
       </View>
 
-      <NavRow
-        icon="log-out"
-        label="Sign out"
-        active={false}
-        expanded={expanded}
-        onFocus={handleFocus}
-        onBlur={handleBlur}
-        onPress={onSignOut}
-      />
       {expanded ? (
         <View style={styles.footer}>
           <View style={styles.footerStatus}>

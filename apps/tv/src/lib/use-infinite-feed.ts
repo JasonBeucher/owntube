@@ -12,6 +12,8 @@ export type InfiniteFeed = {
   loadingMore: boolean;
   hasMore: boolean;
   loadMore: () => void;
+  /** Reload from the first page — retry buttons and post-mutation refresh. */
+  refetch: () => void;
 };
 
 /**
@@ -33,6 +35,7 @@ export function useInfiniteFeed<C>(
   const [message, setMessage] = useState("");
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [reloadToken, setReloadToken] = useState(0);
 
   // Always call the latest fetchPage (it closes over query/channelId) without
   // making loadMore depend on its identity.
@@ -43,6 +46,9 @@ export function useInfiniteFeed<C>(
   // Generation guard: ignore resolutions from a superseded deps change.
   const genRef = useRef(0);
 
+  // fetchPage identity is owned by the caller via deps (see fetchRef);
+  // reloadToken forces a reload from the first page.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: deps are explicit
   useEffect(() => {
     const gen = ++genRef.current;
     setStatus("loading");
@@ -66,8 +72,9 @@ export function useInfiniteFeed<C>(
         setStatus("error");
       },
     );
-    // biome-ignore lint/correctness/useExhaustiveDependencies: deps are explicit
-  }, deps);
+  }, [...deps, reloadToken]);
+
+  const refetch = useCallback(() => setReloadToken((token) => token + 1), []);
 
   const loadMore = useCallback(() => {
     if (loadingMore || !hasMoreRef.current || genRef.current === 0) return;
@@ -91,5 +98,5 @@ export function useInfiniteFeed<C>(
     );
   }, [loadingMore]);
 
-  return { videos, status, message, loadingMore, hasMore, loadMore };
+  return { videos, status, message, loadingMore, hasMore, loadMore, refetch };
 }

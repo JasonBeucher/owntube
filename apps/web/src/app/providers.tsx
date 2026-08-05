@@ -20,7 +20,13 @@ function getBaseUrl() {
   return `http://localhost:${process.env.PORT ?? 3000}`;
 }
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function Providers({
+  children,
+  isLoggedIn,
+}: {
+  children: React.ReactNode;
+  isLoggedIn: boolean;
+}) {
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -47,8 +53,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <QueryClientProvider client={queryClient}>
         <ThemeSync />
         <FaviconSync />
-        <MiniPlayerSync />
-        <SponsorBlockSync />
+        <MiniPlayerSync enabled={isLoggedIn} />
+        <SponsorBlockSync enabled={isLoggedIn} />
         {children}
       </QueryClientProvider>
     </trpc.Provider>

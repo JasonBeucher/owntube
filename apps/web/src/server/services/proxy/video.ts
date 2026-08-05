@@ -7,6 +7,7 @@ import {
   playbackCatalogMaxHeightPx,
   shouldPreferInvidiousOverPiped,
 } from "@/lib/upstream-playback-catalog";
+import { parseChaptersFromDescription } from "@/lib/video-chapters";
 import type { AppDb } from "@/server/db/client";
 import {
   detailCacheKey,
@@ -89,10 +90,32 @@ function inferMediaProxyBase(detail: VideoDetail): string | undefined {
 
 function enrichDetailForPlayback(detail: VideoDetail): VideoDetail {
   const mediaProxyBase = inferMediaProxyBase(detail);
-  if (!mediaProxyBase || mediaProxyBase === detail.mediaProxyBase) {
+  const chapters = detail.chapters ?? parseChaptersForDetail(detail);
+  const nextMediaProxyBase =
+    mediaProxyBase && mediaProxyBase !== detail.mediaProxyBase
+      ? mediaProxyBase
+      : detail.mediaProxyBase;
+  if (
+    nextMediaProxyBase === detail.mediaProxyBase &&
+    chapters === detail.chapters
+  ) {
     return detail;
   }
-  return { ...detail, mediaProxyBase };
+  return { ...detail, mediaProxyBase: nextMediaProxyBase, chapters };
+}
+
+/**
+ * Chapters are derived here rather than in each client: the description format
+ * is an upstream concern, and both the web watch page and the TV player need
+ * them. Every detail path (live fetch, fresh cache, stale cache) funnels
+ * through `enrichDetailForPlayback`, so parsing once here covers all of them.
+ */
+function parseChaptersForDetail(detail: VideoDetail) {
+  const chapters = parseChaptersFromDescription(
+    detail.description,
+    detail.durationSeconds,
+  );
+  return chapters.length > 0 ? chapters : undefined;
 }
 
 function readFreshDetailCache(db: AppDb, key: string): VideoDetail | null {

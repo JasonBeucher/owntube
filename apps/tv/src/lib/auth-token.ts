@@ -16,3 +16,22 @@ export function setToken(token: string): Promise<void> {
 export function clearToken(): Promise<void> {
   return SecureStore.deleteItemAsync(TOKEN_KEY);
 }
+
+/**
+ * Device tokens expire after 30 days. Checking only that a token *exists*
+ * leaves the app silently anonymous once it lapses — signed in as far as the
+ * UI is concerned, but with no history, subscriptions or recommendations and
+ * no way back to the login screen. The tRPC client reports 401s here so the
+ * app can drop the dead token and re-prompt.
+ */
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
+export async function handleUnauthorized(): Promise<void> {
+  if (!unauthorizedHandler) return;
+  await clearToken().catch(() => {});
+  unauthorizedHandler();
+}

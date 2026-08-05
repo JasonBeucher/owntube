@@ -153,6 +153,7 @@ export function VideoCard({
             {videoId ? (
               <VideoCardActionsMenu
                 videoId={videoId}
+                videoTitle={title}
                 channelId={channelId}
                 channelName={channelName}
                 recommendationReason={recommendationReason}
@@ -310,6 +311,7 @@ export function VideoCardShort({
           {videoId ? (
             <VideoCardActionsMenu
               videoId={videoId}
+              videoTitle={title}
               channelId={channelId}
               channelName={channelName}
               recommendationReason={recommendationReason}
@@ -474,6 +476,7 @@ export function VideoCardCompact({
             {videoId ? (
               <VideoCardActionsMenu
                 videoId={videoId}
+                videoTitle={title}
                 channelId={channelId}
                 channelName={channelName}
                 className="absolute -right-1 -top-1"

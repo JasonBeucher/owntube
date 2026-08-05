@@ -8,7 +8,7 @@ import {
   type FocusableTextInputHandle,
 } from "@/components/focusable-text-input";
 import { setToken } from "@/lib/auth-token";
-import { OWNTUBE_BASE_URL } from "@/lib/config";
+import { getBaseUrl, setBaseUrl } from "@/lib/config";
 import { trpcClient } from "@/lib/trpc";
 import { colors, fontSize, monoFont, radius, spacing } from "@/theme";
 
@@ -80,6 +80,10 @@ export function LoginScreen({ onLoggedIn }: { onLoggedIn: () => void }) {
   const [pairingState, setPairingState] = useState<PairingState>({
     status: "loading",
   });
+  // Editable here because a sideloaded APK can't be rebuilt per instance, and
+  // this is the only screen reachable before signing in.
+  const [instanceUrl, setInstanceUrl] = useState(getBaseUrl());
+  const [instanceSaved, setInstanceSaved] = useState(true);
   const passwordInputRef = useRef<FocusableTextInputHandle>(null);
 
   const canSubmit = email.trim().length > 0 && password.length >= 8;
@@ -88,7 +92,7 @@ export function LoginScreen({ onLoggedIn }: { onLoggedIn: () => void }) {
     setPairingState({ status: "loading" });
     try {
       const pairing = await trpcClient.auth.startDevicePairing.mutate();
-      const verificationUrl = `${OWNTUBE_BASE_URL}${pairing.verificationPath}`;
+      const verificationUrl = `${getBaseUrl()}${pairing.verificationPath}`;
       setPairingState({
         status: "ready",
         userCode: pairing.userCode,
@@ -142,6 +146,14 @@ export function LoginScreen({ onLoggedIn }: { onLoggedIn: () => void }) {
       clearInterval(interval);
     };
   }, [onLoggedIn, pairingState]);
+
+  const saveInstance = async () => {
+    const normalized = await setBaseUrl(instanceUrl);
+    setInstanceUrl(normalized);
+    setInstanceSaved(true);
+    setError(null);
+    startPairing();
+  };
 
   const submit = async () => {
     if (!canSubmit || submitting) return;
@@ -235,6 +247,29 @@ export function LoginScreen({ onLoggedIn }: { onLoggedIn: () => void }) {
               style={styles.submit}
             />
           </View>
+        </View>
+
+        <View style={styles.instanceRow}>
+          <Text style={styles.instanceLabel}>Instance</Text>
+          <FocusableTextInput
+            placeholder="http://192.168.1.10:3000"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            value={instanceUrl}
+            onChangeText={(next) => {
+              setInstanceUrl(next);
+              setInstanceSaved(false);
+            }}
+            onSubmitEditing={saveInstance}
+            returnKeyType="done"
+            containerStyle={styles.instanceInput}
+          />
+          <FocusButton
+            label={instanceSaved ? "Reconnect" : "Save"}
+            onPress={saveInstance}
+            style={styles.instanceButton}
+          />
         </View>
       </View>
     </View>
@@ -350,4 +385,20 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   submit: { alignSelf: "stretch" },
+  instanceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.surfaceBorder,
+    paddingTop: spacing.lg,
+  },
+  instanceLabel: {
+    color: colors.mutedForeground,
+    fontSize: fontSize.sm,
+    fontWeight: "600",
+    textTransform: "uppercase",
+  },
+  instanceInput: { flex: 1 },
+  instanceButton: { width: 170 },
 });

@@ -17,7 +17,8 @@
       "!owntube-charte-graphique",
       "!apps/tv/android",
       "!apps/tv/ios",
-      "!apps/tv/.expo"
+      "!apps/tv/.expo",
+      "!.impeccable"
     ]
   },
   "formatter": {

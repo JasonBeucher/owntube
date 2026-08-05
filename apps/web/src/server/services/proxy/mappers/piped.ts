@@ -12,6 +12,7 @@ import {
   channelIdFromPath,
   extractVideoIdFromUrl,
   isUpstreamMembersOrPaidOnly,
+  mapUpstreamCaptions,
   mimeVideoTypeWithoutAudioCodecs,
   pickVideoThumbnail,
   pickViewCount,
@@ -351,6 +352,7 @@ export function mapPipedStream(
       typeof o.dash === "string" && o.dash.trim().length > 0
         ? o.dash
         : undefined,
+    captions: mapUpstreamCaptions(o.subtitles, pipedBase),
     audioSources,
     videoSources,
     sourceUsed: "piped" as const,

@@ -5,6 +5,7 @@ export type NavKey =
   | "shorts"
   | "explore"
   | "subs"
+  | "friends"
   | "library"
   | "algorithm";
 
@@ -148,6 +149,46 @@ const SubscriptionsIconActive = (
   </svg>
 );
 
+const FriendsIcon = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    <title>Friends</title>
+    <circle cx="9" cy="8" r="3.4" />
+    <path d="M2.8 20.2c.7-3.3 3.2-5.2 6.2-5.2s5.5 1.9 6.2 5.2" />
+    <path d="M16.4 4.9a3.4 3.4 0 0 1 0 6.2" />
+    <path d="M18.1 15.3c1.8.7 3 2.2 3.4 4.4" />
+  </svg>
+);
+
+const FriendsIconActive = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden
+  >
+    <title>Friends</title>
+    <circle cx="9" cy="8" r="3.4" fill="currentColor" stroke="none" />
+    <path
+      d="M2.8 20.2c.7-3.3 3.2-5.2 6.2-5.2s5.5 1.9 6.2 5.2"
+      fill="currentColor"
+      stroke="none"
+    />
+    <path d="M16.4 4.9a3.4 3.4 0 0 1 0 6.2" />
+    <path d="M18.1 15.3c1.8.7 3 2.2 3.4 4.4" />
+  </svg>
+);
+
 const HistoryIcon = (
   <svg
     viewBox="0 0 24 24"
@@ -266,6 +307,13 @@ export const SIDEBAR_NAV: NavItem[] = [
     icon: SubscriptionsIcon,
     iconActive: SubscriptionsIconActive,
   },
+  {
+    key: "friends",
+    href: "/friends",
+    label: "Friends",
+    icon: FriendsIcon,
+    iconActive: FriendsIconActive,
+  },
   // History stays outline when active: the glyph is an arc + arrow with no
   // fillable body, so a filled variant would lose its identity.
   { key: "library", href: "/history", label: "History", icon: HistoryIcon },
@@ -294,6 +342,7 @@ export const SECONDARY_NAV: { href: string; label: string; icon: ReactNode }[] =
 export const ACCOUNT_LINKS: { href: string; label: string; icon: ReactNode }[] =
   [
     { href: "/settings", label: "Settings", icon: SettingsIcon },
+    { href: "/friends", label: "Friends", icon: FriendsIcon },
     { href: "/history", label: "History", icon: HistoryIcon },
     { href: "/playlists", label: "Playlists", icon: PlaylistsIcon },
     { href: "/subscriptions", label: "Subscriptions", icon: SubscriptionsIcon },

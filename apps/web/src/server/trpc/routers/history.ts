@@ -1,4 +1,4 @@
-import { and, desc, eq, like, or } from "drizzle-orm";
+import { and, desc, eq, inArray, like, or } from "drizzle-orm";
 import { z } from "zod";
 import { watchHistory } from "@/server/db/schema";
 import { clearRecommendationCachesForUser } from "@/server/recommendation/engine";
@@ -10,12 +10,20 @@ import { protectedProcedure, router } from "@/server/trpc/init";
 const historyEventInputSchema = z.object({
   videoId: z.string().min(5).max(64),
   channelId: z.string().min(1).max(128),
+  /** Time actually spent watching. An engagement signal, *not* a seek offset. */
   durationWatched: z
     .number()
     .int()
     .min(0)
     .max(60 * 60 * 24)
     .default(0),
+  /** Playback offset to resume from. Latest value wins so rewinding moves it back. */
+  positionSeconds: z
+    .number()
+    .int()
+    .min(0)
+    .max(60 * 60 * 24)
+    .optional(),
   completed: z.boolean().default(false),
   /** Total video length; 0 = unknown. Rows with 0 are excluded from engagement-weighted signals. */
   videoDurationSeconds: z
@@ -73,6 +81,10 @@ export const historyRouter = router({
           .update(watchHistory)
           .set({
             durationWatched: duration,
+            // Unlike durationWatched this is not monotonic: seeking backwards
+            // must move the resume point back, so the newest value wins.
+            positionSeconds:
+              input.positionSeconds ?? recent.positionSeconds ?? 0,
             completed,
             videoDurationSeconds: Math.max(
               recent.videoDurationSeconds,
@@ -98,6 +110,7 @@ export const historyRouter = router({
           channelId: input.channelId,
           startedAt: ts,
           durationWatched: input.durationWatched,
+          positionSeconds: input.positionSeconds ?? 0,
           completed: input.completed ? 1 : 0,
           videoDurationSeconds: input.videoDurationSeconds,
           isDeleted: 0,
@@ -140,6 +153,8 @@ export const historyRouter = router({
           channelId: watchHistory.channelId,
           startedAt: watchHistory.startedAt,
           durationWatched: watchHistory.durationWatched,
+          positionSeconds: watchHistory.positionSeconds,
+          videoDurationSeconds: watchHistory.videoDurationSeconds,
           completed: watchHistory.completed,
           videoTitle: watchHistory.videoTitle,
           channelName: watchHistory.channelName,
@@ -186,6 +201,45 @@ export const historyRouter = router({
         }),
       );
       return enriched;
+    }),
+  /**
+   * Resume offsets for a batch of videos, so a feed can render progress bars
+   * and a "continue watching" shelf without one request per card.
+   */
+  resumePositions: protectedProcedure
+    .input(z.object({ videoIds: z.array(z.string().min(1).max(64)).max(200) }))
+    .query(({ ctx, input }) => {
+      if (input.videoIds.length === 0) return [];
+      const rows = ctx.db
+        .select({
+          videoId: watchHistory.videoId,
+          startedAt: watchHistory.startedAt,
+          positionSeconds: watchHistory.positionSeconds,
+          videoDurationSeconds: watchHistory.videoDurationSeconds,
+          completed: watchHistory.completed,
+        })
+        .from(watchHistory)
+        .where(
+          and(
+            eq(watchHistory.userId, ctx.userId),
+            eq(watchHistory.isDeleted, 0),
+            inArray(watchHistory.videoId, input.videoIds),
+          ),
+        )
+        .orderBy(desc(watchHistory.startedAt))
+        .all();
+
+      // A video can have several watches; the most recent one is the resume point.
+      const latest = new Map<string, (typeof rows)[number]>();
+      for (const row of rows) {
+        if (!latest.has(row.videoId)) latest.set(row.videoId, row);
+      }
+      return [...latest.values()].map((row) => ({
+        videoId: row.videoId,
+        positionSeconds: row.positionSeconds,
+        videoDurationSeconds: row.videoDurationSeconds,
+        completed: row.completed === 1,
+      }));
     }),
   softDelete: protectedProcedure
     .input(z.object({ id: z.number().int().positive() }))

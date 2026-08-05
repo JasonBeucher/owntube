@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
+import { ShareToFriendsPanel } from "@/components/friends/share-to-friends-panel";
 import { Button } from "@/components/ui/button";
 import { useVideoCardActions } from "@/components/videos/use-video-card-actions";
 import { VideoCardActionsPlaylistPanel } from "@/components/videos/video-card-actions-playlist-panel";
@@ -10,6 +11,7 @@ import type { RecommendationReason } from "@/server/services/proxy.types";
 
 type VideoCardActionsMenuProps = {
   videoId: string;
+  videoTitle?: string;
   channelId?: string;
   channelName?: string;
   /** When set, the menu opens with a non-interactive "why recommended" line. */
@@ -44,6 +46,7 @@ function menuItemClass(active = false) {
 
 export function VideoCardActionsMenu({
   videoId,
+  videoTitle,
   channelId,
   channelName,
   recommendationReason,
@@ -57,6 +60,7 @@ export function VideoCardActionsMenu({
     videoId,
     channelId,
     channelName,
+    videoTitle,
     loadPlaylists: open,
   });
 
@@ -112,7 +116,10 @@ export function VideoCardActionsMenu({
         <div
           id={menuId}
           role="menu"
-          className="absolute top-full right-0 z-40 mt-1 w-56 overflow-hidden rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] py-1 text-sm shadow-lg"
+          className={cn(
+            "absolute top-full right-0 z-40 mt-1 overflow-hidden rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] py-1 text-sm shadow-lg",
+            actions.view === "share" ? "w-72" : "w-56",
+          )}
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
         >
@@ -136,6 +143,20 @@ export function VideoCardActionsMenu({
                     onClick={() => actions.setView("playlist")}
                   >
                     <span className="flex-1">Add to playlist</span>
+                    <span className="text-[hsl(var(--muted-foreground))]">
+                      ›
+                    </span>
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={menuItemClass()}
+                    disabled={actions.pending}
+                    onClick={() => actions.setView("share")}
+                  >
+                    <span className="flex-1">Send to a friend</span>
                     <span className="text-[hsl(var(--muted-foreground))]">
                       ›
                     </span>
@@ -178,6 +199,30 @@ export function VideoCardActionsMenu({
                 ) : null}
               </ul>
             </>
+          ) : actions.view === "share" ? (
+            <div className="space-y-1">
+              <button
+                type="button"
+                className={cn(
+                  menuItemClass(),
+                  "text-[hsl(var(--muted-foreground))]",
+                )}
+                onClick={() => actions.setView("main")}
+              >
+                ‹ Back
+              </button>
+              <ShareToFriendsPanel
+                videoId={videoId}
+                videoTitle={videoTitle}
+                channelId={channelId}
+                channelName={channelName}
+                onSent={() => {
+                  actions.closePanels();
+                  setOpen(false);
+                }}
+                className="border-t border-[hsl(var(--border))] p-2.5"
+              />
+            </div>
           ) : (
             <VideoCardActionsPlaylistPanel
               view={actions.view}

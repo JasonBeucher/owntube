@@ -128,6 +128,8 @@ export const playlistsRouter = router({
           id: playlistItems.id,
           videoId: playlistItems.videoId,
           channelId: playlistItems.channelId,
+          videoTitle: playlistItems.videoTitle,
+          channelName: playlistItems.channelName,
           addedAt: playlistItems.addedAt,
         })
         .from(playlistItems)
@@ -143,6 +145,9 @@ export const playlistsRouter = router({
         playlistId: z.number().int().positive(),
         videoId: z.string().min(5).max(64),
         channelId: z.string().max(128).optional(),
+        /** Denormalized so `items` renders without an upstream fetch per row. */
+        videoTitle: z.string().trim().min(1).max(300).optional(),
+        channelName: z.string().trim().min(1).max(200).optional(),
       }),
     )
     .mutation(({ ctx, input }) => {
@@ -166,6 +171,8 @@ export const playlistsRouter = router({
           playlistId: input.playlistId,
           videoId: input.videoId,
           channelId: input.channelId ?? null,
+          videoTitle: input.videoTitle ?? null,
+          channelName: input.channelName ?? null,
           addedAt: ts,
         })
         .onConflictDoNothing({

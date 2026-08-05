@@ -2,7 +2,8 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, SafeAreaView, StyleSheet } from "react-native";
 import { Shell } from "@/components/Shell";
-import { clearToken, getToken } from "@/lib/auth-token";
+import { clearToken, getToken, setUnauthorizedHandler } from "@/lib/auth-token";
+import { loadBaseUrl } from "@/lib/config";
 import { LoginScreen } from "@/screens/LoginScreen";
 import { colors } from "@/theme";
 
@@ -12,7 +13,17 @@ export default function App() {
   const [auth, setAuth] = useState<AuthState>("checking");
 
   useEffect(() => {
-    getToken().then((token) => setAuth(token ? "signedIn" : "signedOut"));
+    setUnauthorizedHandler(() => setAuth("signedOut"));
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
+  useEffect(() => {
+    // The stored instance URL has to be in place before the first tRPC call.
+    loadBaseUrl()
+      .catch(() => undefined)
+      .then(() => getToken())
+      .then((token) => setAuth(token ? "signedIn" : "signedOut"))
+      .catch(() => setAuth("signedOut"));
   }, []);
 
   const signOut = () => {

@@ -1,4 +1,4 @@
-import { THEME_STORAGE_KEY } from "@/lib/theme-appearance";
+import { THEME_STORAGE_KEY, VISUAL_THEMES } from "@/lib/theme-appearance";
 
 /** Runs before paint so persisted appearance and visual theme apply before hydration. */
 export function FaviconInitScript() {
@@ -6,6 +6,7 @@ export function FaviconInitScript() {
 (function () {
   try {
     var storageKey = ${JSON.stringify(THEME_STORAGE_KEY)};
+    var visualThemes = ${JSON.stringify(VISUAL_THEMES)};
     var theme = "system";
     var raw = localStorage.getItem(storageKey);
     if (raw) {
@@ -13,8 +14,9 @@ export function FaviconInitScript() {
       if (parsed && parsed.state && parsed.state.theme) {
         theme = parsed.state.theme;
       }
-      if (parsed && parsed.state && parsed.state.visualTheme === "terminal") {
-        document.documentElement.dataset.visualTheme = "terminal";
+      var visual = parsed && parsed.state && parsed.state.visualTheme;
+      if (visual && visual !== "default" && visualThemes.indexOf(visual) !== -1) {
+        document.documentElement.dataset.visualTheme = visual;
       }
     }
     document.documentElement.classList.remove("light", "dark");

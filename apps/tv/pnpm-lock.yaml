@@ -26,6 +26,9 @@ importers:
       expo-constants:
         specifier: ~17.0.3
         version: 17.0.8(expo@52.0.49(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(react-native-tvos@0.76.9-0)(react@18.3.1))(react-native-tvos@0.76.9-0)
+      expo-keep-awake:
+        specifier: ~14.0.3
+        version: 14.0.3(expo@52.0.49(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(react-native-tvos@0.76.9-0)(react@18.3.1))(react@18.3.1)
       expo-secure-store:
         specifier: ~14.0.1
         version: 14.0.1(expo@52.0.49(@babel/core@7.29.7)(@babel/preset-env@7.29.7(@babel/core@7.29.7))(react-native-tvos@0.76.9-0)(react@18.3.1))

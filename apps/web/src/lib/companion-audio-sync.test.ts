@@ -45,9 +45,31 @@ describe("applyCompanionAudioSync", () => {
     expect(audio.playbackRate).toBeCloseTo(2 * 0.965, 5);
   });
 
-  it("hard-aligns at 1× for moderate drift", () => {
+  it("nudges playbackRate at 1× for moderate drift instead of snapping", () => {
     const video = mockMedia(10, 1);
     const audio = mockMedia(10.2, 1);
+    applyCompanionAudioSync(
+      video as HTMLVideoElement,
+      audio as HTMLAudioElement,
+    );
+    expect(audio.currentTime).toBe(10.2);
+    expect(audio.playbackRate).toBeCloseTo(0.965, 5);
+  });
+
+  it("speeds audio up when it lags behind the video", () => {
+    const video = mockMedia(10, 1);
+    const audio = mockMedia(9.8, 1);
+    applyCompanionAudioSync(
+      video as HTMLVideoElement,
+      audio as HTMLAudioElement,
+    );
+    expect(audio.currentTime).toBe(9.8);
+    expect(audio.playbackRate).toBeCloseTo(1 / 0.965, 5);
+  });
+
+  it("hard-aligns at 1× when drift is very large", () => {
+    const video = mockMedia(10, 1);
+    const audio = mockMedia(10.6, 1);
     applyCompanionAudioSync(
       video as HTMLVideoElement,
       audio as HTMLAudioElement,

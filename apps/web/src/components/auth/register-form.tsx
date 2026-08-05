@@ -4,6 +4,7 @@ import { signIn } from "next-auth/react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { resolveSignInOutcome } from "@/lib/sign-in-result";
 import { trpc } from "@/trpc/react";
 
 export function RegisterForm() {
@@ -27,9 +28,11 @@ export function RegisterForm() {
             redirect: false,
             callbackUrl: "/",
           });
-          if (result?.ok) {
+          if (resolveSignInOutcome(result).status === "success") {
             window.location.href = "/onboarding/taste";
+            return;
           }
+          setError("Account created, but sign-in failed. Try signing in.");
         } catch (mutationError) {
           setError(
             mutationError instanceof Error

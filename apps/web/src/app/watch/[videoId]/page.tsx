@@ -403,6 +403,8 @@ export default async function WatchPage({
               <InteractionButtons
                 videoId={detail.videoId}
                 channelId={detail.channelId}
+                videoTitle={detail.title}
+                channelName={detail.channelName}
                 isAuthenticated={isAuthed}
               />
             ) : null}

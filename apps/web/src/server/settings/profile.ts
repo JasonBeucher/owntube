@@ -15,7 +15,12 @@ import { userProfile } from "@/server/db/schema";
 import type { ProxySourceOverrides } from "@/server/services/proxy";
 
 export const themeSchema = z.enum(["system", "light", "dark"]);
-export const visualThemeSchema = z.enum(["default", "terminal"]);
+export const visualThemeSchema = z.enum([
+  "default",
+  "terminal",
+  "aurora",
+  "sky",
+]);
 
 const tasteKeywordSchema = z.string().trim().min(1).max(80);
 

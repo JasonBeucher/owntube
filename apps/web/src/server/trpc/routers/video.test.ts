@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { users } from "@/server/db/schema";
+import { upsertUserSettings } from "@/server/settings/profile";
 import { appRouter } from "@/server/trpc/root";
 import { createTestDb } from "@/test/db";
 
@@ -69,6 +71,60 @@ describe("videoRouter", () => {
     });
     expect(comments.comments).toHaveLength(1);
     expect(comments.comments[0]?.text).toBe("Hello");
+    sqlite.close();
+  });
+
+  it("filters blocked recommendation channels out of related videos", async () => {
+    const { db, sqlite } = createTestDb();
+    process.env.PIPED_BASE_URL = "https://piped.test";
+    process.env.INVIDIOUS_BASE_URL = "disabled";
+    const ts = Math.floor(Date.now() / 1000);
+    const user = db
+      .insert(users)
+      .values({
+        email: "related@example.com",
+        passwordHash: "x",
+        createdAt: ts,
+        updatedAt: ts,
+      })
+      .returning({ id: users.id })
+      .get();
+    upsertUserSettings(db, user.id, {
+      blockedRecommendationChannels: ["UCblocked"],
+    });
+
+    vi.mocked(fetch).mockImplementation((input) => {
+      const u = String(input);
+      if (u.includes("/streams/dQw4w9WgXcQ")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              videoId: "dQw4w9WgXcQ",
+              title: "Main",
+              relatedStreams: [
+                {
+                  url: "/watch?v=keep0000001",
+                  title: "Kept clip",
+                  duration: 120,
+                  uploaderUrl: "/channel/UCkept",
+                },
+                {
+                  url: "/watch?v=drop0000001",
+                  title: "Blocked channel clip",
+                  duration: 90,
+                  uploaderUrl: "/channel/UCblocked",
+                },
+              ],
+            }),
+          ),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${u}`));
+    });
+
+    const caller = appRouter.createCaller({ db, userId: user.id });
+    const related = await caller.video.related({ videoId: "dQw4w9WgXcQ" });
+    expect(related.videos.map((v) => v.videoId)).toEqual(["keep0000001"]);
     sqlite.close();
   });
 });

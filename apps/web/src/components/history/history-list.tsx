@@ -112,14 +112,12 @@ export function HistoryList({ initialItems }: HistoryListProps) {
                 className="block shrink-0"
               >
                 <div className="relative aspect-video w-44 overflow-hidden rounded-lg bg-[hsl(var(--muted))]">
-                  {item.thumbnailUrl ? (
-                    <VideoThumbnailImg
-                      url={item.thumbnailUrl}
-                      videoId={item.videoId}
-                      className="h-full w-full object-cover"
-                      loading="lazy"
-                    />
-                  ) : null}
+                  <VideoThumbnailImg
+                    url={item.thumbnailUrl}
+                    videoId={item.videoId}
+                    className="h-full w-full object-cover"
+                    loading="lazy"
+                  />
                 </div>
               </Link>
               <div className="min-w-0 flex-1 space-y-1">

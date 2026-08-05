@@ -18,9 +18,19 @@ type Props = {
   video: UnifiedVideo;
   onPress: (videoId: string) => void;
   hasTVPreferredFocus?: boolean;
+  /** 0..1 watched fraction; draws the resume bar across the thumbnail. */
+  progress?: number | null;
+  /** Dims the card once the video counts as watched. */
+  watched?: boolean;
 };
 
-export function VideoCard({ video, onPress, hasTVPreferredFocus }: Props) {
+export function VideoCard({
+  video,
+  onPress,
+  hasTVPreferredFocus,
+  progress,
+  watched,
+}: Props) {
   const [focused, setFocused] = useState(false);
   const badge = formatThumbnailBadge(video);
   const views = formatViews(video.viewCount);
@@ -38,7 +48,12 @@ export function VideoCard({ video, onPress, hasTVPreferredFocus }: Props) {
       onPress={() => onPress(video.videoId)}
       style={[styles.card, focused && styles.cardFocused]}
     >
-      <View style={styles.thumbWrap}>
+      <View
+        style={[
+          styles.thumbWrap,
+          watched && !focused && styles.thumbWrapWatched,
+        ]}
+      >
         {video.thumbnailUrl ? (
           <Image
             source={{ uri: video.thumbnailUrl }}
@@ -71,6 +86,13 @@ export function VideoCard({ video, onPress, hasTVPreferredFocus }: Props) {
             >
               {badge}
             </Text>
+          </View>
+        ) : null}
+        {progress != null && progress > 0 ? (
+          <View style={styles.progressTrack}>
+            <View
+              style={[styles.progressFill, { width: `${progress * 100}%` }]}
+            />
           </View>
         ) : null}
       </View>
@@ -149,8 +171,18 @@ const styles = StyleSheet.create({
     borderColor: colors.surfaceBorder,
     backgroundColor: colors.muted,
   },
+  thumbWrapWatched: { opacity: 0.55 },
   thumb: { width: "100%", height: "100%" },
   thumbPlaceholder: { backgroundColor: colors.muted },
+  progressTrack: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 5,
+    backgroundColor: colors.durationBadge,
+  },
+  progressFill: { height: "100%", backgroundColor: colors.brand },
   playOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",

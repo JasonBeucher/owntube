@@ -3,10 +3,12 @@ import type {
   UnifiedVideo,
   VideoDetail,
 } from "@web/server/services/proxy.types";
-import { useVideoPlayer, VideoView } from "expo-video";
+import { useKeepAwake } from "expo-keep-awake";
+import { useVideoPlayer, type VideoPlayer, VideoView } from "expo-video";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  BackHandler,
   Pressable,
   StyleSheet,
   Text,
@@ -15,11 +17,32 @@ import {
 } from "react-native";
 import { FocusButton } from "@/components/FocusButton";
 import { IconButton } from "@/components/IconButton";
+import { PlayerActions } from "@/components/player-actions";
+import { PlayerComments } from "@/components/player-comments";
+import { PlayerProgressBar } from "@/components/player-progress-bar";
+import {
+  PlayerQualityMenu,
+  type PlayerQualityOption,
+} from "@/components/player-quality-menu";
+import { PlayerUpNext } from "@/components/player-up-next";
 import { VideoRow } from "@/components/VideoRow";
-import { formatTime } from "@/lib/format";
+import {
+  buildPlaybackOptions,
+  type PlaybackOption,
+} from "@/lib/playback-options";
 import { trpcClient } from "@/lib/trpc";
 import { errorMessage } from "@/lib/use-query";
-import { colors, focus, fontSize, monoFont, radius, spacing } from "@/theme";
+import { useWatchProgress } from "@/lib/use-watch-progress";
+import { colors, focus, fontSize, radius, spacing } from "@/theme";
+
+// expo-video 2.0 doesn't re-export SubtitleTrack from its entrypoint; derive it
+// from the player rather than reaching into the package's build output.
+type SubtitleTrack = VideoPlayer["availableSubtitleTracks"][number];
+
+const SEEK_STEP_SECONDS = 10;
+/** Held-down arrows jump further, so scrubbing a long video isn't a chore. */
+const LONG_SEEK_STEP_SECONDS = 30;
+const UP_NEXT_COUNTDOWN_SECONDS = 10;
 
 // Skip-type categories auto-skipped on TV (filler excluded — too aggressive).
 const SKIP_CATEGORIES = [
@@ -41,15 +64,6 @@ type LoadState =
       selectedOptionIndex: number;
     };
 
-type PlaybackOption = {
-  id: string;
-  label: string;
-  videoUrl: string;
-} & (
-  | { kind: "auto" | "muxed"; audioUrl?: never }
-  | { kind: "split"; audioUrl: string }
-);
-
 /**
  * Full watch screen: plays the stream via ExoPlayer, resumes from a saved
  * offset, auto-skips SponsorBlock segments, records watch progress to history,
@@ -61,12 +75,15 @@ type PlaybackOption = {
 export function WatchScreen({
   videoId,
   resumeSeconds,
+  active = true,
   onOpenVideo,
   onOpenChannel,
   onBack,
 }: {
   videoId: string;
   resumeSeconds?: number;
+  /** False while a channel page is pushed over the player (still mounted). */
+  active?: boolean;
   onOpenVideo: (videoId: string) => void;
   onOpenChannel: (channelId: string) => void;
   onBack: () => void;
@@ -78,10 +95,23 @@ export function WatchScreen({
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [channelFocused, setChannelFocused] = useState(false);
+  const [qualityMenuOpen, setQualityMenuOpen] = useState(false);
+  // Subtitles come from the stream itself: expo-video can only expose tracks
+  // embedded in the source, which HLS (the default "Auto" option) carries.
+  // Progressive/split streams have none, so the button hides for them.
+  const [subtitleTracks, setSubtitleTracks] = useState<SubtitleTrack[]>([]);
+  const [subtitleIndex, setSubtitleIndex] = useState(0);
+  const [subtitleMenuOpen, setSubtitleMenuOpen] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(false);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Read by the auto-hide timer to avoid hiding controls while paused.
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
+  // Either picker being open pins the overlay open.
+  const menuOpenRef = useRef(false);
+  menuOpenRef.current = qualityMenuOpen || subtitleMenuOpen;
+  const controlsVisibleRef = useRef(controlsVisible);
+  controlsVisibleRef.current = controlsVisible;
 
   // Latest values the timeUpdate listener and unmount cleanup read without
   // re-subscribing on every change.
@@ -91,6 +121,10 @@ export function WatchScreen({
   const pendingSeekRef = useRef<number | null>(null);
   const shouldPlayAfterReplaceRef = useRef(true);
   const selectedOptionRef = useRef<PlaybackOption | null>(null);
+
+  // expo-video doesn't hold a wake lock, so without this the TV screensaver
+  // kicks in partway through a film.
+  useKeepAwake();
 
   const player = useVideoPlayer(null, (p) => {
     p.loop = false;
@@ -111,6 +145,7 @@ export function WatchScreen({
     pendingSeekRef.current = null;
     shouldPlayAfterReplaceRef.current = true;
     selectedOptionRef.current = null;
+    setQualityMenuOpen(false);
 
     trpcClient.video.detail
       .query({ videoId })
@@ -230,25 +265,21 @@ export function WatchScreen({
     return () => sub.remove();
   }, [player, audioPlayer]);
 
-  // Record watch progress to history on leave (feeds the recommender).
+  // The shell keeps the player mounted while a channel page sits on top of it
+  // (so Back resumes instead of restarting) — pause so audio doesn't keep
+  // running behind the other screen.
   useEffect(() => {
-    return () => {
-      const detail = detailRef.current;
-      const watched = Math.floor(currentTimeRef.current);
-      if (!detail?.channelId || watched < 5) return;
-      const duration = detail.durationSeconds;
-      trpcClient.history.upsertEvent
-        .mutate({
-          videoId: detail.videoId,
-          channelId: detail.channelId,
-          durationWatched: watched,
-          completed: duration != null && watched >= duration * 0.9,
-          videoDurationSeconds: duration,
-          isShort: false,
-        })
-        .catch(() => {});
-    };
-  }, []);
+    if (active) return;
+    player.pause();
+    audioPlayer.pause();
+    setIsPlaying(false);
+  }, [active, player, audioPlayer]);
+
+  useWatchProgress({
+    detail: detailRef,
+    position: currentTimeRef,
+    playing: isPlayingRef,
+  });
 
   const fallbackToStablePlayback = useCallback(() => {
     if (state.status !== "ready") return;
@@ -289,13 +320,119 @@ export function WatchScreen({
     setControlsVisible(true);
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     hideTimerRef.current = setTimeout(() => {
-      if (isPlayingRef.current) setControlsVisible(false);
+      if (isPlayingRef.current && !menuOpenRef.current) {
+        setControlsVisible(false);
+      }
     }, 4000);
   }, []);
 
+  const anyMenuOpen = qualityMenuOpen || subtitleMenuOpen;
+
+  useEffect(() => {
+    if (!anyMenuOpen) return;
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    setControlsVisible(true);
+  }, [anyMenuOpen]);
+
+  useEffect(() => {
+    if (!anyMenuOpen) return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      setQualityMenuOpen(false);
+      setSubtitleMenuOpen(false);
+      revealControls();
+      return true;
+    });
+    return () => sub.remove();
+  }, [anyMenuOpen, revealControls]);
+
   // Any remote key re-shows the controls (fires regardless of focus target).
+  // Autoplay: when a video ends, offer the first related video the user hasn't
+  // already watched. Without this the screen just sits on a stopped player,
+  // which is the least lean-back thing an app can do.
+  const [upNextSeconds, setUpNextSeconds] = useState<number | null>(null);
+  const upNext = related[0];
+
+  useEffect(() => {
+    const sub = player.addListener("playToEnd", () => {
+      setIsPlaying(false);
+      if (upNext) setUpNextSeconds(UP_NEXT_COUNTDOWN_SECONDS);
+    });
+    return () => sub.remove();
+  }, [player, upNext]);
+
+  useEffect(() => {
+    if (upNextSeconds === null) return;
+    if (upNextSeconds <= 0) {
+      setUpNextSeconds(null);
+      if (upNext) onOpenVideo(upNext.videoId);
+      return;
+    }
+    const timer = setTimeout(() => setUpNextSeconds((s) => (s ?? 1) - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [upNextSeconds, upNext, onOpenVideo]);
+
+  // Cancel the countdown as soon as the user does anything else.
+  const cancelUpNext = useCallback(() => setUpNextSeconds(null), []);
+
+  useEffect(() => {
+    const sub = player.addListener(
+      "availableSubtitleTracksChange",
+      ({ availableSubtitleTracks }) => {
+        setSubtitleTracks(availableSubtitleTracks);
+        setSubtitleIndex(0);
+      },
+    );
+    return () => sub.remove();
+  }, [player]);
+
+  const selectSubtitle = (index: number) => {
+    setSubtitleIndex(index);
+    // Index 0 is the synthetic "Off" row.
+    player.subtitleTrack =
+      index === 0 ? null : (subtitleTracks[index - 1] ?? null);
+    setSubtitleMenuOpen(false);
+    revealControls();
+  };
+
+  // The key handler runs before togglePlayback/seekBy are declared below, and
+  // must not re-register on every render — go through refs.
+  const togglePlaybackRef = useRef(() => {});
+  const seekByRef = useRef((_seconds: number) => {});
+
   useTVEventHandler((event) => {
     if (event.eventType === "focus" || event.eventType === "blur") return;
+    // Key-up would double every action; only react to the press.
+    if (event.eventKeyAction === 1) return;
+
+    switch (event.eventType) {
+      case "playPause":
+        togglePlaybackRef.current();
+        return;
+      case "fastForward":
+        seekByRef.current(SEEK_STEP_SECONDS);
+        return;
+      case "rewind":
+        seekByRef.current(-SEEK_STEP_SECONDS);
+        return;
+      case "left":
+      case "longLeft":
+      case "right":
+      case "longRight": {
+        // Seek straight from playback instead of making the user first reveal
+        // the controls and walk focus to the progress bar. Only while the
+        // overlay is hidden: once it is up, left/right belongs to focus
+        // navigation across the control row (the bar seeks when focused).
+        if (controlsVisibleRef.current) break;
+        const forward =
+          event.eventType === "right" || event.eventType === "longRight";
+        const step =
+          event.eventType === "longLeft" || event.eventType === "longRight"
+            ? LONG_SEEK_STEP_SECONDS
+            : SEEK_STEP_SECONDS;
+        seekByRef.current(forward ? step : -step);
+        break;
+      }
+    }
     revealControls();
   });
 
@@ -317,6 +454,8 @@ export function WatchScreen({
   );
 
   const togglePlayback = () => {
+    setQualityMenuOpen(false);
+    cancelUpNext();
     if (isPlaying) {
       player.pause();
       audioPlayer.pause();
@@ -324,29 +463,64 @@ export function WatchScreen({
     } else {
       player.play();
       if (selectedOptionRef.current?.kind === "split") audioPlayer.play();
+      setCommentsOpen(false);
       setIsPlaying(true);
     }
   };
 
+  const seekTo = useCallback(
+    (seconds: number) => {
+      const playbackDuration =
+        duration || detailRef.current?.durationSeconds || seconds;
+      const targetTime = Math.max(
+        0,
+        Math.min(playbackDuration > 0 ? playbackDuration : seconds, seconds),
+      );
+      player.currentTime = targetTime;
+      if (selectedOptionRef.current?.kind === "split") {
+        audioPlayer.currentTime = targetTime;
+      }
+      currentTimeRef.current = targetTime;
+      setCurrentTime(targetTime);
+      revealControls();
+    },
+    [audioPlayer, duration, player, revealControls],
+  );
+
   const seekBy = (seconds: number) => {
-    player.seekBy(seconds);
-    if (selectedOptionRef.current?.kind === "split") {
-      audioPlayer.seekBy(seconds);
-    }
+    setQualityMenuOpen(false);
+    cancelUpNext();
+    seekTo(currentTimeRef.current + seconds);
   };
 
-  const cycleQuality = () => {
+  togglePlaybackRef.current = togglePlayback;
+  seekByRef.current = seekBy;
+
+  const openQualityMenu = () => {
     if (state.status !== "ready" || state.playbackOptions.length <= 1) return;
+    setSubtitleMenuOpen(false);
+    setQualityMenuOpen((open) => !open);
+    revealControls();
+  };
+
+  const selectQuality = (index: number) => {
+    if (state.status !== "ready") return;
+    if (index === state.selectedOptionIndex) {
+      setQualityMenuOpen(false);
+      revealControls();
+      return;
+    }
     pendingSeekRef.current = currentTimeRef.current;
     shouldPlayAfterReplaceRef.current = isPlayingRef.current;
     setState((previous) => {
       if (previous.status !== "ready") return previous;
       return {
         ...previous,
-        selectedOptionIndex:
-          (previous.selectedOptionIndex + 1) % previous.playbackOptions.length,
+        selectedOptionIndex: index,
       };
     });
+    setQualityMenuOpen(false);
+    revealControls();
   };
 
   if (state.status === "loading") {
@@ -371,6 +545,20 @@ export function WatchScreen({
   const { detail } = state;
   const selectedQuality =
     state.playbackOptions[state.selectedOptionIndex]?.label ?? "Auto";
+  const qualityOptions: PlayerQualityOption[] = state.playbackOptions.map(
+    (option) => ({
+      id: option.id,
+      label: option.label,
+    }),
+  );
+  const effectiveDuration = duration || detail.durationSeconds || 0;
+  const subtitleOptions: PlayerQualityOption[] = [
+    { id: "off", label: "Off" },
+    ...subtitleTracks.map((track) => ({
+      id: track.id,
+      label: track.label || track.language,
+    })),
+  ];
 
   return (
     <View style={styles.container}>
@@ -391,9 +579,22 @@ export function WatchScreen({
         style={[StyleSheet.absoluteFill, { opacity: controlsVisible ? 1 : 0 }]}
         pointerEvents="box-none"
       >
+        <View style={styles.bottomScrim} pointerEvents="none" />
         <View style={styles.overlay}>
+          {upNextSeconds !== null && upNext ? (
+            <PlayerUpNext
+              video={upNext}
+              secondsLeft={upNextSeconds}
+              onPlayNow={() => {
+                cancelUpNext();
+                onOpenVideo(upNext.videoId);
+              }}
+              onCancel={cancelUpNext}
+            />
+          ) : null}
+
           {/* Related rail only when paused — keeps playback uncluttered. */}
-          {!isPlaying && related.length > 0 ? (
+          {!isPlaying && upNextSeconds === null && related.length > 0 ? (
             <VideoRow title="Up next" videos={related} onSelect={onOpenVideo} />
           ) : null}
 
@@ -423,43 +624,76 @@ export function WatchScreen({
             ) : null}
           </View>
 
+          {!isPlaying && commentsOpen ? (
+            <PlayerComments videoId={detail.videoId} />
+          ) : null}
+
+          {!isPlaying ? (
+            <PlayerActions
+              videoId={detail.videoId}
+              channelId={detail.channelId}
+              videoTitle={detail.title}
+              channelName={detail.channelName}
+            />
+          ) : null}
+
           <View style={styles.controlPanel}>
-            <View style={styles.controls}>
-              <IconButton icon="rotate-ccw" onPress={() => seekBy(-10)} />
-              <IconButton
-                icon={isPlaying ? "pause" : "play"}
-                large
-                onPress={togglePlayback}
-                hasTVPreferredFocus
-              />
-              <IconButton icon="rotate-cw" onPress={() => seekBy(10)} />
+            <PlayerQualityMenu
+              open={qualityMenuOpen}
+              options={qualityOptions}
+              selectedIndex={state.selectedOptionIndex}
+              onSelect={selectQuality}
+            />
+            <PlayerQualityMenu
+              open={subtitleMenuOpen}
+              title="Subtitles"
+              icon="message-square"
+              options={subtitleOptions}
+              selectedIndex={subtitleIndex}
+              onSelect={selectSubtitle}
+            />
+            <PlayerProgressBar
+              currentTime={currentTime}
+              duration={effectiveDuration}
+              onSeekTo={seekTo}
+              chapters={detail.chapters}
+            />
+            <View style={styles.controlsRow}>
+              <View style={styles.controls}>
+                <IconButton icon="rotate-ccw" onPress={() => seekBy(-10)} />
+                <IconButton
+                  icon={isPlaying ? "pause" : "play"}
+                  large
+                  onPress={togglePlayback}
+                  hasTVPreferredFocus
+                />
+                <IconButton icon="rotate-cw" onPress={() => seekBy(10)} />
+              </View>
               <FocusButton
-                label={`Quality ${selectedQuality}`}
-                onPress={cycleQuality}
+                label={commentsOpen ? "Hide comments" : "Comments"}
+                onPress={() => {
+                  setCommentsOpen((open) => !open);
+                  revealControls();
+                }}
+                style={styles.qualityButton}
+              />
+              {subtitleTracks.length > 0 ? (
+                <FocusButton
+                  label={`Subtitles: ${subtitleOptions[subtitleIndex]?.label ?? "Off"}`}
+                  onPress={() => {
+                    setQualityMenuOpen(false);
+                    setSubtitleMenuOpen((open) => !open);
+                    revealControls();
+                  }}
+                  style={styles.qualityButton}
+                />
+              ) : null}
+              <FocusButton
+                label={`Quality: ${selectedQuality}`}
+                onPress={openQualityMenu}
                 disabled={state.playbackOptions.length <= 1}
                 style={styles.qualityButton}
               />
-            </View>
-
-            <View style={styles.progressRow}>
-              <Text style={styles.time}>{formatTime(currentTime)}</Text>
-              <View style={styles.track}>
-                <View
-                  style={[
-                    styles.trackFill,
-                    {
-                      width: `${
-                        duration > 0
-                          ? Math.min(100, (currentTime / duration) * 100)
-                          : 0
-                      }%`,
-                    },
-                  ]}
-                />
-              </View>
-              <Text style={styles.time}>
-                {formatTime(duration || detail.durationSeconds || 0)}
-              </Text>
             </View>
           </View>
         </View>
@@ -489,36 +723,36 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  bottomScrim: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 340,
+    backgroundColor: colors.overlay,
+  },
   info: { gap: spacing.xs },
-  progressRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-  },
-  track: {
-    flex: 1,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: colors.surfaceBorder,
-    overflow: "hidden",
-  },
-  trackFill: { height: "100%", backgroundColor: colors.brand, borderRadius: 4 },
-  time: {
-    color: colors.mutedForeground,
-    fontSize: fontSize.sm,
-    fontFamily: monoFont,
-    minWidth: 64,
-  },
   controls: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: spacing.md,
   },
-  qualityButton: { minWidth: 150 },
+  controlsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.lg,
+  },
+  qualityButton: { minWidth: 190 },
   controlPanel: {
-    gap: spacing.md,
-    paddingTop: spacing.xs,
+    position: "relative",
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radius.hero,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    backgroundColor: colors.surface,
   },
   channelButton: {
     alignSelf: "flex-start",
@@ -562,184 +796,3 @@ const styles = StyleSheet.create({
   },
   muted: { color: colors.mutedForeground, fontSize: fontSize.md },
 });
-
-function buildPlaybackOptions(detail: VideoDetail): PlaybackOption[] {
-  const options: PlaybackOption[] = [];
-  const seen = new Set<string>();
-
-  const addOption = (option: PlaybackOption) => {
-    const key =
-      option.kind === "split"
-        ? `${option.label}|${option.videoUrl}|${option.audioUrl}`
-        : `${option.label}|${option.videoUrl}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    options.push(option);
-  };
-
-  if (detail.hlsUrl) {
-    addOption({
-      id: "auto-hls",
-      label: "Auto",
-      videoUrl: detail.hlsUrl,
-      kind: "auto",
-    });
-  }
-
-  detail.videoSources
-    .filter((source) => sourceLooksMuxed(source))
-    .map((source, index) => ({ source, index }))
-    .sort(
-      (a, b) =>
-        qualityScore(b.source.quality, b.source.height, b.index, b.source.fps) -
-        qualityScore(a.source.quality, a.source.height, a.index, a.source.fps),
-    )
-    .forEach(({ source, index }) => {
-      addOption({
-        id: `muxed-${index}`,
-        label: qualityLabel(source.quality, source.height),
-        videoUrl: source.url,
-        kind: "muxed",
-      });
-    });
-
-  const audioSource = selectAudioSource(detail.audioSources);
-  if (audioSource) {
-    const usedSplitLabels = new Set<string>();
-    detail.videoSources
-      .filter((source) => sourceLooksSplitVideo(source))
-      .map((source, index) => ({ source, index }))
-      .sort((a, b) => {
-        const byQuality =
-          qualityScore(
-            b.source.quality,
-            b.source.height,
-            b.index,
-            b.source.fps,
-          ) -
-          qualityScore(
-            a.source.quality,
-            a.source.height,
-            a.index,
-            a.source.fps,
-          );
-        if (byQuality !== 0) return byQuality;
-        const byCodec = codecScore(b.source) - codecScore(a.source);
-        if (byCodec !== 0) return byCodec;
-        return (b.source.bitrate ?? 0) - (a.source.bitrate ?? 0);
-      })
-      .forEach(({ source, index }) => {
-        const label = qualityLabel(source.quality, source.height);
-        if (usedSplitLabels.has(label)) return;
-        usedSplitLabels.add(label);
-        addOption({
-          id: `split-${index}`,
-          label,
-          videoUrl: source.url,
-          audioUrl: audioSource.url,
-          kind: "split",
-        });
-      });
-  }
-
-  return options;
-}
-
-function qualityLabel(quality: string | undefined, height: number | undefined) {
-  const cleanQuality = quality?.trim();
-  if (cleanQuality) return cleanQuality;
-  if (typeof height === "number" && height > 0) return `${height}p`;
-  return "MP4";
-}
-
-function qualityScore(
-  quality: string | undefined,
-  height: number | undefined,
-  index: number,
-  fps?: number,
-) {
-  const qualityHeight = quality?.match(/(\d{2,4})\s*p/i)?.[1];
-  const fpsBonus = typeof fps === "number" && Number.isFinite(fps) ? fps : 0;
-  if (qualityHeight)
-    return Number.parseInt(qualityHeight, 10) * 1000 + fpsBonus;
-  if (typeof height === "number" && height > 0) return height * 1000 + fpsBonus;
-  return 1 - index / 1000;
-}
-
-function sourceLooksMuxed(source: VideoDetail["videoSources"][number]) {
-  if (source.videoOnly === true) return false;
-  if (isManifestPath(source.url)) return false;
-  const mimeType = source.mimeType?.toLowerCase() ?? "";
-  if (mimeType.startsWith("audio/")) return false;
-  if (mimeVideoTypeWithoutAudioCodecs(source.mimeType)) return false;
-  return true;
-}
-
-function sourceLooksSplitVideo(source: VideoDetail["videoSources"][number]) {
-  if (source.videoOnly !== true) return false;
-  if (isManifestPath(source.url)) return false;
-  const mimeType = source.mimeType?.toLowerCase() ?? "";
-  if (mimeType.startsWith("audio/")) return false;
-  if (mimeVideoTypeButAudioOnlyCodecs(source.mimeType)) return false;
-  return true;
-}
-
-function selectAudioSource(audioSources: VideoDetail["audioSources"]) {
-  return audioSources
-    .filter((source) => source.url && !source.videoOnly)
-    .sort((a, b) => audioScore(b) - audioScore(a))[0];
-}
-
-function audioScore(source: VideoDetail["audioSources"][number]) {
-  const blob = `${source.mimeType ?? ""} ${source.url}`.toLowerCase();
-  const codecScore = /mp4a|audio\/mp4/.test(blob)
-    ? 100
-    : /opus|audio\/webm/.test(blob)
-      ? 70
-      : 40;
-  return codecScore + (source.bitrate ?? 0) / 1_000_000;
-}
-
-function codecScore(source: VideoDetail["videoSources"][number]) {
-  const blob = `${source.mimeType ?? ""} ${source.url}`.toLowerCase();
-  if (/avc1|avc3|h264/.test(blob)) return 100;
-  if (/video\/mp4/.test(blob) && !/av01|av1|vp9|webm/.test(blob)) return 80;
-  if (/vp9|video\/webm/.test(blob)) return 50;
-  if (/av01|av1/.test(blob)) return 10;
-  return 40;
-}
-
-function isManifestPath(url: string) {
-  const normalized = url.toLowerCase();
-  return (
-    normalized.includes(".m3u8") ||
-    normalized.includes(".mpd") ||
-    normalized.includes("/manifest/hls/") ||
-    normalized.includes("/manifest/dash/")
-  );
-}
-
-function mimeVideoTypeButAudioOnlyCodecs(mimeType: string | undefined) {
-  if (!mimeType?.trim()) return false;
-  if (!mimeType.toLowerCase().startsWith("video/")) return false;
-  const match = mimeType.match(/codecs\s*=\s*"([^"]+)"/i);
-  if (!match?.[1]) return false;
-  const codecs = match[1].toLowerCase().replace(/\s/g, "");
-  if (/avc1|avc3|av01|vp8|vp9|vp09|hev1|hvc1|dvh1|theora/.test(codecs)) {
-    return false;
-  }
-  return /mp4a|opus|vorbis|flac/.test(codecs);
-}
-
-function mimeVideoTypeWithoutAudioCodecs(mimeType: string | undefined) {
-  if (!mimeType?.trim()) return false;
-  if (!mimeType.toLowerCase().startsWith("video/")) return false;
-  const match = mimeType.match(/codecs\s*=\s*"([^"]+)"/i);
-  if (!match?.[1]) return false;
-  const codecs = match[1].toLowerCase().replace(/\s/g, "");
-  const hasVideo = /avc1|avc3|av01|vp8|vp9|vp09|hev1|hvc1|dvh1|theora/.test(
-    codecs,
-  );
-  const hasAudio = /mp4a|opus|vorbis|flac|ac-3|ec-3/.test(codecs);
-  return hasVideo && !hasAudio;
-}

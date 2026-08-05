@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BrandLogoIcon } from "@/components/shell/brand-logo-icon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { VideoThumbnailImg } from "@/components/videos/video-thumbnail-img";
@@ -11,10 +12,18 @@ import {
   type SessionDislike,
 } from "@/lib/taste-deck-filter";
 import { TRENDING_REGION_OPTIONS } from "@/lib/trending-regions";
+import { cn } from "@/lib/utils";
 import type { UnifiedVideo } from "@/server/services/proxy.types";
 import { trpc } from "@/trpc/react";
 
 type Step = "setup" | "keywords" | "videos" | "finish";
+
+const STEPS: { key: Step; label: string }[] = [
+  { key: "setup", label: "Basics" },
+  { key: "keywords", label: "Topics" },
+  { key: "videos", label: "Rate" },
+  { key: "finish", label: "Done" },
+];
 
 const SUGGESTED_KEYWORDS: readonly string[] = [
   "linux",
@@ -124,6 +133,70 @@ function CloseIcon() {
       <path d="M18 6 6 18" />
       <path d="m6 6 12 12" />
     </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <title>Done</title>
+      <path d="m5 12 5 5 9-10" />
+    </svg>
+  );
+}
+
+function OnboardingStepper({ step }: { step: Step }) {
+  const activeIndex = STEPS.findIndex((s) => s.key === step);
+  return (
+    <ol className="flex items-center gap-1.5 sm:gap-2" aria-label="Progress">
+      {STEPS.map((s, index) => {
+        const done = index < activeIndex;
+        const active = index === activeIndex;
+        return (
+          <li key={s.key} className="flex flex-1 items-center gap-1.5 sm:gap-2">
+            <span
+              className={cn(
+                "grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] font-bold transition-colors [&_svg]:h-3 [&_svg]:w-3",
+                done || active
+                  ? "bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))]"
+                  : "bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]",
+              )}
+              aria-hidden
+            >
+              {done ? <CheckIcon /> : index + 1}
+            </span>
+            <span
+              className={cn(
+                "hidden text-xs font-medium sm:inline",
+                active
+                  ? "text-[hsl(var(--foreground))]"
+                  : "text-[hsl(var(--muted-foreground))]",
+              )}
+              aria-current={active ? "step" : undefined}
+            >
+              {s.label}
+            </span>
+            {index < STEPS.length - 1 ? (
+              <span
+                className={cn(
+                  "h-px min-w-3 flex-1 rounded-full",
+                  done ? "bg-[hsl(var(--primary))]" : "bg-[hsl(var(--border))]",
+                )}
+                aria-hidden
+              />
+            ) : null}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -379,58 +452,46 @@ export function TasteOnboardingClient() {
 
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-6 py-2">
-      <header className="space-y-3">
-        <div className="flex items-center justify-between gap-3 text-xs font-medium uppercase tracking-wide text-[hsl(var(--muted-foreground))]">
-          <span>
-            Step{" "}
-            {step === "setup"
-              ? "1"
-              : step === "keywords"
-                ? "2"
-                : step === "videos"
-                  ? "3"
-                  : "4"}{" "}
-            of 4
-          </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => void onSkipEntirely()}
-            disabled={skipMutation.isPending}
-          >
-            Skip all
-          </Button>
+      <header className="space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <BrandLogoIcon size={40} tile className="h-10 w-10" />
+            <div>
+              <p className="text-sm font-extrabold tracking-tight text-[hsl(var(--foreground))]">
+                owntube
+              </p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                {manual
+                  ? "Tune your recommendations"
+                  : "Welcome — let's set up your feed"}
+              </p>
+            </div>
+          </div>
+          {step !== "finish" ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => void onSkipEntirely()}
+              disabled={skipMutation.isPending}
+            >
+              Skip all
+            </Button>
+          ) : null}
         </div>
-        <div
-          className="h-1 w-full overflow-hidden rounded-full bg-[hsl(var(--muted))]"
-          aria-hidden
-        >
-          <div
-            className="h-full rounded-full bg-[hsl(var(--primary))] transition-all duration-300"
-            style={{
-              width:
-                step === "setup"
-                  ? "25%"
-                  : step === "keywords"
-                    ? "50%"
-                    : step === "videos"
-                      ? "75%"
-                      : "100%",
-            }}
-          />
-        </div>
+        <OnboardingStepper step={step} />
       </header>
 
       {step === "setup" ? (
-        <section className="space-y-6 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 shadow-sm">
+        <section className="ot-surface-card space-y-6 p-6">
           <div className="space-y-1.5">
             <h1 className="text-2xl font-extrabold tracking-tight">
-              Quick setup
+              The basics
             </h1>
             <p className="text-sm text-[hsl(var(--muted-foreground))]">
-              Choose your default region and optional video source instances.
-              You can edit these anytime in Settings.
+              Pick your trending region and, if you run your own Piped or
+              Invidious instance, point owntube at it. Everything can be changed
+              later in Settings.
             </p>
           </div>
 
@@ -443,7 +504,7 @@ export function TasteOnboardingClient() {
             </label>
             <select
               id="onboarding-region"
-              className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm"
+              className="w-full rounded-[var(--radius-shell)] border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm"
               value={trendingRegion}
               onChange={(e) => setTrendingRegion(e.target.value)}
             >
@@ -484,12 +545,10 @@ export function TasteOnboardingClient() {
                 placeholder="https://your-invidious.example"
               />
             </div>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">
+              Leave both empty to use the instances configured on the server.
+            </p>
           </div>
-
-          <p className="text-xs text-[hsl(var(--muted-foreground))]">
-            Tip: you can import watch history later in Settings and subscribe to
-            channels from search/channel pages.
-          </p>
 
           <Button
             type="button"
@@ -504,14 +563,14 @@ export function TasteOnboardingClient() {
       ) : null}
 
       {step === "keywords" ? (
-        <section className="space-y-6 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 shadow-sm">
+        <section className="ot-surface-card space-y-6 p-6">
           <div className="space-y-1.5">
             <h1 className="text-2xl font-extrabold tracking-tight">
               What do you actually watch?
             </h1>
             <p className="text-sm text-[hsl(var(--muted-foreground))]">
-              Topics you add here are mixed with your watch history to bias the
-              home feed. You can change them later in Settings.
+              These topics seed your home feed until your watch history takes
+              over. Add a few — the more specific, the better.
             </p>
           </div>
 
@@ -586,7 +645,15 @@ export function TasteOnboardingClient() {
             </div>
           ) : null}
 
-          <div className="flex flex-col gap-2 pt-1 sm:flex-row">
+          <div className="flex gap-2 pt-1">
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => setStep("setup")}
+            >
+              Back
+            </Button>
             <Button
               type="button"
               size="lg"
@@ -608,7 +675,7 @@ export function TasteOnboardingClient() {
             </h1>
             <p className="text-sm text-[hsl(var(--muted-foreground))]">
               Like to see more like it. Dislike hides the channel and similar
-              titles for the rest of this session.
+              titles for the rest of this session. Skip if unsure.
             </p>
           </div>
 
@@ -622,27 +689,27 @@ export function TasteOnboardingClient() {
                 style={{ width: `${progressPct}%` }}
               />
             </div>
-            <span className="font-mono text-xs tabular-nums text-[hsl(var(--muted-foreground))]">
+            <span className="ot-mono-data text-xs text-[hsl(var(--muted-foreground))]">
               {answered}/{totalToRate || 0}
             </span>
           </div>
 
           {deckQuery.isLoading ? (
-            <div className="grid gap-3 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4 shadow-sm">
-              <div className="aspect-video w-full animate-pulse rounded-xl bg-[hsl(var(--muted)_/_0.6)]" />
+            <div className="ot-surface-card grid gap-3 p-4">
+              <div className="aspect-video w-full animate-pulse rounded-[var(--radius-shell)] bg-[hsl(var(--muted)_/_0.6)]" />
               <div className="space-y-2">
                 <div className="h-4 w-4/5 animate-pulse rounded bg-[hsl(var(--muted)_/_0.6)]" />
                 <div className="h-3 w-2/5 animate-pulse rounded bg-[hsl(var(--muted)_/_0.6)]" />
               </div>
             </div>
           ) : deckQuery.isError ? (
-            <p className="rounded-xl border border-[hsl(var(--destructive)_/_0.3)] bg-[hsl(var(--destructive)_/_0.1)] p-4 text-sm text-[hsl(var(--destructive))]">
+            <p className="rounded-[var(--radius-card)] border border-[hsl(var(--destructive)_/_0.3)] bg-[hsl(var(--destructive)_/_0.1)] p-4 text-sm text-[hsl(var(--destructive))]">
               {deckQuery.error.message ||
                 "Could not load videos. Try again later or check your instance settings."}
             </p>
           ) : deckQuery.isSuccess &&
             (deckQuery.data?.videos?.length ?? 0) === 0 ? (
-            <div className="space-y-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] p-4 text-sm text-[hsl(var(--muted-foreground))]">
+            <div className="space-y-3 rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] p-4 text-sm text-[hsl(var(--muted-foreground))]">
               <p>
                 Nothing to rate right now: the personalized pool is empty, or
                 every suggestion was already in your likes, dislikes, or saves.
@@ -652,21 +719,32 @@ export function TasteOnboardingClient() {
               {deckQuery.data?.warning ? (
                 <p className="text-xs opacity-90">{deckQuery.data.warning}</p>
               ) : null}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  deckInitialized.current = false;
-                  void deckQuery.refetch();
-                }}
-                disabled={deckQuery.isFetching}
-              >
-                {deckQuery.isFetching ? "Loading…" : "Retry"}
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    deckInitialized.current = false;
+                    void deckQuery.refetch();
+                  }}
+                  disabled={deckQuery.isFetching}
+                >
+                  {deckQuery.isFetching ? "Loading…" : "Retry"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void onFinishVideosEarly()}
+                  disabled={completeMutation.isPending}
+                >
+                  Finish without rating
+                </Button>
+              </div>
             </div>
           ) : !current ? (
-            <div className="space-y-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.4)] p-4 text-sm text-[hsl(var(--muted-foreground))]">
+            <div className="space-y-3 rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.4)] p-4 text-sm text-[hsl(var(--muted-foreground))]">
               <p>No clip in the queue right now.</p>
               <Button
                 type="button"
@@ -682,7 +760,7 @@ export function TasteOnboardingClient() {
               </Button>
             </div>
           ) : (
-            <article className="overflow-hidden rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-sm">
+            <article className="ot-surface-card overflow-hidden">
               <div className="relative aspect-video w-full bg-black">
                 {current.thumbnailUrl ? (
                   <VideoThumbnailImg
@@ -747,7 +825,7 @@ export function TasteOnboardingClient() {
           )}
 
           {blockedChannelLabels.length > 0 ? (
-            <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] p-3 text-xs text-[hsl(var(--muted-foreground))]">
+            <div className="rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--muted)_/_0.35)] p-3 text-xs text-[hsl(var(--muted-foreground))]">
               <span className="font-medium text-[hsl(var(--foreground))]">
                 Hidden this session:
               </span>{" "}
@@ -755,21 +833,30 @@ export function TasteOnboardingClient() {
             </div>
           ) : null}
 
-          <Button
-            type="button"
-            variant="ghost"
-            className="w-full"
-            onClick={() => void onFinishVideosEarly()}
-            disabled={completeMutation.isPending}
-          >
-            Done — save what I&apos;ve rated
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setStep("keywords")}
+            >
+              Back
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              className="flex-1"
+              onClick={() => void onFinishVideosEarly()}
+              disabled={completeMutation.isPending}
+            >
+              Done — save what I&apos;ve rated
+            </Button>
+          </div>
         </section>
       ) : null}
 
       {message ? (
         <p
-          className="rounded-xl border border-[hsl(var(--destructive)_/_0.3)] bg-[hsl(var(--destructive)_/_0.1)] p-3 text-sm text-[hsl(var(--destructive))]"
+          className="rounded-[var(--radius-card)] border border-[hsl(var(--destructive)_/_0.3)] bg-[hsl(var(--destructive)_/_0.1)] p-3 text-sm text-[hsl(var(--destructive))]"
           role="alert"
         >
           {message}
@@ -777,34 +864,70 @@ export function TasteOnboardingClient() {
       ) : null}
 
       {step === "finish" ? (
-        <section className="space-y-5 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 shadow-sm">
+        <section className="ot-surface-card space-y-5 p-6">
           <div className="space-y-1.5">
             <h1 className="text-2xl font-extrabold tracking-tight">
               You&apos;re all set
             </h1>
             <p className="text-sm text-[hsl(var(--muted-foreground))]">
-              Your taste profile has been saved. You can now import history to
-              improve recommendations faster and subscribe to channels you care
-              about.
+              Your taste profile is saved and your feed is ready. A few things
+              worth doing next:
             </p>
           </div>
 
-          <div className="grid gap-2 sm:grid-cols-2">
-            <Button asChild type="button">
-              <Link href="/settings">Import history in Settings</Link>
-            </Button>
-            <Button asChild type="button" variant="outline">
-              <Link href={suggestedSearchHref}>Find channels to subscribe</Link>
-            </Button>
-          </div>
+          <ul className="space-y-2 text-sm">
+            <li className="flex items-start gap-2">
+              <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center text-[hsl(var(--primary))] [&_svg]:h-3.5 [&_svg]:w-3.5">
+                <CheckIcon />
+              </span>
+              <span>
+                <Link
+                  href="/settings"
+                  className="font-medium text-[hsl(var(--primary))] hover:underline"
+                >
+                  Import your watch history
+                </Link>{" "}
+                <span className="text-[hsl(var(--muted-foreground))]">
+                  (YouTube Takeout) to boost recommendations instantly.
+                </span>
+              </span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center text-[hsl(var(--primary))] [&_svg]:h-3.5 [&_svg]:w-3.5">
+                <CheckIcon />
+              </span>
+              <span>
+                <Link
+                  href={suggestedSearchHref}
+                  className="font-medium text-[hsl(var(--primary))] hover:underline"
+                >
+                  Find channels to subscribe
+                </Link>{" "}
+                <span className="text-[hsl(var(--muted-foreground))]">
+                  — subscriptions feed the home page too.
+                </span>
+              </span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center text-[hsl(var(--primary))] [&_svg]:h-3.5 [&_svg]:w-3.5">
+                <CheckIcon />
+              </span>
+              <span>
+                <Link
+                  href="/friends"
+                  className="font-medium text-[hsl(var(--primary))] hover:underline"
+                >
+                  Add friends
+                </Link>{" "}
+                <span className="text-[hsl(var(--muted-foreground))]">
+                  from your instance and send each other videos.
+                </span>
+              </span>
+            </li>
+          </ul>
 
-          <Button
-            type="button"
-            variant="ghost"
-            className="w-full"
-            onClick={goHome}
-          >
-            Go to home feed
+          <Button type="button" size="lg" className="w-full" onClick={goHome}>
+            Go to your feed
           </Button>
         </section>
       ) : null}

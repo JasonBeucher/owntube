@@ -7,8 +7,9 @@ import {
 } from "@/lib/watch-mini-player-state";
 import { trpc } from "@/trpc/react";
 
-export function MiniPlayerSync() {
+export function MiniPlayerSync({ enabled }: { enabled: boolean }) {
   const { data } = trpc.settings.get.useQuery(undefined, {
+    enabled,
     retry: false,
     refetchOnWindowFocus: false,
   });

@@ -1,31 +1,43 @@
-import { useEffect, useRef, useState } from "react";
+import type { UnifiedVideo } from "@web/server/services/proxy.types";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
-import { CarouselFeed } from "@/components/CarouselFeed";
+import { CarouselFeed, type Shelf } from "@/components/CarouselFeed";
 import { HomeHero } from "@/components/HomeHero";
+import { cardThumbnailUrl } from "@/lib/hero-thumbnail-url";
 import type { Nav } from "@/lib/navigation";
 import { trpcClient } from "@/lib/trpc";
 import { useInfiniteFeed } from "@/lib/use-infinite-feed";
-import { colors, fontSize, monoFont, spacing } from "@/theme";
+import { useResumeProgress } from "@/lib/use-resume-progress";
+import { colors, fontSize, spacing } from "@/theme";
 
-type HomeLabels = {
-  hero: string;
-  rail: string;
-  subtitle: string;
-};
+/** Skip barely-started and near-finished videos — neither is worth resuming. */
+const RESUME_MIN_SECONDS = 30;
+const RESUME_TAIL_SECONDS = 30;
+const CONTINUE_SHELF_SIZE = 12;
+const SUBSCRIPTIONS_SHELF_SIZE = 24;
+/** Videos per generated shelf once the named ones run out. */
+const TAIL_SHELF_SIZE = 12;
 
-const DEFAULT_LABELS: HomeLabels = {
-  hero: "Trending now",
-  rail: "Trending",
-  subtitle: "Preparing your feed...",
+type SideShelves = {
+  continueWatching: UnifiedVideo[];
+  subscriptions: UnifiedVideo[];
 };
 
 /**
- * Personalized home feed as stacked carousels. The server handles cold start
- * (falls back to trending), and pages are 1-indexed with a `hasMore` flag.
+ * Personalized home feed as named shelves — Continue watching, new uploads from
+ * subscriptions, then the recommendation pool. The extra shelves are composed
+ * client-side from procedures that already exist and are cached server-side, so
+ * this needs no dedicated feed endpoint; each lands independently rather than
+ * blocking the screen on the slowest one.
  */
 export function HomeScreen({ nav }: { nav: Nav }) {
   const mountedRef = useRef(true);
-  const [labels, setLabels] = useState<HomeLabels>(DEFAULT_LABELS);
+  const [personalized, setPersonalized] = useState(false);
+  const [region, setRegion] = useState("");
+  const [side, setSide] = useState<SideShelves>({
+    continueWatching: [],
+    subscriptions: [],
+  });
 
   useEffect(
     () => () => {
@@ -38,15 +50,10 @@ export function HomeScreen({ nav }: { nav: Nav }) {
     (page) =>
       trpcClient.feed.home.query({ page: page ?? 1 }).then((result) => {
         if (page === undefined && mountedRef.current) {
-          const personalized =
-            result.kind === "personalized" && result.coldStart !== true;
-          setLabels({
-            hero: personalized ? "Top pick for you" : "Trending now",
-            rail: personalized ? "For You" : "Trending",
-            subtitle: personalized
-              ? "Based on the channels you watched recently."
-              : `Trending ${result.region}`,
-          });
+          setPersonalized(
+            result.kind === "personalized" && result.coldStart !== true,
+          );
+          setRegion(result.region);
         }
         return {
           items: result.videos,
@@ -57,41 +64,104 @@ export function HomeScreen({ nav }: { nav: Nav }) {
   );
 
   useEffect(() => {
-    if (
-      feed.status === "ready" &&
-      feed.videos.length === 1 &&
-      feed.hasMore &&
-      !feed.loadingMore
-    ) {
-      feed.loadMore();
-    }
-  }, [
-    feed.status,
-    feed.videos.length,
-    feed.hasMore,
-    feed.loadingMore,
-    feed.loadMore,
-  ]);
+    trpcClient.history.list
+      .query({ page: 1, pageSize: 40 })
+      .then((rows) => {
+        if (!mountedRef.current) return;
+        const resumable = rows
+          .filter(
+            (row) =>
+              !row.completed &&
+              row.positionSeconds > RESUME_MIN_SECONDS &&
+              (row.videoDurationSeconds === 0 ||
+                row.positionSeconds <
+                  row.videoDurationSeconds - RESUME_TAIL_SECONDS),
+          )
+          .slice(0, CONTINUE_SHELF_SIZE)
+          .map(
+            (row): UnifiedVideo => ({
+              videoId: row.videoId,
+              title: row.videoTitle,
+              channelId: row.channelId,
+              channelName: row.channelName,
+              thumbnailUrl: row.thumbnailUrl ?? cardThumbnailUrl(row.videoId),
+              durationSeconds: row.videoDurationSeconds || undefined,
+            }),
+          );
+        setSide((previous) => ({ ...previous, continueWatching: resumable }));
+      })
+      .catch(() => {});
 
-  const [heroVideo, ...railVideos] = feed.videos;
+    trpcClient.subscriptions.mergedFeedInfinite
+      .query({ limit: SUBSCRIPTIONS_SHELF_SIZE })
+      .then((result) => {
+        if (!mountedRef.current) return;
+        setSide((previous) => ({
+          ...previous,
+          subscriptions: result.videos.filter((video) => !video.watched),
+        }));
+      })
+      .catch(() => {});
+  }, []);
+
+  const heroVideo = feed.videos[0];
+  // Memoized: a fresh slice each render would re-trigger every dependent hook.
+  const poolVideos = useMemo(() => feed.videos.slice(1), [feed.videos]);
+
+  const shelves = useMemo((): Shelf[] => {
+    const rows: Shelf[] = [];
+    if (side.continueWatching.length > 0) {
+      rows.push({
+        key: "continue",
+        title: "Continue watching",
+        videos: side.continueWatching,
+      });
+    }
+    if (side.subscriptions.length > 0) {
+      rows.push({
+        key: "subscriptions",
+        title: "New from your subscriptions",
+        videos: side.subscriptions,
+      });
+    }
+    for (let i = 0; i < poolVideos.length; i += TAIL_SHELF_SIZE) {
+      const chunkIndex = i / TAIL_SHELF_SIZE;
+      const first = chunkIndex === 0;
+      rows.push({
+        key: `pool-${chunkIndex}`,
+        title: personalized
+          ? first
+            ? "For you"
+            : "More for you"
+          : first
+            ? "Trending"
+            : "More trending",
+        subtitle: !first
+          ? undefined
+          : personalized
+            ? "Based on the channels you watched recently."
+            : region
+              ? `Trending ${region}`
+              : undefined,
+        videos: poolVideos.slice(i, i + TAIL_SHELF_SIZE),
+      });
+    }
+    return rows;
+  }, [side, poolVideos, personalized, region]);
+
+  const progressVideos = useMemo(
+    () => shelves.flatMap((shelf) => shelf.videos),
+    [shelves],
+  );
+  const progress = useResumeProgress(progressVideos);
+
   const header = heroVideo ? (
     <View style={styles.header}>
       <HomeHero
         video={heroVideo}
-        label={labels.hero}
+        label={personalized ? "Top pick for you" : "Trending now"}
         onPress={(videoId) => nav.openVideo(videoId)}
       />
-      {railVideos.length > 0 ? (
-        <View style={styles.railHeader}>
-          <View>
-            <Text style={styles.heading}>{labels.rail}</Text>
-            <Text style={styles.subtitle}>{labels.subtitle}</Text>
-          </View>
-          <Text style={styles.count}>
-            {feed.videos.length} video{feed.videos.length === 1 ? "" : "s"}
-          </Text>
-        </View>
-      ) : null}
     </View>
   ) : (
     <Text style={styles.heading}>Home</Text>
@@ -100,9 +170,12 @@ export function HomeScreen({ nav }: { nav: Nav }) {
   return (
     <CarouselFeed
       feed={feed}
-      onSelect={(videoId) => nav.openVideo(videoId)}
+      onSelect={(videoId) =>
+        nav.openVideo(videoId, progress.get(videoId)?.positionSeconds)
+      }
       header={header}
-      videos={railVideos}
+      shelves={shelves}
+      progress={progress}
       preferFirstRowFocus={false}
       emptyText={
         heroVideo
@@ -119,25 +192,9 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingHorizontal: 8,
   },
-  railHeader: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    gap: spacing.lg,
-  },
   heading: {
     color: colors.foreground,
     fontSize: fontSize.xl,
     fontWeight: "700",
-  },
-  subtitle: {
-    color: colors.mutedForeground,
-    fontSize: fontSize.sm,
-    marginTop: 4,
-  },
-  count: {
-    color: colors.mutedForeground,
-    fontSize: fontSize.sm,
-    fontFamily: monoFont,
   },
 });

@@ -23,13 +23,18 @@ import {
   appSettingsSchema,
   getUserProxyOverrides,
   getUserSettings,
+  themeSchema,
   upsertUserSettings,
+  visualThemeSchema,
 } from "@/server/settings/profile";
 import { protectedProcedure, router } from "@/server/trpc/init";
 
 const settingsPatchSchema = z.object({
-  theme: appSettingsSchema.shape.theme.optional(),
-  visualTheme: appSettingsSchema.shape.visualTheme.optional(),
+  // Bare enums, not `appSettingsSchema.shape.X.optional()`: Zod 4 fills the
+  // inner `.default()` for absent keys, which made every partial update reset
+  // theme/visualTheme to their defaults.
+  theme: themeSchema.optional(),
+  visualTheme: visualThemeSchema.optional(),
   pipedBaseUrl: z.string().max(512).optional(),
   invidiousBaseUrl: z.string().max(512).optional(),
   pipedBaseUrls: z.array(z.string().max(512)).max(8).optional(),

@@ -10,17 +10,24 @@ import { trpc } from "@/trpc/react";
 
 type HomeFeedPage = inferRouterOutputs<AppRouter>["feed"]["home"];
 
-export type VideoCardActionsView = "main" | "playlist" | "create-playlist";
+export type VideoCardActionsView =
+  | "main"
+  | "playlist"
+  | "create-playlist"
+  | "share";
 
 export function useVideoCardActions({
   videoId,
   channelId,
   channelName,
+  videoTitle,
   loadPlaylists = false,
 }: {
   videoId: string;
   channelId?: string;
   channelName?: string;
+  /** Denormalized into the interaction/playlist row so lists render without an upstream fetch. */
+  videoTitle?: string;
   loadPlaylists?: boolean;
 }) {
   const router = useRouter();
@@ -158,6 +165,8 @@ export function useVideoCardActions({
       await setInteraction.mutateAsync({
         videoId,
         channelId,
+        videoTitle,
+        channelName,
         type: "like",
         active: next,
       });
@@ -165,6 +174,8 @@ export function useVideoCardActions({
         await setInteraction.mutateAsync({
           videoId,
           channelId,
+          videoTitle,
+          channelName,
           type: "dislike",
           active: false,
         });
@@ -180,6 +191,8 @@ export function useVideoCardActions({
       await setInteraction.mutateAsync({
         videoId,
         channelId,
+        videoTitle,
+        channelName,
         type: "dislike",
         active: next,
       });
@@ -187,6 +200,8 @@ export function useVideoCardActions({
         await setInteraction.mutateAsync({
           videoId,
           channelId,
+          videoTitle,
+          channelName,
           type: "like",
           active: false,
         });
@@ -204,7 +219,13 @@ export function useVideoCardActions({
 
   const addVideoToPlaylist = async (playlistId: number) => {
     await runAuthed(async () => {
-      await addToPlaylist.mutateAsync({ playlistId, videoId, channelId });
+      await addToPlaylist.mutateAsync({
+        playlistId,
+        videoId,
+        channelId,
+        videoTitle,
+        channelName,
+      });
       setFeedback("Added to playlist");
       closePanels();
     });
@@ -219,6 +240,8 @@ export function useVideoCardActions({
         playlistId: created.id,
         videoId,
         channelId,
+        videoTitle,
+        channelName,
       });
       setNewPlaylistName("");
       setFeedback("Playlist created and video added");

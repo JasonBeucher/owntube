@@ -123,4 +123,119 @@ describe("historyRouter", () => {
     expect(row?.completed).toBe(0);
     sqlite.close();
   });
+
+  it("moves the resume position backwards when the viewer rewinds", async () => {
+    const { db, sqlite } = createTestDb();
+    const now = Math.floor(Date.now() / 1000);
+    const user = db
+      .insert(users)
+      .values({
+        email: "history-resume@example.com",
+        passwordHash: "x",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: users.id })
+      .get();
+
+    const caller = appRouter.createCaller({ db, userId: user.id });
+    const first = await caller.history.upsertEvent({
+      videoId: "dQw4w9WgXcQ",
+      channelId: "UC1",
+      durationWatched: 120,
+      positionSeconds: 120,
+      videoDurationSeconds: 600,
+    });
+    // Seeking back must move the resume point back, unlike durationWatched
+    // which is a monotonically accumulating engagement signal.
+    await caller.history.upsertEvent({
+      videoId: "dQw4w9WgXcQ",
+      channelId: "UC1",
+      durationWatched: 140,
+      positionSeconds: 30,
+      videoDurationSeconds: 600,
+    });
+
+    const row = db
+      .select()
+      .from(watchHistory)
+      .where(eq(watchHistory.id, first.id))
+      .get();
+    expect(row?.positionSeconds).toBe(30);
+    expect(row?.durationWatched).toBe(140);
+    sqlite.close();
+  });
+
+  it("returns the newest resume position per video for a batch of ids", async () => {
+    const { db, sqlite } = createTestDb();
+    const now = Math.floor(Date.now() / 1000);
+    const user = db
+      .insert(users)
+      .values({
+        email: "history-batch@example.com",
+        passwordHash: "x",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: users.id })
+      .get();
+
+    // Two separate watches of the same video, plus one of another.
+    db.insert(watchHistory)
+      .values([
+        {
+          userId: user.id,
+          videoId: "vid-a",
+          channelId: "UC1",
+          startedAt: now - 10_000,
+          durationWatched: 50,
+          positionSeconds: 50,
+          videoDurationSeconds: 600,
+          completed: 0,
+          isDeleted: 0,
+          isShort: 0,
+          createdAt: now - 10_000,
+        },
+        {
+          userId: user.id,
+          videoId: "vid-a",
+          channelId: "UC1",
+          startedAt: now,
+          durationWatched: 300,
+          positionSeconds: 300,
+          videoDurationSeconds: 600,
+          completed: 0,
+          isDeleted: 0,
+          isShort: 0,
+          createdAt: now,
+        },
+        {
+          userId: user.id,
+          videoId: "vid-b",
+          channelId: "UC2",
+          startedAt: now,
+          durationWatched: 600,
+          positionSeconds: 590,
+          videoDurationSeconds: 600,
+          completed: 1,
+          isDeleted: 0,
+          isShort: 0,
+          createdAt: now,
+        },
+      ])
+      .run();
+
+    const caller = appRouter.createCaller({ db, userId: user.id });
+    const rows = await caller.history.resumePositions({
+      videoIds: ["vid-a", "vid-b", "vid-missing"],
+    });
+
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.videoId === "vid-a")?.positionSeconds).toBe(300);
+    expect(rows.find((r) => r.videoId === "vid-b")).toMatchObject({
+      positionSeconds: 590,
+      completed: true,
+    });
+    sqlite.close();
+  });
 });

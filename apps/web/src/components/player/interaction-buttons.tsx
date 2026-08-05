@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { ShareVideoButton } from "@/components/friends/share-video-button";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/trpc/react";
@@ -8,6 +9,8 @@ import { trpc } from "@/trpc/react";
 type InteractionButtonsProps = {
   videoId: string;
   channelId?: string;
+  videoTitle?: string;
+  channelName?: string;
   isAuthenticated: boolean;
 };
 
@@ -55,6 +58,8 @@ function SaveIcon() {
 export function InteractionButtons({
   videoId,
   channelId,
+  videoTitle,
+  channelName,
   isAuthenticated,
 }: InteractionButtonsProps) {
   const utils = trpc.useUtils();
@@ -93,6 +98,8 @@ export function InteractionButtons({
           setMutation.mutate({
             videoId,
             channelId,
+            videoTitle,
+            channelName,
             type: "like",
             active: !state.like,
           })
@@ -123,6 +130,8 @@ export function InteractionButtons({
           setMutation.mutate({
             videoId,
             channelId,
+            videoTitle,
+            channelName,
             type: "dislike",
             active: !state.dislike,
           })
@@ -153,6 +162,8 @@ export function InteractionButtons({
           setMutation.mutate({
             videoId,
             channelId,
+            videoTitle,
+            channelName,
             type: "save",
             active: !state.save,
           })
@@ -169,6 +180,14 @@ export function InteractionButtons({
         </span>
         <span>{state.save ? "Saved" : "Save"}</span>
       </Button>
+      <ShareVideoButton
+        videoId={videoId}
+        videoTitle={videoTitle}
+        channelId={channelId}
+        channelName={channelName}
+        isAuthenticated={isAuthenticated}
+        buttonClassName={fancyButtonClass}
+      />
     </div>
   );
 }

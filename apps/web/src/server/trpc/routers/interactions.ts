@@ -12,6 +12,9 @@ const setInteractionSchema = z.object({
   channelId: z.string().min(1).max(128).optional(),
   type: interactionTypeSchema,
   active: z.boolean(),
+  /** Denormalized so `list` renders without an upstream fetch per row. */
+  videoTitle: z.string().trim().min(1).max(300).optional(),
+  channelName: z.string().trim().min(1).max(200).optional(),
 });
 
 function nowUnix(): number {
@@ -48,6 +51,8 @@ export const interactionsRouter = router({
             videoId: input.videoId,
             channelId: input.channelId ?? null,
             type: input.type,
+            videoTitle: input.videoTitle ?? null,
+            channelName: input.channelName ?? null,
             createdAt: ts,
           })
           .run();
@@ -79,6 +84,34 @@ export const interactionsRouter = router({
         dislike: rows.some((row) => row.type === "dislike"),
         save: rows.some((row) => row.type === "save"),
       };
+    }),
+  /** Liked / disliked / saved videos, newest first — backs the TV Library section. */
+  list: protectedProcedure
+    .input(
+      z.object({
+        type: interactionTypeSchema,
+        limit: z.number().int().min(1).max(200).default(60),
+      }),
+    )
+    .query(({ ctx, input }) => {
+      return ctx.db
+        .select({
+          videoId: interactions.videoId,
+          channelId: interactions.channelId,
+          videoTitle: interactions.videoTitle,
+          channelName: interactions.channelName,
+          createdAt: interactions.createdAt,
+        })
+        .from(interactions)
+        .where(
+          and(
+            eq(interactions.userId, ctx.userId),
+            eq(interactions.type, input.type),
+          ),
+        )
+        .orderBy(desc(interactions.createdAt))
+        .limit(input.limit)
+        .all();
     }),
   blockRecommendationChannel: protectedProcedure
     .input(z.object({ channelId: z.string().min(1).max(128) }))

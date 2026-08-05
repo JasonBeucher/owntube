@@ -12,7 +12,10 @@ import {
   videoCommentsInputSchema,
   videoDetailInputSchema,
 } from "@/server/services/proxy.types";
-import { getUserProxyOverrides } from "@/server/settings/profile";
+import {
+  getUserProxyOverrides,
+  getUserSettings,
+} from "@/server/settings/profile";
 import { publicProcedure, router } from "@/server/trpc/init";
 
 const videoCommentsQuerySchema = videoCommentsInputSchema.extend({
@@ -52,7 +55,19 @@ export const videoRouter = router({
     .input(videoDetailInputSchema)
     .query(async ({ ctx, input }) => {
       const overrides = getUserProxyOverrides(ctx.db, ctx.userId);
-      return fetchRelatedVideos(ctx.db, input, 20, overrides);
+      const related = await fetchRelatedVideos(ctx.db, input, 20, overrides);
+      if (!ctx.userId) return related;
+      // "Don't recommend this channel" applies to the watch sidebar too.
+      const blocked = new Set(
+        getUserSettings(ctx.db, ctx.userId).blockedRecommendationChannels,
+      );
+      if (blocked.size === 0) return related;
+      return {
+        ...related,
+        videos: related.videos.filter(
+          (v) => !(v.channelId && blocked.has(v.channelId)),
+        ),
+      };
     }),
   comments: publicProcedure
     .input(videoCommentsQuerySchema)

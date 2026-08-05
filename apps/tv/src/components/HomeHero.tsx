@@ -1,6 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import type { UnifiedVideo } from "@web/server/services/proxy.types";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   channelInitial,
@@ -8,6 +8,7 @@ import {
   formatThumbnailBadge,
   formatViews,
 } from "@/lib/format";
+import { getHeroThumbnailUrls } from "@/lib/hero-thumbnail-url";
 import { colors, focus, fontSize, radius, spacing } from "@/theme";
 
 type HomeHeroProps = {
@@ -18,6 +19,10 @@ type HomeHeroProps = {
 
 export function HomeHero({ video, label, onPress }: HomeHeroProps) {
   const [focused, setFocused] = useState(false);
+  const thumbnailUrls = useMemo(
+    () => getHeroThumbnailUrls(video.thumbnailUrl, video.videoId),
+    [video.thumbnailUrl, video.videoId],
+  );
   const badge = formatThumbnailBadge(video);
   const views = formatViews(video.viewCount);
   const published = formatPublishedLabel(
@@ -34,15 +39,10 @@ export function HomeHero({ video, label, onPress }: HomeHeroProps) {
       onPress={() => onPress(video.videoId)}
       style={[styles.hero, focused && styles.heroFocused]}
     >
-      {video.thumbnailUrl ? (
-        <Image
-          source={{ uri: video.thumbnailUrl }}
-          style={styles.image}
-          resizeMode="cover"
-        />
-      ) : (
-        <View style={[styles.image, styles.placeholder]} />
-      )}
+      <HomeHeroThumbnail
+        key={`${video.videoId}:${video.thumbnailUrl ?? ""}`}
+        thumbnailUrls={thumbnailUrls}
+      />
       <View style={styles.scrimFull} />
       <View style={styles.content}>
         <View style={styles.pill}>
@@ -75,6 +75,31 @@ export function HomeHero({ video, label, onPress }: HomeHeroProps) {
         </View>
       </View>
     </Pressable>
+  );
+}
+
+function HomeHeroThumbnail({ thumbnailUrls }: { thumbnailUrls: string[] }) {
+  const [thumbnailIndex, setThumbnailIndex] = useState(0);
+  const thumbnailUrl =
+    thumbnailUrls[Math.min(thumbnailIndex, thumbnailUrls.length - 1)];
+
+  const handleThumbnailError = () => {
+    setThumbnailIndex((currentIndex) =>
+      currentIndex < thumbnailUrls.length - 1 ? currentIndex + 1 : currentIndex,
+    );
+  };
+
+  if (!thumbnailUrl) {
+    return <View style={[styles.image, styles.placeholder]} />;
+  }
+
+  return (
+    <Image
+      source={{ uri: thumbnailUrl }}
+      style={styles.image}
+      onError={handleThumbnailError}
+      resizeMode="cover"
+    />
   );
 }
 

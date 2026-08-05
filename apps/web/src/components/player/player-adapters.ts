@@ -167,6 +167,21 @@ export function useNativeAdapter(opts: {
     [videoRef, audioRef, externalVolume, muted],
   );
 
+  // Correct drift accumulated while paused before the companion audio becomes
+  // audible again — a `currentTime` snap on a paused element is silent, whereas
+  // the drift-recovery loop would correct it mid-playback with an audible click.
+  const alignCompanionBeforeResume = useCallback(() => {
+    const v = videoRef.current;
+    const a = audioRef.current;
+    if (!v || !a) return;
+    if (Math.abs(a.currentTime - v.currentTime) < 0.05) return;
+    try {
+      a.currentTime = v.currentTime;
+    } catch {
+      /* ignore */
+    }
+  }, [videoRef, audioRef]);
+
   const applyVideoElementVolume = useCallback(
     (overrides?: { muted?: boolean; volumeUi?: number }) => {
       const v = videoRef.current;
@@ -302,6 +317,7 @@ export function useNativeAdapter(opts: {
       void v?.play().catch(() => {});
       if (a) {
         syncCompanionVolume();
+        alignCompanionBeforeResume();
         void a.play().catch(() => {});
       }
     },
@@ -322,6 +338,7 @@ export function useNativeAdapter(opts: {
         void el.play().catch(() => {});
         if (a) {
           syncCompanionVolume();
+          alignCompanionBeforeResume();
           void a.play().catch(() => {});
         }
       } else {
@@ -332,6 +349,9 @@ export function useNativeAdapter(opts: {
     seek: (t) => {
       const v = videoRef.current;
       const a = audioRef.current;
+      // Stop the audio before moving the video: it must not keep playing while
+      // the video buffers the target (split-block resumes it on `seeked`).
+      if (a && !a.paused) a.pause();
       if (v) v.currentTime = t;
       if (a) {
         try {

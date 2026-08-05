@@ -8,6 +8,7 @@ import { coercePublishedSecondsFromUpstream } from "@/lib/published-sort-key";
 import { preferHighResVideoThumbnailUrl } from "@/lib/video-thumbnail-url";
 import {
   isUpstreamMembersOrPaidOnly,
+  mapUpstreamCaptions,
   pickInvidiousStoryboard,
   pickViewCount,
   readPositiveNumberField,
@@ -321,6 +322,7 @@ export function mapInvidiousVideo(
     isUpcoming: isUpcoming || undefined,
     hlsUrl: hlsResolved,
     dashUrl: dashResolved,
+    captions: mapUpstreamCaptions(o.captions, baseUrl),
     audioSources: audioFromAdaptive,
     videoSources,
     sourceUsed: "invidious" as const,

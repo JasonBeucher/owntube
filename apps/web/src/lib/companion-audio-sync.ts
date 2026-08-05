@@ -10,8 +10,8 @@ export function companionAudioSyncThresholds(
 ): CompanionAudioSyncThresholds {
   const rate = Math.min(4, Math.max(0.25, playbackRate));
   if (rate >= 2) {
-    // Prefer soft rate nudges over `currentTime` snaps — hard snaps at 2× sound
-    // like clipping/crackle on many browsers.
+    // Clock skew between the two elements grows faster at 2×; allow more slack
+    // before intervening so corrections stay rare.
     return {
       syncTolerance: 0.22,
       driftHard: 0.65,
@@ -25,12 +25,15 @@ export function companionAudioSyncThresholds(
   };
 }
 
-const SOFT_NUDGE_MIN_DRIFT = 0.035;
 const SOFT_NUDGE_FACTOR = 0.965;
 
 /**
  * Keep companion audio aligned with the muted video track.
- * At 2×+, uses playbackRate nudges instead of frequent hard seeks.
+ *
+ * `currentTime` snaps on a *playing* audio element are audible (click/stutter)
+ * at any rate, so moderate drift is corrected with playbackRate nudges only.
+ * Hard snaps are reserved for `force` (used at boundaries where the audio is
+ * paused and the snap is inaudible) and runaway drift beyond `driftHard`.
  */
 export function applyCompanionAudioSync(
   video: HTMLVideoElement,
@@ -49,13 +52,8 @@ export function applyCompanionAudioSync(
   }
 
   if (absDrift > syncTolerance) {
-    if (targetRate >= 2 && absDrift > SOFT_NUDGE_MIN_DRIFT) {
-      const nudge = drift > 0 ? SOFT_NUDGE_FACTOR : 1 / SOFT_NUDGE_FACTOR;
-      audio.playbackRate = Math.min(4, Math.max(0.25, targetRate * nudge));
-      return;
-    }
-    audio.currentTime = video.currentTime;
-    audio.playbackRate = targetRate;
+    const nudge = drift > 0 ? SOFT_NUDGE_FACTOR : 1 / SOFT_NUDGE_FACTOR;
+    audio.playbackRate = Math.min(4, Math.max(0.25, targetRate * nudge));
     return;
   }
 

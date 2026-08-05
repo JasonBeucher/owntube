@@ -7,6 +7,11 @@ type BrandLogoIconProps = {
   className?: string;
 };
 
+/**
+ * Official owntube mark: pixel play-chevron + terminal cursor underscore.
+ * Ink follows --foreground and the underscore follows --primary so the same
+ * mark adapts to every visual theme; static exports live in public/logo-*.svg.
+ */
 export function BrandLogoIcon({
   size = 36,
   tile = false,
@@ -44,28 +49,7 @@ export function BrandLogoIcon({
           />
         </>
       ) : null}
-      <g className="ot-brand-mark-default">
-        <path
-          d="M10.6 11.4c0-1.1 1.2-1.8 2.2-1.2l10 6.4c1.1.7 1.1 2.1 0 2.8l-10 6.4c-1 .6-2.2-.1-2.2-1.2V11.4Z"
-          className="fill-[hsl(var(--primary))]"
-        />
-        <path
-          d="m22.5 13.4 6.1 4.6-6.1 4.6"
-          className="stroke-[hsl(var(--primary))]"
-          strokeWidth="2.7"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <rect
-          x="21.2"
-          y="25"
-          width="8"
-          height="2.8"
-          rx="1"
-          className="fill-[hsl(var(--foreground))]"
-        />
-      </g>
-      <g className="ot-brand-mark-terminal" shapeRendering="crispEdges">
+      <g shapeRendering="crispEdges">
         <rect className="ot-brand-pixel-ink" x="8" y="8" width="4" height="4" />
         <rect
           className="ot-brand-pixel-ink"

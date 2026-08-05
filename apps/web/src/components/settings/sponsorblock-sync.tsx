@@ -7,8 +7,9 @@ import {
 } from "@/lib/sponsorblock-prefs";
 import { trpc } from "@/trpc/react";
 
-export function SponsorBlockSync() {
+export function SponsorBlockSync({ enabled }: { enabled: boolean }) {
   const { data } = trpc.settings.get.useQuery(undefined, {
+    enabled,
     retry: false,
     refetchOnWindowFocus: false,
   });

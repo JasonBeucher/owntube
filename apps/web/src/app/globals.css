@@ -201,6 +201,84 @@
   color-scheme: dark;
 }
 
+/* Sky: cloud-painting palette — deep navy depths, cool white highlights, a
+   luminous break-in-the-cloud blue as the accent. Radii stay wide and soft to
+   echo the brushwork. No `:root.light[...]` block is needed: the base block is
+   already the light palette, and the dark ones override it. */
+:root[data-visual-theme="sky"] {
+  --background: 205 42% 96%;
+  --foreground: 216 45% 13%;
+  --card: 0 0% 100%;
+  --card-foreground: 216 45% 13%;
+  --muted: 205 32% 91%;
+  --muted-foreground: 214 18% 40%;
+  --accent: 205 34% 88%;
+  --accent-foreground: 216 45% 13%;
+  --brand: 208 82% 42%;
+  --primary: var(--brand);
+  --primary-foreground: 0 0% 100%;
+  --secondary: 205 34% 88%;
+  --secondary-foreground: 216 45% 13%;
+  --destructive: 0 72% 42%;
+  --border: 208 28% 84%;
+  --ring: var(--brand);
+  --radius: 1rem;
+  --radius-shell: 0.875rem;
+  --radius-card: 1.25rem;
+  --sidebar: 205 38% 93%;
+  --surface-border: 208 28% 82%;
+  --shadow-card-hover: 0 22px 44px -20px hsl(214 50% 30% / 0.3);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-visual-theme="sky"]:not(.light) {
+    --background: 216 58% 7%;
+    --foreground: 210 40% 96%;
+    --card: 215 42% 11%;
+    --card-foreground: 210 40% 96%;
+    --muted: 215 33% 15%;
+    --muted-foreground: 211 28% 68%;
+    --accent: 215 33% 17%;
+    --accent-foreground: 210 40% 96%;
+    --brand: 204 88% 64%;
+    --primary: var(--brand);
+    --primary-foreground: 216 58% 8%;
+    --secondary: 215 33% 15%;
+    --secondary-foreground: 210 40% 96%;
+    --destructive: 0 84% 68%;
+    --border: 214 30% 19%;
+    --ring: var(--brand);
+    --sidebar: 216 55% 5%;
+    --surface-border: 210 40% 96% / 0.1;
+    --shadow-card-hover: 0 24px 48px -20px hsl(214 70% 3% / 0.75);
+    color-scheme: dark;
+  }
+}
+
+:root.dark[data-visual-theme="sky"] {
+  --background: 216 58% 7%;
+  --foreground: 210 40% 96%;
+  --card: 215 42% 11%;
+  --card-foreground: 210 40% 96%;
+  --muted: 215 33% 15%;
+  --muted-foreground: 211 28% 68%;
+  --accent: 215 33% 17%;
+  --accent-foreground: 210 40% 96%;
+  --brand: 204 88% 64%;
+  --primary: var(--brand);
+  --primary-foreground: 216 58% 8%;
+  --secondary: 215 33% 15%;
+  --secondary-foreground: 210 40% 96%;
+  --destructive: 0 84% 68%;
+  --border: 214 30% 19%;
+  --ring: var(--brand);
+  --sidebar: 216 55% 5%;
+  --surface-border: 210 40% 96% / 0.1;
+  --shadow-card-hover: 0 24px 48px -20px hsl(214 70% 3% / 0.75);
+  color-scheme: dark;
+}
+
 @theme inline {
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
@@ -547,6 +625,28 @@ body {
   .ot-shell-bottom-nav-link[aria-current="page"] {
   border-top-color: hsl(var(--primary));
   background: hsl(var(--card));
+}
+
+/* Light breaking through cloud cover, behind the whole shell. Built from
+   --primary so it follows the light/dark token swap on its own. */
+:root[data-visual-theme="sky"] .ot-app-shell {
+  background:
+    radial-gradient(
+      115% 75% at 88% -8%,
+      hsl(var(--primary) / 0.18) 0%,
+      transparent 58%
+    ),
+    radial-gradient(
+      85% 65% at 4% 104%,
+      hsl(var(--primary) / 0.12) 0%,
+      transparent 60%
+    ), hsl(var(--background));
+}
+
+/* Soft navy cast rather than a neutral drop shadow: reads as haze on light,
+   as depth on dark. */
+:root[data-visual-theme="sky"] .ot-surface-card {
+  box-shadow: 0 12px 30px -18px hsl(214 60% 8% / 0.5);
 }
 
 /* UI scaling is handled dynamically by UiScale component */

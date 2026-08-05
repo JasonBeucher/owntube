@@ -54,6 +54,35 @@ describe("settingsRouter", () => {
     sqlite.close();
   });
 
+  it("keeps theme and visualTheme when a partial update omits them", async () => {
+    const { db, sqlite } = createTestDb();
+    const ts = Math.floor(Date.now() / 1000);
+    const user = db
+      .insert(users)
+      .values({
+        email: "partial@example.com",
+        passwordHash: "x",
+        createdAt: ts,
+        updatedAt: ts,
+      })
+      .returning({ id: users.id })
+      .get();
+
+    const caller = appRouter.createCaller({ db, userId: user.id });
+    await caller.settings.update({ theme: "dark", visualTheme: "aurora" });
+    const afterRegionOnly = await caller.settings.update({
+      trendingRegion: "FR",
+    });
+    expect(afterRegionOnly.theme).toBe("dark");
+    expect(afterRegionOnly.visualTheme).toBe("aurora");
+    expect(afterRegionOnly.trendingRegion).toBe("FR");
+
+    const afterThemeOnly = await caller.settings.update({ theme: "light" });
+    expect(afterThemeOnly.visualTheme).toBe("aurora");
+
+    sqlite.close();
+  });
+
   it("stores multiple source instances and validates preferred URLs", async () => {
     const { db, sqlite } = createTestDb();
     const ts = Math.floor(Date.now() / 1000);

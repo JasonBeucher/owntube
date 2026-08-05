@@ -7,7 +7,7 @@ test.describe("P0 smoke", () => {
       page.getByRole("link", { name: "owntube home" }),
     ).toBeVisible();
     await expect(
-      page.getByRole("link", { name: "Search videos" }),
+      page.getByRole("combobox", { name: "Global search" }),
     ).toBeVisible();
   });
 
@@ -18,34 +18,34 @@ test.describe("P0 smoke", () => {
     await expect(
       page.getByRole("link", { name: "owntube home" }),
     ).toBeVisible();
-    const shortsHeading = page.getByRole("heading", {
-      level: 2,
-      name: "Shorts",
-    });
-    const visible = await shortsHeading
+    // While the shorts query is pending the shelf renders a skeleton that has
+    // the heading but no "See all" link, so waiting on the heading would race
+    // the real content. Wait for "See all" instead; its absence is legitimate
+    // (upstream may return no shorts at all) and ends the test early.
+    const shelf = page.locator('section[aria-label="Shorts"]');
+    const seeAll = shelf.getByRole("link", { name: "See all" });
+    const loaded = await seeAll
       .waitFor({ state: "visible", timeout: 45_000 })
       .then(() => true)
       .catch(() => false);
-    if (!visible) return;
-    await expect(
-      page
-        .getByRole("link", { name: "See all" })
-        .filter({ hasText: /^See all$/ }),
-    ).toBeVisible();
-    await expect(page.locator('a[href^="/shorts?v="]').first()).toBeVisible();
+    if (!loaded) return;
+    await expect(shelf.locator('a[href^="/shorts?v="]').first()).toBeVisible();
   });
 
   test("shorts page loads feed shell", async ({ page }) => {
     await page.goto("/shorts");
+    // Match on the accessible name: the nav icons carry an SVG <title>, so the
+    // link's text content is "HomeHome" and a /^Home$/ text filter never hits.
     await expect(
       page
-        .locator('a[href="/"]')
-        .filter({ hasText: /^Home$/ })
+        .getByRole("link", { name: "Home", exact: true })
         .first()
         .or(
-          page.getByText(
-            /Loading shorts|No shorts available|Shorts feed is temporarily unavailable/i,
-          ),
+          page
+            .getByText(
+              /Loading shorts|No shorts available|Shorts feed is temporarily unavailable/i,
+            )
+            .first(),
         ),
     ).toBeVisible({ timeout: 30_000 });
     const active = page.locator('[data-short-active="true"]');

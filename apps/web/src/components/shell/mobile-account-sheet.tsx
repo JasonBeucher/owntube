@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { FriendsUnseenBadge } from "@/components/friends/friends-unseen-badge";
 import { ACCOUNT_LINKS } from "@/components/shell/nav-config";
 
 type MobileAccountSheetProps = {
@@ -112,6 +113,9 @@ export function MobileAccountSheet({
                     {link.icon}
                   </span>
                   {link.label}
+                  {link.href === "/friends" ? (
+                    <FriendsUnseenBadge enabled={isLoggedIn} />
+                  ) : null}
                 </Link>
               ))}
             </div>

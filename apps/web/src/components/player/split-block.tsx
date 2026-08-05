@@ -108,9 +108,6 @@ export function SplitBlock({
     Math.max(0, audioTracks.length - 1),
   );
   const [splitAudioIdx, setSplitAudioIdx] = useState(safeDefaultIdx);
-  const awaitingCompanionAudioRef = useRef(false);
-  /** Skips one `pause` side-effect when we pause video ourselves to wait for audio. */
-  const ignoreNextVideoPauseRef = useRef(false);
   const initialSeekAppliedRef = useRef(false);
   /** True while the video element is stalled (`waiting`) — blocks companion audio. */
   const videoStalledRef = useRef(false);
@@ -207,84 +204,70 @@ export function SplitBlock({
       return true;
     };
 
-    const align = (force = false) => {
-      if (!canDriveCompanionAudio()) return;
-      applyCompanionAudioSync(v, a, { force });
-    };
-
-    let waitingPauseTimer: ReturnType<typeof setTimeout> | null = null;
     let driftRecoveryTimer: ReturnType<typeof setInterval> | null = null;
-    const clearWaitingPauseTimer = () => {
-      if (!waitingPauseTimer) return;
-      clearTimeout(waitingPauseTimer);
-      waitingPauseTimer = null;
-    };
     const clearDriftRecoveryTimer = () => {
       if (!driftRecoveryTimer) return;
       clearInterval(driftRecoveryTimer);
       driftRecoveryTimer = null;
+    };
+    // Snapping `currentTime` on a paused audio element is inaudible; on a
+    // playing one it clicks. So: hard-align whenever the audio is (re)started
+    // from pause, and only soft-correct (rate nudges) once it is audible.
+    const resumeCompanionAudio = () => {
+      if (!canDriveCompanionAudio()) return;
+      if (a.paused) {
+        applyCompanionAudioSync(v, a, { force: true });
+        void a.play().catch(() => {});
+        return;
+      }
+      applyCompanionAudioSync(v, a);
     };
     const primeDriftRecovery = () => {
       clearDriftRecoveryTimer();
       const { recoveryIntervalMs } = companionAudioSyncThresholds(
         v.playbackRate,
       );
-      driftRecoveryTimer = setInterval(() => {
-        if (!canDriveCompanionAudio()) return;
-        if (a.paused) {
-          void a.play().catch(() => {});
-          return;
-        }
-        applyCompanionAudioSync(v, a);
-      }, recoveryIntervalMs);
-    };
-    const resumeCompanionAudio = () => {
-      if (!canDriveCompanionAudio()) return;
-      align(false);
-      if (a.paused) void a.play().catch(() => {});
+      driftRecoveryTimer = setInterval(
+        resumeCompanionAudio,
+        recoveryIntervalMs,
+      );
     };
     const onPlay = () => {
-      clearWaitingPauseTimer();
       primeDriftRecovery();
     };
     const onPlaying = () => {
       videoStalledRef.current = false;
       videoHasPaintedRef.current = true;
-      clearWaitingPauseTimer();
       primeDriftRecovery();
       resumeCompanionAudio();
     };
     const pauseAudio = () => {
-      clearWaitingPauseTimer();
-      if (ignoreNextVideoPauseRef.current) {
-        ignoreNextVideoPauseRef.current = false;
-        return;
-      }
-      awaitingCompanionAudioRef.current = false;
       a.pause();
     };
     const onWaiting = () => {
-      clearWaitingPauseTimer();
       videoStalledRef.current = true;
       // Video stalled — pause audio immediately so it does not run ahead and
       // get snapped back to t≈0 (audible stutter loop while buffering).
       a.pause();
     };
-    const alignSeek = () => {
-      clearWaitingPauseTimer();
-      if (canDriveCompanionAudio()) align(true);
+    const onSeeking = () => {
+      // Silence the audio while the video fetches the seek target; letting it
+      // play on would replay a chunk once it is snapped back on `seeked`.
+      a.pause();
+    };
+    const onSeeked = () => {
+      resumeCompanionAudio();
     };
     const onRate = () => {
       a.playbackRate = v.playbackRate;
       if (canDriveCompanionAudio()) {
-        align(true);
+        applyCompanionAudioSync(v, a, { force: true });
         primeDriftRecovery();
       }
     };
     const onTabResume = () => {
       if (document.visibilityState === "hidden") return;
       if (v.paused) return;
-      clearWaitingPauseTimer();
       a.playbackRate = v.playbackRate;
       resumeCompanionAudio();
     };
@@ -292,8 +275,8 @@ export function SplitBlock({
     v.addEventListener("playing", onPlaying);
     v.addEventListener("pause", pauseAudio);
     v.addEventListener("waiting", onWaiting);
-    v.addEventListener("seeking", alignSeek);
-    v.addEventListener("seeked", alignSeek);
+    v.addEventListener("seeking", onSeeking);
+    v.addEventListener("seeked", onSeeked);
     v.addEventListener("ratechange", onRate);
     v.addEventListener("ended", pauseAudio);
     document.addEventListener("visibilitychange", onTabResume);
@@ -310,14 +293,13 @@ export function SplitBlock({
       v.removeEventListener("playing", onPlaying);
       v.removeEventListener("pause", pauseAudio);
       v.removeEventListener("waiting", onWaiting);
-      v.removeEventListener("seeking", alignSeek);
-      v.removeEventListener("seeked", alignSeek);
+      v.removeEventListener("seeking", onSeeking);
+      v.removeEventListener("seeked", onSeeked);
       v.removeEventListener("ratechange", onRate);
       v.removeEventListener("ended", pauseAudio);
       document.removeEventListener("visibilitychange", onTabResume);
       window.removeEventListener("focus", onTabResume);
       window.removeEventListener("pageshow", onTabResume);
-      clearWaitingPauseTimer();
       clearDriftRecoveryTimer();
     };
     // Re-bind when companion audio element is remounted (track change).
