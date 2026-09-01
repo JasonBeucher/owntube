@@ -33,6 +33,6 @@
     "export:icons": "pnpm --filter web export:icons"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.2.0"
+    "@biomejs/biome": "2.5.2"
   }
 }
